@@ -1,86 +1,105 @@
-import { Router } from 'express';
-import axios from 'axios';
+// api/src/modules/xtream.js  (ESM)
+import express from "express";
 
-const router = Router();
+const router = express.Router();
 
-function baseUrl({host, port}){
-  // Allow host with or without scheme; normalize
-  const h = host.startsWith('http') ? host : `http://${host}`;
-  const p = port ? `:${port}` : '';
-  return `${h}${p}`;
+/**
+ * Normalise l'hôte/port en URL de base pour Xtream.
+ * - Accepte "my.host", "http://my.host:8080", "https://x.y"
+ * - Si pas de schéma fourni -> http par défaut (ou https si port 443)
+ */
+function buildBaseUrl(host, port) {
+  let h = String(host || "").trim();
+  if (!h) throw new Error("Missing host");
+
+  // Si l'utilisateur a mis un schéma, on le respecte
+  if (/^https?:\/\//i.test(h)) {
+    try {
+      const u = new URL(h);
+      // si le port en param est fourni et pas déjà dans l'URL, on l'applique
+      if (port && !u.port) u.port = String(port);
+      return u.toString().replace(/\/+$/, ""); // sans trailing slash
+    } catch {
+      throw new Error("Invalid host URL");
+    }
+  }
+
+  const p = port ? parseInt(String(port), 10) : null;
+  if (port && (!Number.isFinite(p) || p <= 0)) {
+    throw new Error("Invalid port");
+  }
+  const scheme = p === 443 ? "https" : "http";
+  return `${scheme}://${h}${p ? `:${p}` : ""}`;
 }
 
-// Test connection
-router.post('/test', async (req,res,next)=>{
+/**
+ * POST /xtream/test
+ * Body JSON: { host, port?, username, password }
+ * Teste l'endpoint Xtream Codes: /player_api.php?username=..&password=..
+ */
+router.post("/xtream/test", async (req, res) => {
   try {
-    const { host, port, username, password } = req.body;
-    const url = `${baseUrl({host,port})}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
-    const { data } = await axios.get(url, { timeout: 10000 });
-    if(data && data.user_info && data.user_info.auth === 1){
-      return res.json({ ok:true, info: data.user_info });
+    const { host, port, username, password } = req.body || {};
+    if (!host || !username || !password) {
+      return res.status(400).json({ ok: false, error: "Missing host/username/password" });
     }
-    res.status(401).json({ ok:false, info: data && data.user_info });
-  } catch(e){ next(e); }
-});
 
-// VOD list (movies)
-router.post('/movies', async (req,res,next)=>{
-  try {
-    const { host, port, username, password } = req.body;
-    const url = `${baseUrl({host,port})}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_vod_streams`;
-    const { data } = await axios.get(url);
-    res.json(data || []);
-  } catch(e){ next(e); }
-});
+    const base = buildBaseUrl(host, port);
+    const url = `${base}/player_api.php?username=${encodeURIComponent(
+      String(username)
+    )}&password=${encodeURIComponent(String(password))}`;
 
-// Series list
-router.post('/series', async (req,res,next)=>{
-  try {
-    const { host, port, username, password } = req.body;
-    const url = `${baseUrl({host,port})}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_series`;
-    const { data } = await axios.get(url);
-    res.json(data || []);
-  } catch(e){ next(e); }
-});
+    // Timeout 8s
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 8000);
 
-// Live
-router.post('/live', async (req,res,next)=>{
-  try {
-    const { host, port, username, password } = req.body;
-    const url = `${baseUrl({host,port})}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}&action=get_live_streams`;
-    const { data } = await axios.get(url);
-    res.json(data || []);
-  } catch(e){ next(e); }
-});
+    let r;
+    try {
+      r = await fetch(url, { signal: controller.signal });
+    } finally {
+      clearTimeout(t);
+    }
 
-// Series info (seasons & episodes)
-router.post('/series-info', async (req,res,next)=>{
-  try {
-    const { host, port, series_id } = req.body;
-    const url = `${baseUrl({host,port})}/player_api.php?action=get_series_info&series_id=${encodeURIComponent(series_id)}`;
-    const { data } = await axios.get(url);
-    res.json(data || {});
-  } catch(e){ next(e); }
-});
+    if (!r.ok) {
+      return res.status(502).json({ ok: false, error: `Upstream ${r.status}` });
+    }
 
-// VOD info (movie details, including images from Xtream only)
-router.post('/vod-info', async (req,res,next)=>{
-  try {
-    const { host, port, vod_id } = req.body;
-    const url = `${baseUrl({host,port})}/player_api.php?action=get_vod_info&vod_id=${encodeURIComponent(vod_id)}`;
-    const { data } = await axios.get(url);
-    res.json(data || {});
-  } catch(e){ next(e); }
-});
+    let data;
+    try {
+      data = await r.json();
+    } catch {
+      return res.status(502).json({ ok: false, error: "Invalid JSON from Xtream" });
+    }
 
-// Build stream URL for playback (movie/series/live)
-router.post('/stream-url', async (req,res,next)=>{
-  try {
-    const { host, port, username, password, stream_id, ext='m3u8' } = req.body;
-    const base = baseUrl({host,port});
-    const url = `${base}/movie/${encodeURIComponent(username)}/${encodeURIComponent(password)}/${encodeURIComponent(stream_id)}.${ext}`;
-    res.json({ url });
-  } catch(e){ next(e); }
+    const userInfo = data?.user_info || {};
+    const authOk =
+      userInfo?.auth === 1 ||
+      String(userInfo?.auth).toLowerCase() === "true" ||
+      String(userInfo?.status || "").toLowerCase() === "active";
+
+    if (!authOk) {
+      return res.status(400).json({
+        ok: false,
+        error: "Invalid credentials or inactive account",
+        user_info: userInfo,
+        server_info: data?.server_info || null,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      user_info: userInfo,
+      server_info: data?.server_info || null,
+      base_url: base,
+    });
+  } catch (e) {
+    const msg = e?.message || "Test failed";
+    // AbortError -> timeout réseau
+    if (msg.includes("AbortError")) {
+      return res.status(504).json({ ok: false, error: "Timeout contacting Xtream" });
+    }
+    return res.status(400).json({ ok: false, error: msg });
+  }
 });
 
 export default router;
