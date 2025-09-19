@@ -1,3 +1,18 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nova
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: novastream
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - db_data_ns6:/var/lib/postgresql/data
+    # pas de healthcheck pour éviter le blocage "unhealthy"
+
   api:
     image: node:20-alpine
     working_dir: /app
@@ -35,6 +50,7 @@
     image: node:20-alpine
     working_dir: /app
     environment:
+      # URL joignable par le NAVIGATEUR (ton IP publique)
       VITE_API_BASE: http://85.31.239.110:4000
     command: >
       sh -c "
@@ -53,3 +69,6 @@
     ports:
       - "5173:5173"
     restart: unless-stopped
+
+volumes:
+  db_data_ns6: {}
