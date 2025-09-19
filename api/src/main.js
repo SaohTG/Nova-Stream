@@ -17,64 +17,46 @@ app.use(
   })
 );
 
-// Endpoints santé
+// Santé
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-// Chargement dynamique des routeurs (supporte modules/ et routes/)
+// Chargement/ montage des routers
 async function mountRouters() {
-  // USER ROUTER
+  // USER
   try {
     const { default: userRouter } = await import("./modules/user.js");
     app.use(userRouter);
     app.use("/api", userRouter);
   } catch (e) {
-    console.warn("userRouter not found at ./modules/user.js:", e?.message);
-    try {
-      const { default: userRouter2 } = await import("./routes/user.js");
-      app.use(userRouter2);
-      app.use("/api", userRouter2);
-    } catch (e2) {
-      console.warn("userRouter not found at ./routes/user.js:", e2?.message);
-    }
+    console.warn("user router not found:", e?.message);
   }
 
-  // AUTH ROUTER
-  let authMounted = false;
+  // AUTH
   try {
     const { default: authRouter } = await import("./modules/auth.js");
     app.use(authRouter);
     app.use("/api", authRouter);
-    authMounted = true;
   } catch (e) {
-    console.warn("authRouter not found at ./modules/auth.js:", e?.message);
-    try {
-      const { default: authRouter2 } = await import("./routes/auth.js");
-      app.use(authRouter2);
-      app.use("/api", authRouter2);
-      authMounted = true;
-    } catch (e2) {
-      console.warn("authRouter not found at ./routes/auth.js:", e2?.message);
-    }
+    console.warn("auth router not found:", e?.message);
   }
 
-  // Filet de sécurité : si aucun auth router, expose des stubs explicites
-  if (!authMounted) {
-    app.post(["/auth/signup", "/api/auth/signup"], (_req, res) =>
-      res.status(501).json({ error: "Auth router missing" })
-    );
-    app.post(["/auth/login", "/api/auth/login"], (_req, res) =>
-      res.status(501).json({ error: "Auth router missing" })
-    );
+  // XTREAM (✅ ajoute /xtream/test)
+  try {
+    const { default: xtreamRouter } = await import("./modules/xtream.js");
+    app.use(xtreamRouter);
+    app.use("/api", xtreamRouter);
+  } catch (e) {
+    console.warn("xtream router not found:", e?.message);
   }
 }
 
 await mountRouters();
 
-// 404 JSON par défaut
+// 404 JSON
 app.use((_req, res) => res.status(404).json({ error: "Not Found" }));
 
-// Handler d'erreurs JSON
+// Error handler JSON
 app.use((err, _req, res, _next) => {
   const status = err?.status || 500;
   res.status(status).json({ error: err?.message || "Internal Error" });
