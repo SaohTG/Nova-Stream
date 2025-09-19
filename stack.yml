@@ -18,7 +18,6 @@ services:
       retries: 30
       start_period: 90s
 
-
   api:
     image: node:20-alpine
     working_dir: /app
@@ -33,7 +32,6 @@ services:
       CORS_ORIGIN: ${CORS_ORIGIN}
       TMDB_API_KEY: ${TMDB_API_KEY}
       NODE_ENV: ${NODE_ENV}
-    # On télécharge le repo public, on copie /api, on build et on lance
     command: >
       sh -c "
         apk add --no-cache unzip curl &&
@@ -60,9 +58,7 @@ services:
     image: node:20-alpine
     working_dir: /app
     environment:
-      # IMPORTANT: URL joignable par le NAVIGATEUR (remplace <IP/DNS> par le tien)
-      VITE_API_BASE: http://<IP_OU_DNS_PUBLIC>:${API_PORT:-4000}
-    # On télécharge le repo public, on copie /web, on build et on lance le preview
+      VITE_API_BASE: http://<TON_IP_OU_DNS>:${API_PORT:-4000}
     command: >
       sh -c "
         apk add --no-cache unzip curl &&
