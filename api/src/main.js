@@ -2,58 +2,84 @@
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import morgan from "morgan";
+
+// Routes modules
+import authRouter from "./modules/auth.js";
+import userRouter from "./modules/user.js";
+import xtreamRouter from "./modules/xtream.js";
 
 const app = express();
 
-// Parsers
-app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // accepte x-www-form-urlencoded
+/* ---------------------------- App configuration --------------------------- */
+
+app.disable("x-powered-by");
+
+// Si l'API est derrière un proxy/Portainer/nginx, on garde l'IP correcte
+app.set("trust proxy", 1);
+
+// Logs
+app.use(morgan("dev"));
+
+// Cookies (ns_access, ns_refresh)
 app.use(cookieParser());
 
-// CORS
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://85.31.239.110:5173";
-app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
-
-// Santé
-app.get("/health", (_req, res) => res.json({ ok: true }));
-app.get("/api/health", (_req, res) => res.json({ ok: true }));
-
-// Monte les routers (sur / et /api)
-async function mountRouters() {
-  // USER
-  try {
-    const { default: userRouter } = await import("./modules/user.js");
-    app.use(userRouter);
-    app.use("/api", userRouter);
-  } catch (e) {
-    console.warn("user router not found:", e?.message);
-  }
-
-  // AUTH
-  try {
-    const { default: authRouter } = await import("./modules/auth.js");
-    app.use(authRouter);
-    app.use("/api", authRouter);
-  } catch (e) {
-    console.warn("auth router not found:", e?.message);
-  }
-
-  // XTREAM
-  try {
-    const { default: xtreamRouter } = await import("./modules/xtream.js");
-    app.use(xtreamRouter);
-    app.use("/api", xtreamRouter);
-  } catch (e) {
-    console.warn("xtream router not found:", e?.message);
-  }
-}
-await mountRouters();
-
-// 404 + Error handler
-app.use((_req, res) => res.status(404).json({ error: "Not Found" }));
-app.use((err, _req, res, _next) =>
-  res.status(err?.status || 500).json({ error: err?.message || "Internal Error" })
+// CORS (avec cookies)
+const ORIGIN = process.env.CORS_ORIGIN || "http://85.31.239.110:5173";
+app.use(
+  cors({
+    origin: ORIGIN,       // ⚠️ pas "*"
+    credentials: true,    // indispensable pour envoyer les cookies
+  })
 );
 
-const PORT = Number(process.env.API_PORT || 4000);
-app.listen(PORT, () => console.log(`API on :${PORT}`));
+// JSON body
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+/* --------------------------------- Health --------------------------------- */
+
+app.get("/", (_req, res) => {
+  res.json({ ok: true, service: "nova-stream-api" });
+});
+
+app.get("/healthz", (_req, res) => res.status(200).send("ok"));
+
+/* ---------------------------------- Routes -------------------------------- */
+
+app.use(authRouter);
+app.use(userRouter);
+app.use(xtreamRouter);
+
+/* ----------------------------- 404 & Error handler ------------------------ */
+
+app.use((req, res) => {
+  res.status(404).json({ ok: false, error: "Not Found", path: req.path });
+});
+
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+  const status = err?.status || 500;
+  const message = err?.message || "Internal Server Error";
+  if (status >= 500) {
+    console.error("[API error]", message, err?.stack || "");
+  }
+  res.status(status).json({ ok: false, error: message });
+});
+
+/* ---------------------------------- Start --------------------------------- */
+
+const port = Number(process.env.API_PORT || 4000);
+app.listen(port, () => {
+  console.log(`API on :${port}`);
+});
+
+/* -------------------------- Safety: unhandled errors ---------------------- */
+
+process.on("unhandledRejection", (reason) => {
+  console.error("UnhandledRejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("UncaughtException:", err);
+});
