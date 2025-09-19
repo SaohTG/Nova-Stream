@@ -12,12 +12,12 @@ services:
     volumes:
       - db_data_ns5:/var/lib/postgresql/data
     healthcheck:
-      # très tolérant pour l'init
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB || pg_isready -U postgres -d postgres || exit 1"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 30
       start_period: 90s
+
 
   api:
     image: node:20-alpine
