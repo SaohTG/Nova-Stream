@@ -1,59 +1,76 @@
-// api/src/middleware/resolveMe.js (ESM)
+// api/src/middleware/resolveMe.js
 import jwt from "jsonwebtoken";
 
-const UUID_RE =
-  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
+/**
+ * Ce middleware vérifie le cookie ns_access.
+ * S'il est absent/expiré mais que ns_refresh est présent et valide,
+ * il régénère un access token et continue.
+ */
 
-export function requireAuthUserId(req) {
-  let id =
-    req?.auth?.userId ||
-    req?.user?.id ||
-    req?.jwt?.sub ||
-    req?.jwt?.uid;
+const ACCESS_TTL_SEC = Number(process.env.API_JWT_ACCESS_TTL || 900);
+const ACCESS_SECRET = process.env.API_JWT_SECRET || "dev_access_secret_change_me";
+const REFRESH_SECRET = process.env.API_REFRESH_SECRET || "dev_refresh_secret_change_me";
 
-  if (!id) {
-    const token = req?.cookies?.access_token;
-    if (token) {
-      try {
-        const secret = process.env.API_JWT_SECRET;
-        if (!secret) {
-          const e = new Error("Server misconfigured (missing API_JWT_SECRET)");
-          e.status = 500;
-          throw e;
-        }
-        const payload = jwt.verify(token, secret);
-        id = payload?.sub;
-      } catch {
-        /* ignore -> on tombera sur Unauthorized */
-      }
-    }
-  }
+function cookieBaseOptions() {
+  const secure =
+    process.env.COOKIE_SECURE === "true" ||
+    (process.env.NODE_ENV === "production" && process.env.FORCE_SECURE_COOKIES === "true");
 
-  if (!id) {
-    const e = new Error("Unauthorized");
-    e.status = 401;
-    throw e;
-  }
-  if (!UUID_RE.test(String(id))) {
-    const e = new Error("Invalid user id");
-    e.status = 400;
-    throw e;
-  }
-  return String(id);
+  return {
+    httpOnly: true,
+    secure,                          // false en HTTP pour Portainer
+    sameSite: process.env.COOKIE_SAMESITE || "lax",
+    path: "/",
+  };
 }
 
-export function resolveUserParam(paramName = "id") {
-  return (req, res, next, val) => {
-    try {
-      let id = val;
-      if (id === "me") id = requireAuthUserId(req);
-      if (!UUID_RE.test(String(id))) {
-        return res.status(400).json({ error: "Invalid user id" });
-      }
-      req.params[paramName] = String(id);
-      next();
-    } catch (e) {
-      res.status(e.status || 500).json({ error: e.message || "Error" });
+function setAccessCookie(res, accessToken) {
+  res.cookie("ns_access", accessToken, {
+    ...cookieBaseOptions(),
+    maxAge: ACCESS_TTL_SEC * 1000,
+  });
+}
+
+export function requireAuthUserId(req, res) {
+  // version "sync" pour pouvoir l'appeler dans du code non-middleware
+  try {
+    const tok = req.cookies?.ns_access;
+    if (tok) {
+      const payload = jwt.verify(tok, ACCESS_SECRET);
+      if (payload?.sub) return payload.sub;
     }
-  };
+  } catch (_) {
+    // ignore, on va tenter le refresh
+  }
+
+  // Fallback refresh
+  const rtk = req.cookies?.ns_refresh;
+  if (rtk) {
+    try {
+      const p = jwt.verify(rtk, REFRESH_SECRET);
+      if (p?.sub) {
+        const newAccess = jwt.sign({ sub: p.sub, typ: "access" }, ACCESS_SECRET, {
+          expiresIn: ACCESS_TTL_SEC,
+        });
+        setAccessCookie(res, newAccess);
+        return p.sub;
+      }
+    } catch (_) {
+      // refresh invalide → on tombera en 401
+    }
+  }
+
+  const err = new Error("unauthorized");
+  err.status = 401;
+  throw err;
+}
+
+// Variante middleware Express classique
+export function requireAccess(req, res, next) {
+  try {
+    req.userId = requireAuthUserId(req, res);
+    next();
+  } catch (e) {
+    res.status(e?.status || 401).json({ ok: false, error: "unauthorized" });
+  }
 }
