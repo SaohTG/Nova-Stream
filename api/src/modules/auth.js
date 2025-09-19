@@ -2,6 +2,7 @@
 import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import { pool } from "../db/index.js";
 
 const router = express.Router();
@@ -29,28 +30,33 @@ function clearAuthCookies(res) {
 
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+// Création de table **sans** extension ni DEFAULT uuid DB
+async function ensureUsersTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id UUID PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+}
+
 router.post("/auth/signup", async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!emailRe.test(String(email || ""))) return res.status(400).json({ error: "Email invalide" });
     if (!password || String(password).length < 6) return res.status(400).json({ error: "Mot de passe trop court" });
 
-    const hash = await bcrypt.hash(String(password), 10);
+    await ensureUsersTable();
 
-    // S'assure que les tables existent (idempotent)
-    await pool.query(`
-      CREATE EXTENSION IF NOT EXISTS pgcrypto;
-      CREATE TABLE IF NOT EXISTS users (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      );
-    `);
+    const hash = await bcrypt.hash(String(password), 10);
+    const id = crypto.randomUUID();
+    const emailLower = String(email).toLowerCase();
 
     const { rows } = await pool.query(
-      "INSERT INTO users (email, password_hash) VALUES ($1,$2) RETURNING id, email, created_at",
-      [String(email).toLowerCase(), hash]
+      "INSERT INTO users (id, email, password_hash) VALUES ($1,$2,$3) RETURNING id, email, created_at",
+      [id, emailLower, hash]
     );
     const user = rows[0];
 
@@ -60,6 +66,7 @@ router.post("/auth/signup", async (req, res) => {
 
     return res.json({ ok: true, user: { id: user.id, email: user.email } });
   } catch (e) {
+    console.error("signup error:", e);
     if (e?.code === "23505") return res.status(409).json({ error: "Email déjà utilisé" });
     return res.status(500).json({ error: "Erreur serveur" });
   }
@@ -69,6 +76,8 @@ router.post("/auth/login", async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ error: "Email et mot de passe requis" });
+
+    await ensureUsersTable();
 
     const { rows } = await pool.query("SELECT id, email, password_hash FROM users WHERE email=$1", [
       String(email).toLowerCase(),
@@ -84,7 +93,8 @@ router.post("/auth/login", async (req, res) => {
     setAuthCookies(res, access, refresh);
 
     return res.json({ ok: true, user: { id: user.id, email: user.email } });
-  } catch (_e) {
+  } catch (e) {
+    console.error("login error:", e);
     return res.status(500).json({ error: "Erreur serveur" });
   }
 });
@@ -103,7 +113,8 @@ router.post("/auth/refresh", async (req, res) => {
     const access = signAccess(payload.sub);
     setAuthCookies(res, access, token); // conserve le même refresh
     res.json({ ok: true });
-  } catch (_e) {
+  } catch (e) {
+    console.error("refresh error:", e);
     clearAuthCookies(res);
     res.status(401).json({ error: "Refresh expiré" });
   }
@@ -118,7 +129,8 @@ router.get("/auth/me", async (req, res) => {
     const user = rows[0];
     if (!user) return res.status(401).json({ error: "User not found" });
     res.json({ ok: true, user });
-  } catch (_e) {
+  } catch (e) {
+    console.error("me error:", e);
     res.status(401).json({ error: "Unauthorized" });
   }
 });
