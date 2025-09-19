@@ -1,10 +1,9 @@
 // api/src/modules/user.js
-import { pool } from "../db/index.js";             // adapte le chemin si besoin
+import { pool } from "../db/index.js";                // adapte si besoin
 import { requireAuthUserId } from "../middleware/resolveMe.js";
-import { encrypt } from "../lib/crypto.js";        // ta fonction AES-GCM (adapte)
-import { getEnv } from "../lib/env.js";            // si tu as un helper env (adapte)
+import { encrypt } from "../lib/crypto.js";           // ta fonction AES-GCM
+// import { getEnv } from "../lib/env.js";            // si tu as un helper env
 
-/** GET /user/:id/xtream/link  (le :id peut être "me") */
 export async function getXtreamLink(req, res) {
   try {
     const userId = requireAuthUserId(req); // ✅ UUID depuis JWT
@@ -18,18 +17,15 @@ export async function getXtreamLink(req, res) {
   }
 }
 
-/** POST /user/:id/xtream/link  (body: {host,port,username,password}) */
 export async function upsertXtreamLink(req, res) {
   try {
-    const userId = requireAuthUserId(req); // ✅ ignore totalement req.params.id
+    const userId = requireAuthUserId(req); // ✅ ignore complètement req.params.id
     const { host, port, username, password } = req.body || {};
-
     if (!host || !port || !username || !password) {
       return res.status(400).json({ error: "Missing fields" });
     }
 
-    const key =
-      process.env.API_ENCRYPTION_KEY || (getEnv ? getEnv("API_ENCRYPTION_KEY") : null);
+    const key = process.env.API_ENCRYPTION_KEY; // ou getEnv("API_ENCRYPTION_KEY")
     if (!key) return res.status(500).json({ error: "Missing encryption key" });
 
     const usernameEnc = await encrypt(username, key);
