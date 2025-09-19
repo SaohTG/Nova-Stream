@@ -75,44 +75,38 @@ services:
         cp -r /tmp/Nova-Stream-main/web/. /app
 
         echo "==> Write valid package.json"
-        cat > /app/package.json << 'EOF'
-        {
-          "name": "nova-stream-web",
-          "version": "0.1.0",
-          "private": true,
-          "type": "module",
-          "scripts": {
-            "dev": "vite",
-            "build": "vite build",
-            "preview": "vite preview"
-          },
-          "dependencies": {
-            "axios": "^1.6.7",
-            "hls.js": "^1.5.7",
-            "react": "^18.2.0",
-            "react-dom": "^18.2.0"
-          },
-          "devDependencies": {
-            "@vitejs/plugin-react": "^4.2.0",
-            "autoprefixer": "^10.4.17",
-            "postcss": "^8.4.35",
-            "tailwindcss": "^3.4.6",
-            "vite": "^5.0.0"
-          }
-        }
-        EOF
+        printf '%s\n' '{' \
+          '  "name": "nova-stream-web",' \
+          '  "version": "0.1.0",' \
+          '  "private": true,' \
+          '  "type": "module",' \
+          '  "scripts": {' \
+          '    "dev": "vite",' \
+          '    "build": "vite build",' \
+          '    "preview": "vite preview"' \
+          '  },' \
+          '  "dependencies": {' \
+          '    "axios": "^1.6.7",' \
+          '    "hls.js": "^1.5.7",' \
+          '    "react": "^18.2.0",' \
+          '    "react-dom": "^18.2.0"' \
+          '  },' \
+          '  "devDependencies": {' \
+          '    "@vitejs/plugin-react": "^4.2.0",' \
+          '    "autoprefixer": "^10.4.17",' \
+          '    "postcss": "^8.4.35",' \
+          '    "tailwindcss": "^3.4.6",' \
+          '    "vite": "^5.0.0"' \
+          '  }' \
+          '}' > /app/package.json
 
-        echo "==> Ensure vite.config.js"
-        if [ ! -f /app/vite.config.js ]; then
-          cat > /app/vite.config.js << 'EOF'
-          import { defineConfig } from "vite";
-          import react from "@vitejs/plugin-react";
-          export default defineConfig({
-            plugins: [react()],
-            server: { host: true, port: 5173 }
-          });
-          EOF
-        fi
+        echo "==> Write vite.config.js"
+        printf '%s\n' 'import { defineConfig } from "vite";' \
+          'import react from "@vitejs/plugin-react";' \
+          'export default defineConfig({' \
+          '  plugins: [react()], ' \
+          '  server: { host: true, port: 5173 }' \
+          '});' > /app/vite.config.js
 
         echo "==> npm install"
         npm install --no-audit --no-fund
