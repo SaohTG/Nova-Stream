@@ -29,7 +29,11 @@ function buildBaseUrl(host, port) {
   if (!/^https?:\/\//i.test(h)) h = `http://${h}`;
 
   let url;
-  try { url = new URL(h); } catch { throw new Error("host invalide"); }
+  try {
+    url = new URL(h);
+  } catch {
+    throw new Error("host invalide");
+  }
 
   const p = port ? parseInt(String(port), 10) : null;
   if (p && Number.isFinite(p) && p > 0) url.port = String(p);
@@ -50,8 +54,9 @@ async function httpGetJson(url, timeoutMs = 10000) {
       throw err;
     }
     const txt = await r.text();
-    try { return JSON.parse(txt); }
-    catch {
+    try {
+      return JSON.parse(txt);
+    } catch {
       if (!txt || txt === "null") return null;
       const err = new Error("Réponse JSON invalide depuis Xtream");
       err.status = 502;
@@ -75,11 +80,11 @@ async function httpGetJson(url, timeoutMs = 10000) {
 /**
  * POST /user/link-xtream
  * body: { host, port?, username, password }
- * Protégée: nécessite cookies JWT valides (ns_access)
+ * Auth requise (cookies JWT)
  */
 router.post("/user/link-xtream", async (req, res) => {
   try {
-    const userId = requireAuthUserId(req); // renvoie 401 si absent/invalid
+    const userId = requireAuthUserId(req, res);
     await ensureXtreamTable();
 
     const { host, port, username, password } = req.body || {};
@@ -87,13 +92,11 @@ router.post("/user/link-xtream", async (req, res) => {
       return res.status(400).json({ ok: false, error: "host, username, password requis" });
     }
 
-    // clé de chiffrement (64 hex)
     const key = process.env.API_ENCRYPTION_KEY;
     if (!key || key.length !== 64 || !/^[0-9a-fA-F]+$/.test(key)) {
       return res.status(400).json({ ok: false, error: "API_ENCRYPTION_KEY invalide (64 hex requis)" });
     }
 
-    // normaliser et tester le compte xtream
     const base = buildBaseUrl(host, port);
     const testUrl = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
 
@@ -122,7 +125,6 @@ router.post("/user/link-xtream", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Identifiants Xtream invalides", status });
     }
 
-    // chiffrer et upsert
     const username_enc = await encrypt(String(username), key);
     const password_enc = await encrypt(String(password), key);
 
@@ -144,11 +146,11 @@ router.post("/user/link-xtream", async (req, res) => {
 
 /**
  * GET /user/xtream-credentials
- * Renvoie host/port (pas les secrets)
+ * Renvoie host/port (pas les secrets) si lié
  */
 router.get("/user/xtream-credentials", async (req, res) => {
   try {
-    const userId = requireAuthUserId(req);
+    const userId = requireAuthUserId(req, res);
     await ensureXtreamTable();
 
     const { rows } = await pool.query(
@@ -158,6 +160,26 @@ router.get("/user/xtream-credentials", async (req, res) => {
     if (!rows.length) return res.status(404).json({ ok: false, linked: false });
 
     return res.json({ ok: true, linked: true, host: rows[0].host, port: rows[0].port ?? null });
+  } catch (e) {
+    const code = e?.status || 500;
+    return res.status(code).json({ ok: false, error: e?.message || "Erreur" });
+  }
+});
+
+/**
+ * GET /user/has-xtream
+ * Indique simplement si un lien Xtream existe pour l'utilisateur
+ */
+router.get("/user/has-xtream", async (req, res) => {
+  try {
+    const userId = requireAuthUserId(req, res);
+    await ensureXtreamTable();
+
+    const { rows } = await pool.query(
+      "SELECT 1 FROM xtream_links WHERE user_id=$1 LIMIT 1",
+      [userId]
+    );
+    return res.json({ ok: true, linked: rows.length > 0 });
   } catch (e) {
     const code = e?.status || 500;
     return res.status(code).json({ ok: false, error: e?.message || "Erreur" });
