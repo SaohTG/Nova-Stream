@@ -7,19 +7,15 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
     volumes:
-      - db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - db_data_ns4:/var/lib/postgresql/data
+    # (pas de healthcheck)
 
   api:
-    image: node:20-alpine
-    working_dir: /app
-    command: sh -c "npm i && npm run build && node dist/main.js"
-    restart: unless-stopped
+    build:
+      context: https://github.com/SaohTG/Nova-Stream.git#main
+      dockerfile: api/Dockerfile
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
       API_PORT: ${API_PORT}
@@ -33,31 +29,26 @@ services:
       NODE_ENV: ${NODE_ENV}
     ports:
       - "${API_PORT:-4000}:4000"
-    volumes:
-      - api_data:/app
     depends_on:
-      db:
-        condition: service_healthy
+      - db
     healthcheck:
       test: ["CMD", "node", "healthcheck.js"]
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   web:
-    image: node:20-alpine
-    working_dir: /app
-    command: sh -c "npm i && npm run build && npm run preview -- --host 0.0.0.0 --port 5173"
+    build:
+      context: https://github.com/SaohTG/Nova-Stream.git#main
+      dockerfile: web/Dockerfile
     environment:
       VITE_API_BASE: http://85.31.239.110:${API_PORT:-4000}
     ports:
       - "5173:5173"
-    volumes:
-      - web_data:/app
     depends_on:
       - api
+    restart: unless-stopped
 
 volumes:
-  db_data:
-  api_data:
-  web_data:
+  db_data_ns4: {}
