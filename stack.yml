@@ -29,17 +29,18 @@ services:
       NODE_ENV: production
     command: >
       sh -c "
-        apk add --no-cache unzip curl netcat-openbsd &&
+        set -e;
+        apk add --no-cache unzip curl netcat-openbsd;
         # attendre la DB
-        until nc -z db 5432; do echo '⏳ waiting for db...'; sleep 2; done &&
+        until nc -z db 5432; do echo '⏳ waiting for db...'; sleep 2; done;
         # récupérer le code et builder
-        rm -rf /tmp/Nova-Stream-main /tmp/src.zip &&
-        curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip &&
-        unzip -o -q /tmp/src.zip -d /tmp &&
-        rm -rf /app/* &&
-        cp -r /tmp/Nova-Stream-main/api/. /app &&
-        npm install &&
-        npm run build &&
+        rm -rf /tmp/Nova-Stream-main /tmp/src.zip;
+        curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip;
+        unzip -o -q /tmp/src.zip -d /tmp;
+        rm -rf /app/*;
+        cp -r /tmp/Nova-Stream-main/api/. /app;
+        npm install;
+        npm run build;
         node dist/main.js
       "
     depends_on:
@@ -55,70 +56,60 @@ services:
       # URL joignable par le NAVIGATEUR
       VITE_API_BASE: http://85.31.239.110:4000
     command: >
-      sh -ceu '
-        echo "==> Install base tools";
+      sh -c "
+        set -e;
+        echo '==> Install base tools';
         apk add --no-cache unzip curl;
 
-        echo "==> Fetch repo zip";
+        echo '==> Fetch repo zip';
         rm -rf /tmp/Nova-Stream-main /tmp/src.zip;
         curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip;
 
-        echo "==> Unzip";
+        echo '==> Unzip';
         unzip -o -q /tmp/src.zip -d /tmp;
 
-        echo "==> Prepare /app";
+        echo '==> Prepare /app';
         rm -rf /app/*;
         cp -r /tmp/Nova-Stream-main/web/. /app;
 
-        echo "==> Ensure valid package.json";
-        cat > /app/package.json << "EOF"
-        {
-          "name": "nova-stream-web",
-          "version": "0.1.0",
-          "private": true,
-          "type": "module",
-          "scripts": {
-            "dev": "vite",
-            "build": "vite build",
-            "preview": "vite preview"
-          },
-          "dependencies": {
-            "axios": "^1.6.7",
-            "hls.js": "^1.5.7",
-            "react": "^18.2.0",
-            "react-dom": "^18.2.0"
-          },
-          "devDependencies": {
-            "@vitejs/plugin-react": "^4.2.0",
-            "autoprefixer": "^10.4.17",
-            "postcss": "^8.4.35",
-            "tailwindcss": "^3.4.6",
-            "vite": "^5.0.0"
-          }
-        }
-        EOF
+        echo '==> Write valid package.json';
+        printf '%s' '{\
+          "name":"nova-stream-web",\
+          "version":"0.1.0",\
+          "private":true,\
+          "type":"module",\
+          "scripts":{"dev":"vite","build":"vite build","preview":"vite preview"},\
+          "dependencies":{\
+            "axios":"^1.6.7",\
+            "hls.js":"^1.5.7",\
+            "react":"^18.2.0",\
+            "react-dom":"^18.2.0"\
+          },\
+          "devDependencies":{\
+            "@vitejs/plugin-react":"^4.2.0",\
+            "autoprefixer":"^10.4.17",\
+            "postcss":"^8.4.35",\
+            "tailwindcss":"^3.4.6",\
+            "vite":"^5.0.0"\
+          }\
+        }' > /app/package.json;
 
-        echo "==> Ensure vite.config.js exists";
+        echo '==> Ensure vite.config.js';
         if [ ! -f /app/vite.config.js ]; then
-          cat > /app/vite.config.js << "EOF"
-          import { defineConfig } from "vite";
-          import react from "@vitejs/plugin-react";
-          export default defineConfig({
-            plugins: [react()],
-            server: { host: true, port: 5173 }
-          });
-          EOF
-        fi
+          printf '%s' 'import { defineConfig } from "vite";\
+import react from "@vitejs/plugin-react";\
+export default defineConfig({ plugins:[react()], server:{ host:true, port:5173 } });' > /app/vite.config.js;
+        fi;
 
-        echo "==> npm install";
+        echo '==> npm install';
         npm install --no-audit --no-fund;
 
-        echo "==> npm run build";
+        echo '==> npm run build';
         npm run build;
 
-        echo "==> start preview";
+        echo '==> start preview';
         npm run preview -- --host 0.0.0.0 --port 5173
-      '
+      "
     depends_on:
       - api
     ports:
