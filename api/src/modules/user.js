@@ -2,12 +2,7 @@
 import express from "express";
 import { pool } from "../db/index.js";
 import { requireAuthUserId, resolveUserParam } from "../middleware/resolveMe.js";
-import { encrypt /* , decrypt */ } from "../lib/crypto.js";
-
-function asInt(v, fallback = null) {
-  const n = Number.parseInt(String(v), 10);
-  return Number.isFinite(n) ? n : fallback;
-}
+import { encrypt } from "../lib/crypto.js";
 
 function parseHostPortFromInput(inputHost, inputPort) {
   const rawHost = (inputHost ?? "").toString().trim();
@@ -52,6 +47,7 @@ export async function getXtreamLink(req, res) {
       hasCredentials: Boolean(row.username_enc && row.password_enc),
     });
   } catch (e) {
+    console.error("getXtreamLink error:", e);
     return res.status(e.status || 500).json({ error: e.message || "Error" });
   }
 }
@@ -77,7 +73,7 @@ export async function upsertXtreamLink(req, res) {
     const { host: normalizedHost, port: normalizedPort } = parseHostPortFromInput(host, port);
 
     const key = process.env.API_ENCRYPTION_KEY;
-    if (!key || key.length !== 64) {
+    if (!key || key.length !== 64 || !/^[0-9a-fA-F]+$/.test(key)) {
       return res.status(500).json({
         error: "Invalid API_ENCRYPTION_KEY (must be 64 hex chars)",
       });
@@ -100,6 +96,33 @@ export async function upsertXtreamLink(req, res) {
 
     return res.json({ ok: true });
   } catch (e) {
+    // 🔎 Mappage des erreurs PG les plus probables
+    if (e?.code) {
+      switch (e.code) {
+        case "42P01": // table missing
+          console.error("DB schema missing (xtream_links/users). Run the migration SQL below.");
+          return res.status(500).json({
+            error:
+              "Database schema missing (xtream_links/users). Apply migration SQL then retry.",
+          });
+        case "42703": // column missing
+          console.error("DB column missing. Check migration.");
+          return res.status(500).json({ error: "Database columns missing. Apply migration." });
+        case "23503": // FK violation
+          return res.status(400).json({
+            error: "User not found to link (FK). Ensure user exists in 'users' table.",
+          });
+        case "22P02": // invalid_text_representation (uuid, int, etc.)
+          return res.status(400).json({ error: "Invalid value (uuid/port). Check inputs." });
+        case "23505": // unique violation (PK on user_id)
+          // On ne devrait pas tomber ici car ON CONFLICT gère, mais au cas où…
+          return res.status(409).json({ error: "Link already exists." });
+        default:
+          console.error("PG error:", e);
+          return res.status(500).json({ error: "Database error." });
+      }
+    }
+    console.error("upsertXtreamLink error:", e);
     return res.status(e.status || 500).json({ error: e.message || "Error" });
   }
 }
@@ -107,11 +130,9 @@ export async function upsertXtreamLink(req, res) {
 // Router (export default)
 const userRouter = express.Router();
 userRouter.param("id", resolveUserParam("id"));
-
 userRouter.get("/user/:id/xtream/link", (req, res) => getXtreamLink(req, res));
 userRouter.post("/user/:id/xtream/link", (req, res) => upsertXtreamLink(req, res));
-
-// Alias compat front
+// Alias compat
 userRouter.get("/user/xtream/link", (req, res) => getXtreamLink(req, res));
 userRouter.post("/user/link-xtream", (req, res) => upsertXtreamLink(req, res));
 
