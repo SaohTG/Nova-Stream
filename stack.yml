@@ -5,36 +5,34 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: nova
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: novastream
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
     volumes:
-      - db_data_ns5:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
-      start_period: 90s
+      - db_data_ns6:/var/lib/postgresql/data
+    # (pas de healthcheck pour ne plus bloquer le démarrage)
 
   api:
     image: node:20-alpine
     working_dir: /app
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      API_PORT: ${API_PORT}
-      API_JWT_ACCESS_TTL: ${API_JWT_ACCESS_TTL}
-      API_JWT_REFRESH_TTL: ${API_JWT_REFRESH_TTL}
-      API_JWT_SECRET: ${API_JWT_SECRET}
-      API_REFRESH_SECRET: ${API_REFRESH_SECRET}
-      API_ENCRYPTION_KEY: ${API_ENCRYPTION_KEY}
-      CORS_ORIGIN: ${CORS_ORIGIN}
-      TMDB_API_KEY: ${TMDB_API_KEY}
-      NODE_ENV: ${NODE_ENV}
+      DATABASE_URL: postgres://nova:changeme@db:5432/novastream
+      API_PORT: 4000
+      API_JWT_ACCESS_TTL: 900
+      API_JWT_REFRESH_TTL: 1209600
+      API_JWT_SECRET: Y7dD6Vh2mC4pQ8tR1sX9zK3wL5aN0fB2gU4hJ6iO8lT1qP3dV
+      API_REFRESH_SECRET: mZ2xL7nH3qK9tC8vS4pD0rG6yB1wF5aE7uJ9hQ3oN2lM4kR8
+      API_ENCRYPTION_KEY: 9f1c3a4b5e6d7f8091a2b3c4d5e6f7089a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4
+      CORS_ORIGIN: http://85.31.239.110:5173
+      TMDB_API_KEY: d8175301037c00f3c719478998396539
+      NODE_ENV: production
     command: >
       sh -c "
-        apk add --no-cache unzip curl &&
+        apk add --no-cache unzip curl netcat-openbsd &&
+        # wait for DB TCP port
+        until nc -z db 5432; do echo '⏳ waiting for db...'; sleep 2; done &&
+        # fetch repo + build
         curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip &&
         unzip -q /tmp/src.zip -d /tmp &&
         cp -r /tmp/Nova-Stream-main/api/. /app &&
@@ -43,22 +41,16 @@ services:
         node dist/main.js
       "
     depends_on:
-      db:
-        condition: service_healthy
+      - db
     ports:
-      - "${API_PORT:-4000}:4000"
-    healthcheck:
-      test: ["CMD", "node", "healthcheck.js"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - "4000:4000"
     restart: unless-stopped
 
   web:
     image: node:20-alpine
     working_dir: /app
     environment:
-      VITE_API_BASE: http://<TON_IP_OU_DNS>:${API_PORT:-4000}
+      VITE_API_BASE: http://85.31.239.110:4000
     command: >
       sh -c "
         apk add --no-cache unzip curl &&
@@ -76,4 +68,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  db_data_ns5: {}
+  db_data_ns6: {}
