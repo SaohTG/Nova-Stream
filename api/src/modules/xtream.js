@@ -1,4 +1,4 @@
-// api/src/modules/xtream.js (ESM)
+// api/src/modules/xtream.js (ESM) — renvoie un tableau en top-level
 import express from "express";
 import { pool } from "../db/index.js";
 import { requireAuthUserId } from "../middleware/resolveMe.js";
@@ -69,7 +69,6 @@ async function httpGetJson(url, timeoutMs = 12000) {
 
 /**
  * POST /xtream/test
- * { host, port?, username, password }
  */
 router.post("/xtream/test", async (req, res) => {
   try {
@@ -105,8 +104,9 @@ router.post("/xtream/test", async (req, res) => {
 
 /**
  * POST /xtream/movies
- * Body (optionnel): { category_id?: string|number, search?: string, page?: number, limit?: number }
- * → Retourne les VOD (films) du compte Xtream lié (images = depuis Xtream).
+ * Body (optionnel): { category_id?, search?, page?, limit? }
+ * → Retourne **un tableau** de films (top-level) pour matcher le front (.slice()).
+ *   Le total est envoyé dans le header `X-Total-Count`.
  */
 router.post("/xtream/movies", async (req, res) => {
   try {
@@ -118,25 +118,26 @@ router.post("/xtream/movies", async (req, res) => {
       username
     )}&password=${encodeURIComponent(password)}&action=get_vod_streams${qsCat}`;
 
-    const list = await httpGetJson(url);
+    const listRaw = await httpGetJson(url);
 
-    // Filtrage (search sur le nom)
-    let items = Array.isArray(list) ? list : [];
+    // Certains Xtream renvoient un objet {id: item, ...} au lieu d'un array
+    let list = Array.isArray(listRaw) ? listRaw : Object.values(listRaw || {});
+
+    // Filtre texte
     if (search && String(search).trim()) {
       const q = String(search).trim().toLowerCase();
-      items = items.filter((it) => String(it?.name || "").toLowerCase().includes(q));
+      list = list.filter((it) => String(it?.name || "").toLowerCase().includes(q));
     }
 
-    // Pagination
+    // Pagination (mais on renvoie quand même un array top-level)
     const p = Math.max(1, parseInt(page, 10) || 1);
     const l = Math.max(1, Math.min(200, parseInt(limit, 10) || 60));
     const start = (p - 1) * l;
-    const slice = items.slice(start, start + l);
+    const slice = list.slice(start, start + l);
 
-    // Mapping de sortie : garder champs utiles & images Xtream
-    const result = slice.map((it) => {
+    // Mapping: garder images Xtream + URL de lecture
+    const items = slice.map((it) => {
       const poster = it?.stream_icon || it?.movie_image || null;
-      // URL de lecture VOD : /movie/{u}/{p}/{stream_id}.{ext}
       const ext = it?.container_extension || "mp4";
       const play_url = `${base}/movie/${encodeURIComponent(username)}/${encodeURIComponent(
         password
@@ -153,13 +154,8 @@ router.post("/xtream/movies", async (req, res) => {
       };
     });
 
-    return res.json({
-      ok: true,
-      total: items.length,
-      page: p,
-      limit: l,
-      items: result,
-    });
+    res.set("X-Total-Count", String(list.length));
+    return res.json(items); // 👈 top-level array
   } catch (e) {
     return res.status(e.status || 500).json({ ok: false, error: e.message || "Failed to fetch movies" });
   }
