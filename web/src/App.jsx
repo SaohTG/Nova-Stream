@@ -1,30 +1,27 @@
-import React, { useEffect, useState } from 'react'
-import api from './api'
-import Login from './pages/Login'
-import WizardXtream from './pages/WizardXtream'
-import Home from './pages/Home'
+// web/src/App.jsx
+import { Routes, Route, Navigate } from "react-router-dom";
+import NavBar from "./components/NavBar.jsx";
+import Home from "./pages/Home.jsx";
+import Movies from "./pages/Movies.jsx";
+import Series from "./pages/Series.jsx";
+import Live from "./pages/Live.jsx";
+import OnboardingXtream from "./pages/OnboardingXtream.jsx";
 
-export default function App(){
-  const [authed, setAuthed] = useState(false)
-  const [linked, setLinked] = useState(false)
-  const [userId, setUserId] = useState(null)
-
-  async function tryRefresh(){
-    try{ await api.post('/auth/refresh'); setAuthed(true); }catch{}
-  }
-  useEffect(()=>{ tryRefresh() }, [])
-
-  useEffect(()=>{
-    if(authed){
-      // In a real app, decode access token or fetch /user/me to get user id
-      setUserId('me') // MVP placeholder
-      // probe if linked
-      api.get('/user/xtream-credentials', { params: { user_id: 'me' }})
-        .then(()=>setLinked(true)).catch(()=>setLinked(false))
-    }
-  }, [authed])
-
-  if(!authed) return <Login onLogged={()=>setAuthed(true)}/>
-  if(!linked) return <WizardXtream userId={'me'} onLinked={()=>setLinked(true)}/>
-  return <Home userId={'me'}/>
+export default function App() {
+  return (
+    <div className="min-h-screen bg-black text-white">
+      <NavBar />
+      <main className="px-4 pb-16 pt-6">
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/movies" element={<Movies />} />
+          <Route path="/series" element={<Series />} />
+          <Route path="/live" element={<Live />} />
+          <Route path="/onboarding" element={<OnboardingXtream />} />
+          {/* fallback */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </main>
+    </div>
+  );
 }
