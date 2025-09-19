@@ -7,40 +7,28 @@ export default function XtreamLinkForm() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
 
-  const [testing, setTesting] = useState(false);
   const [linking, setLinking] = useState(false);
-  const [testResult, setTestResult] = useState(null);
   const [error, setError] = useState(null);
+  const [okMsg, setOkMsg] = useState(null);
 
-  const API_BASE = import.meta.env.VITE_API_BASE || "http://85.31.239.110:4000";
+  // Utilise /api si défini, sinon racine (les deux fonctionnent côté API)
+  const API_BASE = (import.meta.env.VITE_API_BASE || "http://85.31.239.110:4000").replace(/\/+$/, "");
 
-  async function onTest(e) {
-    e?.preventDefault?.();
-    setTesting(true);
-    setError(null);
-    setTestResult(null);
+  // Si l’utilisateur colle une URL complète (http(s)://host:port), on récupère le port auto si vide
+  function onHostBlur() {
     try {
-      const res = await fetch(`${API_BASE}/xtream/test`, {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          host: host.trim(),
-          port: port ? Number(port) : undefined,
-          username: username.trim(),
-          password,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data?.ok === false) {
-        setTestResult({ ok: false, message: data?.error || `HTTP ${res.status}` });
-      } else {
-        setTestResult({ ok: true, message: "Connexion Xtream OK" });
+      const h = host.trim();
+      if (!h) return;
+      if (/^https?:\/\//i.test(h)) {
+        const u = new URL(h);
+        if (!port && u.port) setPort(u.port);
+        // normalise minimalement l'affichage (optionnel)
+        if (u.hostname && (u.protocol === "http:" || u.protocol === "https:")) {
+          setHost(u.toString().replace(/\/+$/, ""));
+        }
       }
-    } catch (err) {
-      setTestResult({ ok: false, message: err?.message || "Erreur réseau" });
-    } finally {
-      setTesting(false);
+    } catch {
+      /* ignore parsing errors, API gèrera */
     }
   }
 
@@ -48,23 +36,29 @@ export default function XtreamLinkForm() {
     e?.preventDefault?.();
     setLinking(true);
     setError(null);
+    setOkMsg(null);
+
     try {
       const res = await fetch(`${API_BASE}/user/link-xtream`, {
         method: "POST",
-        credentials: "include", // 🔥 envoie les cookies JWT
+        credentials: "include", // 🔥 requiert que l'API réponde avec CORS credentials
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           host: host.trim(),
-          port: port ? Number(port) : undefined,
+          port: port ? Number(port) : undefined, // optionnel si dans l’URL
           username: username.trim(),
           password,
         }),
       });
+
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
+        // remonte le message API quand dispo (ex: Missing fields / Invalid API_ENCRYPTION_KEY / Unauthorized)
         throw new Error(data?.error || `HTTP ${res.status}`);
       }
-      // Succès → redirige (ou route vers l’accueil / dashboard)
+
+      setOkMsg("Compte Xtream lié avec succès.");
+      // Redirige (adapter la route si besoin)
       window.location.href = "/";
     } catch (err) {
       setError(err?.message || "Erreur lors de la liaison");
@@ -73,12 +67,16 @@ export default function XtreamLinkForm() {
     }
   }
 
-  const canLink = host.trim() && username.trim() && password; // ✅ plus besoin de testOk
+  const canLink = Boolean(host.trim() && username.trim() && password);
+
   const hint =
     "Exemples: host = http://monserveur.tld:8080  (ou)  host = monserveur.tld + port = 8080";
 
   return (
-    <form className="mx-auto max-w-lg rounded-2xl bg-zinc-900/60 p-6 shadow-lg ring-1 ring-white/10">
+    <form
+      onSubmit={onLink}
+      className="mx-auto max-w-lg rounded-2xl bg-zinc-900/60 p-6 shadow-lg ring-1 ring-white/10"
+    >
       <h2 className="mb-4 text-xl font-semibold text-white">Lier votre compte Xtream</h2>
       <p className="mb-6 text-sm text-zinc-300">{hint}</p>
 
@@ -89,6 +87,7 @@ export default function XtreamLinkForm() {
           placeholder="ex: http://monserveur.tld:8080 ou monserveur.tld"
           value={host}
           onChange={(e) => setHost(e.target.value)}
+          onBlur={onHostBlur}
           required
         />
       </div>
@@ -126,36 +125,21 @@ export default function XtreamLinkForm() {
         />
       </div>
 
-      {testResult && (
-        <div
-          className={`mb-4 rounded-lg px-3 py-2 text-sm ${
-            testResult.ok ? "bg-emerald-900/40 text-emerald-200" : "bg-rose-900/40 text-rose-200"
-          }`}
-        >
-          {testResult.message}
+      {okMsg && (
+        <div className="mb-4 rounded-lg bg-emerald-900/40 px-3 py-2 text-sm text-emerald-200" aria-live="polite">
+          {okMsg}
         </div>
       )}
 
       {error && (
-        <div className="mb-4 rounded-lg bg-rose-900/40 px-3 py-2 text-sm text-rose-200">
+        <div className="mb-4 rounded-lg bg-rose-900/40 px-3 py-2 text-sm text-rose-200" aria-live="assertive">
           {error}
         </div>
       )}
 
       <div className="flex items-center gap-3">
         <button
-          type="button"
-          onClick={onTest}
-          disabled={testing}
-          className="rounded-lg border border-zinc-600 bg-zinc-800 px-4 py-2 text-sm text-zinc-200 transition hover:bg-zinc-700 disabled:opacity-60"
-          title="Optionnel"
-        >
-          {testing ? "Test en cours…" : "Tester (optionnel)"}
-        </button>
-
-        <button
           type="submit"
-          onClick={onLink}
           disabled={!canLink || linking}
           className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-60"
         >
