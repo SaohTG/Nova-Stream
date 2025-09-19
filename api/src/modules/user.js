@@ -1,140 +1,98 @@
 // api/src/modules/user.js (ESM)
 import express from "express";
 import { pool } from "../db/index.js";
-import { requireAuthUserId, resolveUserParam } from "../middleware/resolveMe.js";
-import { encrypt /* , decrypt */ } from "../lib/crypto.js";
+import { encrypt } from "../lib/crypto.js";
+import { requireAuthUserId } from "../middleware/resolveMe.js";
 
-function parseHostPortFromInput(inputHost, inputPort) {
-  const rawHost = (inputHost ?? "").toString().trim();
-  const rawPort = inputPort ?? null;
+const router = express.Router();
 
-  if (!rawHost) throw Object.assign(new Error("Missing host"), { status: 400 });
-
-  // URL complète (http/https)
-  if (/^https?:\/\//i.test(rawHost)) {
-    let u;
-    try {
-      u = new URL(rawHost);
-    } catch {
-      throw Object.assign(new Error("Invalid host URL"), { status: 400 });
-    }
-    if (rawPort && !u.port) u.port = String(parseInt(rawPort, 10));
-    const port = u.port ? parseInt(u.port, 10) : (u.protocol === "https:" ? 443 : 80);
-    if (!Number.isFinite(port) || port <= 0) {
-      throw Object.assign(new Error("Invalid port"), { status: 400 });
-    }
-    return { host: u.hostname, port };
-  }
-
-  // Hostname/IP simple
-  const p = rawPort ? parseInt(rawPort, 10) : 80;
-  if (!Number.isFinite(p) || p <= 0) {
-    throw Object.assign(new Error("Invalid port"), { status: 400 });
-  }
-  return { host: rawHost, port: p };
+// Création idempotente de la table xtream_links
+async function ensureXtreamTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS xtream_links (
+      user_id UUID PRIMARY KEY,
+      host TEXT NOT NULL,
+      port INTEGER,
+      username_enc TEXT NOT NULL,
+      password_enc TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS idx_xtream_links_user ON xtream_links(user_id);
+  `);
 }
 
-export async function getXtreamLink(req, res) {
+// GET /user/has-xtream → { ok:true, linked:boolean }
+router.get("/user/has-xtream", async (req, res) => {
   try {
     const userId = requireAuthUserId(req);
+    await ensureXtreamTable();
     const { rows } = await pool.query(
-      "SELECT host, port, username_enc, password_enc FROM xtream_links WHERE user_id = $1",
+      "SELECT 1 FROM xtream_links WHERE user_id=$1 LIMIT 1",
       [userId]
     );
-    if (!rows.length) return res.json(null);
-    const row = rows[0];
-    return res.json({
-      host: row.host,
-      port: row.port,
-      hasCredentials: Boolean(row.username_enc && row.password_enc),
-    });
+    res.json({ ok: true, linked: rows.length > 0 });
   } catch (e) {
-    return res.status(e.status || 500).json({ error: e.message || "Error" });
+    res.status(500).json({ ok: false, error: e.message || "Server error" });
   }
-}
+});
 
-export async function upsertXtreamLink(req, res) {
+// (optionnel pour debug UI) GET /user/xtream-credentials?mine=1 → renvoie seulement host/port (jamais les secrets)
+router.get("/user/xtream-credentials", async (req, res) => {
   try {
     const userId = requireAuthUserId(req);
+    await ensureXtreamTable();
+    const { rows } = await pool.query(
+      "SELECT host, port FROM xtream_links WHERE user_id=$1",
+      [userId]
+    );
+    if (!rows.length) return res.status(404).json({ ok: false, error: "No link" });
+    res.json({ ok: true, host: rows[0].host, port: rows[0].port ?? null });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message || "Server error" });
+  }
+});
 
-    const body = req.body || {};
-    const host = body.host ?? body.xtreamHost ?? body.server ?? body.hostname;
-    const port = body.port ?? body.xtreamPort;
-    const username = body.username ?? body.user ?? body.login;
-    const password = body.password ?? body.pass ?? body.pwd;
-
+// POST /user/link-xtream {host, port?, username, password}
+router.post("/user/link-xtream", async (req, res) => {
+  try {
+    const userId = requireAuthUserId(req);
+    const { host, port, username, password } = req.body || {};
     if (!host || !username || !password) {
-      return res.status(400).json({
-        error: "Missing fields",
-        required: ["host", "(port optional)", "username", "password"],
-        received: Object.keys(body),
-      });
+      return res.status(400).json({ ok: false, error: "Missing host/username/password" });
     }
 
-    const { host: normalizedHost, port: normalizedPort } = parseHostPortFromInput(host, port);
+    const p = port ? parseInt(String(port), 10) : null;
+    if (port && (!Number.isFinite(p) || p <= 0)) {
+      return res.status(400).json({ ok: false, error: "Invalid port" });
+    }
 
     const key = process.env.API_ENCRYPTION_KEY;
     if (!key || key.length !== 64 || !/^[0-9a-fA-F]+$/.test(key)) {
-      return res.status(500).json({
-        error: "Invalid API_ENCRYPTION_KEY (must be 64 hex chars)",
-      });
+      return res.status(500).json({ ok: false, error: "Invalid API_ENCRYPTION_KEY (64 hex required)" });
     }
 
-    const usernameEnc = await encrypt(String(username), key);
-    const passwordEnc = await encrypt(String(password), key);
+    await ensureXtreamTable();
+
+    const username_enc = await encrypt(String(username), key);
+    const password_enc = await encrypt(String(password), key);
 
     await pool.query(
       `INSERT INTO xtream_links (user_id, host, port, username_enc, password_enc)
        VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (user_id)
-       DO UPDATE SET host=EXCLUDED.host,
-                     port=EXCLUDED.port,
-                     username_enc=EXCLUDED.username_enc,
-                     password_enc=EXCLUDED.password_enc,
-                     updated_at=now()`,
-      [userId, normalizedHost, normalizedPort, usernameEnc, passwordEnc]
+       ON CONFLICT (user_id) DO UPDATE
+       SET host=EXCLUDED.host,
+           port=EXCLUDED.port,
+           username_enc=EXCLUDED.username_enc,
+           password_enc=EXCLUDED.password_enc,
+           updated_at=now()`,
+      [userId, String(host).trim(), p, username_enc, password_enc]
     );
 
-    return res.json({ ok: true });
+    res.json({ ok: true });
   } catch (e) {
-    if (e?.code) {
-      switch (e.code) {
-        case "42P01":
-          return res.status(500).json({
-            error: "Database schema missing (xtream_links/users). Apply migration SQL then retry.",
-          });
-        case "42703":
-          return res.status(500).json({ error: "Database columns missing. Apply migration." });
-        case "23503":
-          return res.status(400).json({
-            error: "User not found to link (FK). Ensure user exists in 'users' table.",
-          });
-        case "22P02":
-          return res.status(400).json({ error: "Invalid value (uuid/port). Check inputs." });
-        case "23505":
-          return res.status(409).json({ error: "Link already exists." });
-        default:
-          return res.status(500).json({ error: "Database error." });
-      }
-    }
-    return res.status(e.status || 500).json({ error: e.message || "Error" });
+    res.status(500).json({ ok: false, error: e.message || "Link failed" });
   }
-}
+});
 
-// Router (export default)
-const userRouter = express.Router();
-userRouter.param("id", resolveUserParam("id"));
-
-// Endpoints "officiels"
-userRouter.get("/user/:id/xtream/link", (req, res) => getXtreamLink(req, res));
-userRouter.post("/user/:id/xtream/link", (req, res) => upsertXtreamLink(req, res));
-
-// Alias compat front existants
-userRouter.get("/user/xtream/link", (req, res) => getXtreamLink(req, res));
-userRouter.post("/user/link-xtream", (req, res) => upsertXtreamLink(req, res));
-
-// ✅ Nouvel alias pour stopper le chargement infini du front
-// GET /user/xtream-credentials?user_id=me
-userRouter.get("/user/xtream-credentials", (req, res) => getXtreamLink(req, res));
-
-export default userRouter;
+export default router;
