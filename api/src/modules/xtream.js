@@ -48,7 +48,7 @@ async function httpGetJson(url, timeoutMs = DEFAULT_TIMEOUT) {
   try {
     const r = await fetch(url, {
       signal: ac.signal,
-      headers: { "Accept": "application/json, text/plain;q=0.9, */*;q=0.8" },
+      headers: { Accept: "application/json, text/plain;q=0.9, */*;q=0.8" },
     });
     if (!r.ok) {
       const text = await r.text().catch(() => "");
@@ -68,7 +68,6 @@ async function httpGetJson(url, timeoutMs = DEFAULT_TIMEOUT) {
       throw err;
     }
   } catch (e) {
-    // AbortError → 504
     if (e?.name === "AbortError") {
       const err = new Error("Xtream a mis trop de temps à répondre");
       err.status = 504;
@@ -91,9 +90,6 @@ function pickPoster(obj) {
   );
 }
 
-/**
- * Récupère les identifiants Xtream liés pour l'utilisateur courant
- */
 async function getUserXtreamCreds(req) {
   const userId = requireAuthUserId(req);
   await ensureXtreamTable();
@@ -155,6 +151,38 @@ router.post("/xtream/test", async (req, res) => {
   }
 });
 
+/** Catégories (vod | series | live) */
+router.get("/xtream/categories/:kind", async (req, res) => {
+  try {
+    const { base, username, password } = await getUserXtreamCreds(req);
+    const kind = String(req.params.kind || "").toLowerCase();
+    const actionByKind = {
+      vod: "get_vod_categories",
+      series: "get_series_categories",
+      live: "get_live_categories",
+    };
+    const action = actionByKind[kind];
+    if (!action) return res.status(400).json({ ok: false, error: "kind doit être vod|series|live" });
+
+    const url = `${base}/player_api.php?username=${encodeURIComponent(
+      username
+    )}&password=${encodeURIComponent(password)}&action=${action}`;
+
+    const listRaw = await httpGetJson(url, DEFAULT_TIMEOUT);
+    let list = Array.isArray(listRaw) ? listRaw : Object.values(listRaw || {});
+    // normaliser
+    const cats = list.map((c) => ({
+      id: String(c?.category_id ?? c?.id ?? ""),
+      name: c?.category_name || c?.name || "Sans nom",
+      parent_id: c?.parent_id ?? null,
+    })).filter(c => c.id);
+
+    return res.json(cats);
+  } catch (e) {
+    return res.status(e.status || 500).json({ ok: false, error: e.message || "Failed to fetch categories" });
+  }
+});
+
 /** Films (VOD) */
 router.post("/xtream/movies", async (req, res) => {
   try {
@@ -166,7 +194,6 @@ router.post("/xtream/movies", async (req, res) => {
       username
     )}&password=${encodeURIComponent(password)}&action=get_vod_streams${qsCat}`;
 
-    // ⏱️ Timeout étendu pour les films
     const listRaw = await httpGetJson(url, MOVIES_TIMEOUT);
     let list = Array.isArray(listRaw) ? listRaw : Object.values(listRaw || {});
 
@@ -183,6 +210,7 @@ router.post("/xtream/movies", async (req, res) => {
     const items = slice.map((it) => ({
       stream_id: it?.stream_id,
       name: it?.name,
+      category_id: it?.category_id ?? null,
       poster: pickPoster(it),
       rating: it?.rating ?? it?.rating_5based ?? null,
       added: it?.added || it?.releaseDate || it?.last_modified || null,
