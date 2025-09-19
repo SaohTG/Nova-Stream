@@ -1,23 +1,16 @@
-// api/src/middleware/resolveMe.js  (ESM)
+// api/src/middleware/resolveMe.js (ESM)
 import jwt from "jsonwebtoken";
 
 const UUID_RE =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
 
-/**
- * Retourne l'UUID utilisateur.
- * 1) Prend req.auth.userId / req.user.id / req.jwt.sub si déjà posés
- * 2) Sinon, décode le cookie access_token (JWT signé avec API_JWT_SECRET)
- */
 export function requireAuthUserId(req) {
-  // 1) si un middleware en amont l'a déjà résolu
   let id =
     req?.auth?.userId ||
     req?.user?.id ||
     req?.jwt?.sub ||
     req?.jwt?.uid;
 
-  // 2) sinon on lit le cookie access_token
   if (!id) {
     const token = req?.cookies?.access_token;
     if (token) {
@@ -30,8 +23,8 @@ export function requireAuthUserId(req) {
         }
         const payload = jwt.verify(token, secret);
         id = payload?.sub;
-      } catch (_e) {
-        // jeton invalide/expiré -> on laissera l'erreur Unauthorized plus bas
+      } catch {
+        /* ignore -> on tombera sur Unauthorized */
       }
     }
   }
@@ -49,7 +42,6 @@ export function requireAuthUserId(req) {
   return String(id);
 }
 
-/** Optionnel : accepte /user/me/... et remplace "me" par l'UUID du JWT */
 export function resolveUserParam(paramName = "id") {
   return (req, res, next, val) => {
     try {
