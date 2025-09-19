@@ -1,9 +1,8 @@
 // web/src/pages/Home.jsx
 import { useEffect, useState } from "react";
 import { postJson } from "../lib/api";
-import Layout from "../components/Layout";
-import Hero from "../components/Hero";
-import Row from "../components/Row";
+import Hero from "../components/Hero.jsx";
+import Row from "../components/Row.jsx";
 
 export default function Home() {
   const [movies, setMovies] = useState(null);
@@ -17,9 +16,9 @@ export default function Home() {
       try {
         setErr(null);
         const [m, s, l] = await Promise.all([
-          postJson("/xtream/movies", { page: 1, limit: 24 }),
-          postJson("/xtream/series", { page: 1, limit: 24 }),
-          postJson("/xtream/live", { page: 1, limit: 24 }),
+          postJson("/xtream/movies", { limit: 24 }),
+          postJson("/xtream/series", { limit: 24 }),
+          postJson("/xtream/live",   { limit: 24 }),
         ]);
         if (!alive) return;
         setMovies(Array.isArray(m) ? m : []);
@@ -28,9 +27,7 @@ export default function Home() {
       } catch (e) {
         if (!alive) return;
         setErr(e?.message || "Erreur de chargement");
-        setMovies([]);
-        setSeries([]);
-        setLive([]);
+        setMovies([]); setSeries([]); setLive([]);
       }
     })();
     return () => { alive = false; };
@@ -39,7 +36,7 @@ export default function Home() {
   const heroItem = movies?.[0] || series?.[0] || live?.[0] || null;
 
   return (
-    <Layout>
+    <>
       {heroItem && <Hero item={heroItem} />}
 
       {err && (
@@ -52,11 +49,11 @@ export default function Home() {
         <div className="text-zinc-400">Chargement…</div>
       ) : (
         <>
-          {!!(movies?.length) && <Row title="Tendances Films" items={movies} kind="vod" />}
-          {!!(series?.length) && <Row title="À la une Séries" items={series} kind="series" />}
-          {!!(live?.length) && <Row title="Chaînes TV" items={live} kind="live" />}
+          {!!movies?.length && <Row title="Tendances Films" items={movies} kind="vod" />}
+          {!!series?.length && <Row title="À la une Séries" items={series} kind="series" />}
+          {!!live?.length && <Row title="Chaînes TV" items={live} kind="live" />}
         </>
       )}
-    </Layout>
+    </>
   );
 }
