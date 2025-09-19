@@ -1,22 +1,29 @@
-import { Router } from "express";
-import { getXtreamLink, upsertXtreamLink } from "../modules/user"; // ou xtream.ts
+// api/src/routes/user.ts
+import express, { Request, Response } from "express";
 import { resolveUserParam } from "../middleware/resolveMe";
-import { authRequired } from "../middleware/auth"; // ton middleware JWT
+import { authRequired } from "../middleware/auth"; // adapte si besoin
 
-const router = Router();
+// ❗ import ESM d'un module JS : garder l'extension .js
+import { getXtreamLink, upsertXtreamLink } from "../modules/user.js";
 
-// facultatif si tu gardes /user/:id/... ; sinon, tu peux aussi définir /user/me/...
+const router = express.Router();
+
+// Optionnel : accepter /user/me/...
 router.param("id", resolveUserParam("id"));
 
-// Protège tout par auth
-router.use(authRequired);
+// JWT obligatoire
+router.use(authRequired as any);
 
-// Routes Xtream
-router.get("/user/:id/xtream/link", getXtreamLink);
-router.post("/user/:id/xtream/link", upsertXtreamLink);
+// Routes Xtream (handlers JS)
+router.get("/user/:id/xtream/link", (req: Request, res: Response) =>
+  getXtreamLink(req as any, res as any)
+);
+router.post("/user/:id/xtream/link", (req: Request, res: Response) =>
+  upsertXtreamLink(req as any, res as any)
+);
 
-// ou plus simple (et conseillé) : expose directement /user/me/xtream/link
-// router.get("/user/me/xtream/link", getXtreamLink);
-// router.post("/user/me/xtream/link", upsertXtreamLink);
+// Alternative (encore plus simple côté front) :
+// router.get("/user/me/xtream/link", (req, res) => getXtreamLink(req as any, res as any));
+// router.post("/user/me/xtream/link", (req, res) => upsertXtreamLink(req as any, res as any));
 
 export default router;
