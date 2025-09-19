@@ -1,6 +1,14 @@
 // web/src/App.jsx
 import { Routes, Route, Navigate } from "react-router-dom";
+
+// Layout
 import NavBar from "./components/NavBar.jsx";
+
+// Guards
+import RequireAuth from "./components/RequireAuth.jsx";
+import RequireXtream from "./components/RequireXtream.jsx";
+
+// Pages
 import Home from "./pages/Home.jsx";
 import Movies from "./pages/Movies.jsx";
 import Series from "./pages/Series.jsx";
@@ -8,7 +16,6 @@ import Live from "./pages/Live.jsx";
 import OnboardingXtream from "./pages/OnboardingXtream.jsx";
 import Login from "./pages/Login.jsx";
 import Signup from "./pages/Signup.jsx";
-import RequireAuth from "./components/RequireAuth.jsx";
 
 export default function App() {
   return (
@@ -16,16 +23,18 @@ export default function App() {
       <NavBar />
       <main className="px-4 pb-16 pt-6">
         <Routes>
-          {/* Public */}
+          {/* --- Public routes --- */}
           <Route path="/login" element={<Login />} />
           <Route path="/signup" element={<Signup />} />
 
-          {/* Protégées */}
+          {/* --- Protected routes (auth + xtream linked) --- */}
           <Route
             path="/"
             element={
               <RequireAuth>
-                <Home />
+                <RequireXtream>
+                  <Home />
+                </RequireXtream>
               </RequireAuth>
             }
           />
@@ -33,7 +42,9 @@ export default function App() {
             path="/movies"
             element={
               <RequireAuth>
-                <Movies />
+                <RequireXtream>
+                  <Movies />
+                </RequireXtream>
               </RequireAuth>
             }
           />
@@ -41,7 +52,9 @@ export default function App() {
             path="/series"
             element={
               <RequireAuth>
-                <Series />
+                <RequireXtream>
+                  <Series />
+                </RequireXtream>
               </RequireAuth>
             }
           />
@@ -49,10 +62,14 @@ export default function App() {
             path="/live"
             element={
               <RequireAuth>
-                <Live />
+                <RequireXtream>
+                  <Live />
+                </RequireXtream>
               </RequireAuth>
             }
           />
+
+          {/* --- Onboarding Xtream (auth requis, mais pas RequireXtream sinon boucle) --- */}
           <Route
             path="/onboarding"
             element={
@@ -62,7 +79,7 @@ export default function App() {
             }
           />
 
-          {/* fallback */}
+          {/* --- Fallback --- */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>
