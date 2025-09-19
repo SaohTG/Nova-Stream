@@ -1,53 +1,54 @@
-import { Router } from 'express';
-import pool from '../db.js';
-import { decrypt, encrypt } from '../crypto.js';
+// api/src/modules/user.js
+import { pool } from "../db/index.js";             // adapte le chemin si besoin
+import { requireAuthUserId } from "../middleware/resolveMe.js";
+import { encrypt } from "../lib/crypto.js";        // ta fonction AES-GCM (adapte)
+import { getEnv } from "../lib/env.js";            // si tu as un helper env (adapte)
 
-const router = Router();
-
-// middleware to require auth via access token cookie (simple)
-router.use((req,res,next)=>{
-  const token = req.cookies['access_token'];
-  if(!token) return res.status(401).json({error:'unauthorized'});
-  // trust API gateway for MVP; client refreshes as needed
-  next();
-});
-
-router.get('/me', async (req,res,next)=>{
+/** GET /user/:id/xtream/link  (le :id peut être "me") */
+export async function getXtreamLink(req, res) {
   try {
-    // MVP: return basic OK; in prod decode access token
-    res.json({ ok:true });
-  } catch(e){ next(e); }
-});
-
-router.post('/link-xtream', async (req,res,next)=>{
-  try {
-    const { user_id, host, port, username, password } = req.body;
-    if(!user_id || !host || !username || !password) return res.status(400).json({error:'missing fields'});
-    const ue = encrypt(username);
-    const pe = encrypt(password);
-    await pool.query(
-      `INSERT INTO xtream_links (user_id,host,port,username_enc,password_enc)
-       VALUES ($1,$2,$3,$4,$5)
-       ON CONFLICT (user_id) DO UPDATE SET host=$2, port=$3, username_enc=$4, password_enc=$5, updated_at=now()`,
-       [user_id, host, port||null, ue, pe]
+    const userId = requireAuthUserId(req); // ✅ UUID depuis JWT
+    const { rows } = await pool.query(
+      "SELECT host, port, username_enc, password_enc FROM xtream_links WHERE user_id = $1",
+      [userId]
     );
-    res.json({ ok:true });
-  } catch(e){ next(e); }
-});
+    return res.json(rows[0] || null);
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message || "Error" });
+  }
+}
 
-router.get('/xtream-credentials', async (req,res,next)=>{
+/** POST /user/:id/xtream/link  (body: {host,port,username,password}) */
+export async function upsertXtreamLink(req, res) {
   try {
-    const user_id = req.query.user_id;
-    const r = await pool.query('SELECT host,port,username_enc,password_enc FROM xtream_links WHERE user_id=$1',[user_id]);
-    if(r.rowCount===0) return res.status(404).json({error:'not linked'});
-    const row = r.rows[0];
-    res.json({
-      host: row.host,
-      port: row.port,
-      username: decrypt(row.username_enc),
-      password: decrypt(row.password_enc)
-    });
-  } catch(e){ next(e); }
-});
+    const userId = requireAuthUserId(req); // ✅ ignore totalement req.params.id
+    const { host, port, username, password } = req.body || {};
 
-export default router;
+    if (!host || !port || !username || !password) {
+      return res.status(400).json({ error: "Missing fields" });
+    }
+
+    const key =
+      process.env.API_ENCRYPTION_KEY || (getEnv ? getEnv("API_ENCRYPTION_KEY") : null);
+    if (!key) return res.status(500).json({ error: "Missing encryption key" });
+
+    const usernameEnc = await encrypt(username, key);
+    const passwordEnc = await encrypt(password, key);
+
+    await pool.query(
+      `INSERT INTO xtream_links (user_id, host, port, username_enc, password_enc)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (user_id)
+       DO UPDATE SET host=EXCLUDED.host,
+                     port=EXCLUDED.port,
+                     username_enc=EXCLUDED.username_enc,
+                     password_enc=EXCLUDED.password_enc,
+                     updated_at=now()`,
+      [userId, host, port, usernameEnc, passwordEnc]
+    );
+
+    return res.json({ ok: true });
+  } catch (e) {
+    return res.status(e.status || 500).json({ error: e.message || "Error" });
+  }
+}
