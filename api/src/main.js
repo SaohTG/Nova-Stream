@@ -5,23 +5,20 @@ import cookieParser from "cookie-parser";
 
 const app = express();
 
-// Middlewares de base
+// Parsers
 app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // accepte x-www-form-urlencoded
 app.use(cookieParser());
 
+// CORS
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "http://85.31.239.110:5173";
-app.use(
-  cors({
-    origin: CORS_ORIGIN,
-    credentials: true,
-  })
-);
+app.use(cors({ origin: CORS_ORIGIN, credentials: true }));
 
 // Santé
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-// Chargement/ montage des routers
+// Monte les routers (sur / et /api)
 async function mountRouters() {
   // USER
   try {
@@ -41,7 +38,7 @@ async function mountRouters() {
     console.warn("auth router not found:", e?.message);
   }
 
-  // XTREAM (✅ ajoute /xtream/test)
+  // XTREAM
   try {
     const { default: xtreamRouter } = await import("./modules/xtream.js");
     app.use(xtreamRouter);
@@ -50,17 +47,13 @@ async function mountRouters() {
     console.warn("xtream router not found:", e?.message);
   }
 }
-
 await mountRouters();
 
-// 404 JSON
+// 404 + Error handler
 app.use((_req, res) => res.status(404).json({ error: "Not Found" }));
-
-// Error handler JSON
-app.use((err, _req, res, _next) => {
-  const status = err?.status || 500;
-  res.status(status).json({ error: err?.message || "Internal Error" });
-});
+app.use((err, _req, res, _next) =>
+  res.status(err?.status || 500).json({ error: err?.message || "Internal Error" })
+);
 
 const PORT = Number(process.env.API_PORT || 4000);
 app.listen(PORT, () => console.log(`API on :${PORT}`));
