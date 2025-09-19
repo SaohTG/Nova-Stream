@@ -1,87 +1,79 @@
 // web/src/pages/Movies.jsx
-import { useEffect, useState } from "react";
-import CategoryBar from "../components/CategoryBar.jsx";
+import { useEffect, useMemo, useState } from "react";
+import { getJson, postJson } from "../lib/api";
+import Row from "../components/Row.jsx";
 
-const API_BASE = (import.meta.env.VITE_API_BASE || "http://85.31.239.110:4000").replace(/\/+$/, "");
+function groupByCategory(items) {
+  const map = new Map();
+  for (const it of items || []) {
+    const id = it.category_id ?? it.category ?? "autres";
+    const name = it.category_name ?? it.category_label ?? it.category ?? "Autres";
+    const key = `${id}::${name}`;
+    if (!map.has(key)) map.set(key, { id, name, items: [] });
+    map.get(key).items.push(it);
+  }
+  return Array.from(map.values());
+}
 
 export default function Movies() {
-  const [cats, setCats] = useState([]);
-  const [catSel, setCatSel] = useState("all");
-  const [items, setItems] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [rows, setRows] = useState(null);
   const [err, setErr] = useState(null);
 
-  // Charger catégories
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch(`${API_BASE}/xtream/categories/vod`, { credentials: "include" });
-        const data = await r.json().catch(() => []);
-        if (alive) setCats(Array.isArray(data) ? data : []);
-      } catch {
-        if (alive) setCats([]);
+        setErr(null);
+
+        // 1) essaie l’endpoint catégories s’il existe
+        let categories = [];
+        try {
+          const c = await getJson("/xtream/movie-categories");
+          if (Array.isArray(c)) categories = c;
+        } catch { /* ignore */ }
+
+        // 2) récupère les films
+        const list = await postJson("/xtream/movies", { limit: 500 }); // assez large pour grouper
+        const items = Array.isArray(list) ? list : [];
+
+        let grouped;
+        if (categories.length) {
+          const byCat = new Map(categories.map(c => [String(c.category_id), { id: c.category_id, name: c.category_name, items: [] }]));
+          for (const it of items) {
+            const cid = String(it.category_id ?? "");
+            const bucket = byCat.get(cid) || byCat.get("0");
+            if (bucket) bucket.items.push(it);
+          }
+          grouped = Array.from(byCat.values()).filter(g => g.items.length);
+        } else {
+          grouped = groupByCategory(items);
+        }
+
+        if (!alive) return;
+        // limite le nb de rangées pour la perf
+        setRows(grouped.slice(0, 10));
+      } catch (e) {
+        if (!alive) return;
+        setErr(e?.message || "Erreur de chargement");
+        setRows([]);
       }
     })();
     return () => { alive = false; };
   }, []);
 
-  // Charger films en fonction de la catégorie
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        setLoading(true);
-        setErr(null);
-        const body = { page: 1, limit: 60 };
-        if (catSel !== "all") body.category_id = catSel;
-        const r = await fetch(`${API_BASE}/xtream/movies`, {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        const data = await r.json().catch(() => null);
-        if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
-        if (alive) setItems(Array.isArray(data) ? data : []);
-      } catch (e) {
-        if (alive) setErr(e?.message || "Erreur");
-      } finally {
-        if (alive) setLoading(false);
-      }
-    })();
-    return () => { alive = false; };
-  }, [catSel]);
-
   return (
-    <section className="mx-auto max-w-6xl">
-      <h1 className="mb-2 text-2xl font-semibold">Films</h1>
-      <CategoryBar categories={cats} selected={catSel} onSelect={setCatSel} />
-
-      {loading && <div className="text-zinc-400">Chargement…</div>}
-      {err && <div className="rounded-lg bg-rose-900/40 p-3 text-rose-200">{err}</div>}
-
-      {!loading && !err && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-6">
-          {items?.map((m) => (
-            <article key={m.stream_id} className="group rounded-xl bg-zinc-900/60 p-2 ring-1 ring-white/10" title={m.name}>
-              <div className="aspect-[2/3] overflow-hidden rounded-lg bg-zinc-800">
-                {m.poster ? (
-                  <img
-                    src={m.poster}
-                    alt={m.name}
-                    className="h-full w-full object-cover transition group-hover:scale-[1.03]"
-                    loading="lazy"
-                  />
-                ) : (
-                  <div className="flex h-full items-center justify-center text-zinc-500">pas d’affiche</div>
-                )}
-              </div>
-              <div className="mt-2 truncate text-sm">{m.name}</div>
-            </article>
-          ))}
-        </div>
+    <>
+      <h1 className="mb-4 text-2xl font-bold">Films</h1>
+      {err && <div className="mb-4 rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
+      {!rows ? (
+        <div className="text-zinc-400">Chargement…</div>
+      ) : rows.length === 0 ? (
+        <div className="text-zinc-400">Aucun film trouvé.</div>
+      ) : (
+        rows.map((g) => (
+          <Row key={`cat-${g.id}`} title={g.name} items={g.items} kind="vod" />
+        ))
       )}
-    </section>
+    </>
   );
 }
