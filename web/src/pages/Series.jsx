@@ -1,8 +1,12 @@
 // web/src/pages/Series.jsx
 import { useEffect, useState } from "react";
+import CategoryBar from "../components/CategoryBar.jsx";
+
 const API_BASE = (import.meta.env.VITE_API_BASE || "http://85.31.239.110:4000").replace(/\/+$/, "");
 
 export default function Series() {
+  const [cats, setCats] = useState([]);
+  const [catSel, setCatSel] = useState("all");
   const [items, setItems] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -11,16 +15,32 @@ export default function Series() {
     let alive = true;
     (async () => {
       try {
+        const r = await fetch(`${API_BASE}/xtream/categories/series`, { credentials: "include" });
+        const data = await r.json().catch(() => []);
+        if (alive) setCats(Array.isArray(data) ? data : []);
+      } catch {
+        if (alive) setCats([]);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
         setLoading(true);
         setErr(null);
-        const res = await fetch(`${API_BASE}/xtream/series`, {
+        const body = { page: 1, limit: 60 };
+        if (catSel !== "all") body.category_id = catSel;
+        const r = await fetch(`${API_BASE}/xtream/series`, {
           method: "POST",
           credentials: "include",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ page: 1, limit: 60 }),
+          body: JSON.stringify(body),
         });
-        const data = await res.json().catch(() => null);
-        if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+        const data = await r.json().catch(() => null);
+        if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`);
         if (alive) setItems(Array.isArray(data) ? data : []);
       } catch (e) {
         if (alive) setErr(e?.message || "Erreur");
@@ -28,14 +48,13 @@ export default function Series() {
         if (alive) setLoading(false);
       }
     })();
-    return () => {
-      alive = false;
-    };
-  }, []);
+    return () => { alive = false; };
+  }, [catSel]);
 
   return (
     <section className="mx-auto max-w-6xl">
-      <h1 className="mb-4 text-2xl font-semibold">Séries</h1>
+      <h1 className="mb-2 text-2xl font-semibold">Séries</h1>
+      <CategoryBar categories={cats} selected={catSel} onSelect={setCatSel} />
 
       {loading && <div className="text-zinc-400">Chargement…</div>}
       {err && <div className="rounded-lg bg-rose-900/40 p-3 text-rose-200">{err}</div>}
