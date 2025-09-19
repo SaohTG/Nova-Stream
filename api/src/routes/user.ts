@@ -1,13 +1,22 @@
 import { Router } from "express";
+import { getXtreamLink, upsertXtreamLink } from "../modules/user"; // ou xtream.ts
 import { resolveUserParam } from "../middleware/resolveMe";
+import { authRequired } from "../middleware/auth"; // ton middleware JWT
+
 const router = Router();
 
-// active le param-resolver pour :id et :userId
+// facultatif si tu gardes /user/:id/... ; sinon, tu peux aussi définir /user/me/...
 router.param("id", resolveUserParam("id"));
-router.param("userId", resolveUserParam("userId"));
 
-// ... tes routes ensuite, par ex:
-router.post("/user/:id/xtream/link", linkXtreamHandler);
-router.get("/user/:id", getUserHandler);
-// ...
+// Protège tout par auth
+router.use(authRequired);
+
+// Routes Xtream
+router.get("/user/:id/xtream/link", getXtreamLink);
+router.post("/user/:id/xtream/link", upsertXtreamLink);
+
+// ou plus simple (et conseillé) : expose directement /user/me/xtream/link
+// router.get("/user/me/xtream/link", getXtreamLink);
+// router.post("/user/me/xtream/link", upsertXtreamLink);
+
 export default router;
