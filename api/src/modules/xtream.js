@@ -6,6 +6,10 @@ import { requireAuthUserId } from "../middleware/resolveMe.js";
 
 const router = express.Router();
 
+/* -------------------- Timeouts configurables -------------------- */
+const DEFAULT_TIMEOUT = Number(process.env.XTREAM_TIMEOUT_MS || 10000);        // 10s
+const MOVIES_TIMEOUT  = Number(process.env.XTREAM_MOVIES_TIMEOUT_MS || 45000); // 45s
+
 /* ----------------------------- Helpers ----------------------------- */
 
 async function ensureXtreamTable() {
@@ -26,34 +30,26 @@ async function ensureXtreamTable() {
 function buildBaseUrl(host, port) {
   let h = String(host || "").trim();
   if (!h) throw new Error("Host requis");
+  if (!/^https?:\/\//i.test(h)) h = `http://${h}`;
 
-  // si host inclut déjà un schéma, le respecter
-  if (!/^https?:\/\//i.test(h)) {
-    h = `http://${h}`;
-  }
   let url;
-  try {
-    url = new URL(h);
-  } catch {
-    throw new Error("Host invalide");
-  }
+  try { url = new URL(h); } catch { throw new Error("Host invalide"); }
 
-  // si port fourni (et non déjà dans l'URL), l'appliquer
   const p = port ? parseInt(String(port), 10) : null;
-  if (p && Number.isFinite(p) && p > 0) {
-    url.port = String(p);
-  }
+  if (p && Number.isFinite(p) && p > 0) url.port = String(p);
 
-  // pas de trailing slash
   url.pathname = url.pathname.replace(/\/+$/, "");
   return url.toString().replace(/\/+$/, "");
 }
 
-async function httpGetJson(url) {
+async function httpGetJson(url, timeoutMs = DEFAULT_TIMEOUT) {
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 10000);
+  const t = setTimeout(() => ac.abort(), timeoutMs);
   try {
-    const r = await fetch(url, { signal: ac.signal });
+    const r = await fetch(url, {
+      signal: ac.signal,
+      headers: { "Accept": "application/json, text/plain;q=0.9, */*;q=0.8" },
+    });
     if (!r.ok) {
       const text = await r.text().catch(() => "");
       const err = new Error(`HTTP ${r.status}`);
@@ -61,15 +57,24 @@ async function httpGetJson(url) {
       err.body = text;
       throw err;
     }
-    // certaines API Xtream renvoient du texte JSON
     const txt = await r.text();
     try {
       return JSON.parse(txt);
     } catch {
-      // parfois renvoie "null" ou vide
       if (!txt || txt === "null") return null;
-      throw new Error("Réponse JSON invalide depuis Xtream");
+      const err = new Error("Réponse JSON invalide depuis Xtream");
+      err.status = 502;
+      err.body = txt.slice(0, 300);
+      throw err;
     }
+  } catch (e) {
+    // AbortError → 504
+    if (e?.name === "AbortError") {
+      const err = new Error("Xtream a mis trop de temps à répondre");
+      err.status = 504;
+      throw err;
+    }
+    throw e;
   } finally {
     clearTimeout(t);
   }
@@ -88,7 +93,6 @@ function pickPoster(obj) {
 
 /**
  * Récupère les identifiants Xtream liés pour l'utilisateur courant
- * → { base, host, port, username, password }
  */
 async function getUserXtreamCreds(req) {
   const userId = requireAuthUserId(req);
@@ -119,12 +123,7 @@ async function getUserXtreamCreds(req) {
 
 /* ------------------------------ Routes ----------------------------- */
 
-/**
- * POST /xtream/test
- * Body: { host, port?, username, password }
- * → { ok:true, status, base } ou { ok:false, error }
- * Note: public (pas besoin d'être authentifié) pour l'onboarding.
- */
+/** Test de compte Xtream (public pour onboarding) */
 router.post("/xtream/test", async (req, res) => {
   try {
     const { host, port, username, password } = req.body || {};
@@ -135,8 +134,7 @@ router.post("/xtream/test", async (req, res) => {
     const url = `${base}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(
       password
     )}`;
-
-    const data = await httpGetJson(url);
+    const data = await httpGetJson(url, DEFAULT_TIMEOUT);
     const status =
       data?.user_info?.status ||
       data?.user_info?.auth ||
@@ -144,27 +142,20 @@ router.post("/xtream/test", async (req, res) => {
       data?.user_info ||
       null;
 
-    // Plusieurs panels : "Active" | "true" | 1
     const ok =
       String(status).toLowerCase() === "active" ||
       String(status).toLowerCase() === "true" ||
       status === 1 ||
       data?.user_info?.auth === 1;
 
-    if (!ok) {
-      return res.status(400).json({ ok: false, error: "Identifiants Xtream invalides", base, status });
-    }
+    if (!ok) return res.status(400).json({ ok: false, error: "Identifiants Xtream invalides", base, status });
     res.json({ ok: true, base, status });
   } catch (e) {
     res.status(e.status || 500).json({ ok: false, error: e.message || "Echec du test Xtream" });
   }
 });
 
-/**
- * POST /xtream/movies
- * Body (optionnel): { category_id?, search?, page?, limit? }
- * → ARRAY d'objets: { stream_id, name, poster, rating, added }
- */
+/** Films (VOD) */
 router.post("/xtream/movies", async (req, res) => {
   try {
     const { base, username, password } = await getUserXtreamCreds(req);
@@ -175,7 +166,8 @@ router.post("/xtream/movies", async (req, res) => {
       username
     )}&password=${encodeURIComponent(password)}&action=get_vod_streams${qsCat}`;
 
-    const listRaw = await httpGetJson(url);
+    // ⏱️ Timeout étendu pour les films
+    const listRaw = await httpGetJson(url, MOVIES_TIMEOUT);
     let list = Array.isArray(listRaw) ? listRaw : Object.values(listRaw || {});
 
     if (search && String(search).trim()) {
@@ -199,15 +191,13 @@ router.post("/xtream/movies", async (req, res) => {
     res.set("X-Total-Count", String(list.length));
     return res.json(items);
   } catch (e) {
-    return res.status(e.status || 500).json({ ok: false, error: e.message || "Failed to fetch movies" });
+    return res
+      .status(e.status || 500)
+      .json({ ok: false, error: e.message || "Failed to fetch movies" });
   }
 });
 
-/**
- * POST /xtream/series
- * Body (optionnel): { category_id?, search?, page?, limit? }
- * → ARRAY d'objets: { series_id, name, poster, category_id, rating, added }
- */
+/** Séries */
 router.post("/xtream/series", async (req, res) => {
   try {
     const { base, username, password } = await getUserXtreamCreds(req);
@@ -218,7 +208,7 @@ router.post("/xtream/series", async (req, res) => {
       username
     )}&password=${encodeURIComponent(password)}&action=get_series${qsCat}`;
 
-    const listRaw = await httpGetJson(url);
+    const listRaw = await httpGetJson(url, DEFAULT_TIMEOUT);
     let list = Array.isArray(listRaw) ? listRaw : Object.values(listRaw || {});
 
     if (search && String(search).trim()) {
@@ -243,15 +233,13 @@ router.post("/xtream/series", async (req, res) => {
     res.set("X-Total-Count", String(list.length));
     return res.json(items);
   } catch (e) {
-    return res.status(e.status || 500).json({ ok: false, error: e.message || "Failed to fetch series" });
+    return res
+      .status(e.status || 500)
+      .json({ ok: false, error: e.message || "Failed to fetch series" });
   }
 });
 
-/**
- * POST /xtream/live
- * Body (optionnel): { category_id?, search?, page?, limit? }
- * → ARRAY d'objets: { stream_id, name, logo, category_id, play_url }
- */
+/** Live (chaînes) */
 router.post("/xtream/live", async (req, res) => {
   try {
     const { base, username, password } = await getUserXtreamCreds(req);
@@ -262,7 +250,7 @@ router.post("/xtream/live", async (req, res) => {
       username
     )}&password=${encodeURIComponent(password)}&action=get_live_streams${qsCat}`;
 
-    const listRaw = await httpGetJson(url);
+    const listRaw = await httpGetJson(url, DEFAULT_TIMEOUT);
     let list = Array.isArray(listRaw) ? listRaw : Object.values(listRaw || {});
 
     if (search && String(search).trim()) {
@@ -276,7 +264,7 @@ router.post("/xtream/live", async (req, res) => {
     const slice = list.slice(start, start + l);
 
     const items = slice.map((it) => {
-      const ext = it?.container_extension || "m3u8"; // souvent .m3u8 dispo
+      const ext = it?.container_extension || "m3u8";
       const play_url = `${base}/live/${encodeURIComponent(username)}/${encodeURIComponent(
         password
       )}/${it?.stream_id}.${ext}`;
@@ -292,7 +280,9 @@ router.post("/xtream/live", async (req, res) => {
     res.set("X-Total-Count", String(list.length));
     return res.json(items);
   } catch (e) {
-    return res.status(e.status || 500).json({ ok: false, error: e.message || "Failed to fetch live streams" });
+    return res
+      .status(e.status || 500)
+      .json({ ok: false, error: e.message || "Failed to fetch live streams" });
   }
 });
 
