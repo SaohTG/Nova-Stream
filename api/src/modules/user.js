@@ -1,3 +1,4 @@
+// api/src/modules/user.js
 import { Router } from "express";
 import { Pool } from "pg";
 import crypto from "crypto";
@@ -6,6 +7,7 @@ const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
+/* ================= AES-256-GCM helpers ================= */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
@@ -22,6 +24,37 @@ function enc(plain) {
   return `v1:${iv.toString("base64")}:${tag.toString("base64")}:${ct.toString("base64")}`;
 }
 
+/* ================= Utils ================= */
+function normalizeInput(body = {}) {
+  // tolère plusieurs noms de champs côté front
+  const baseUrlRaw =
+    body.baseUrl || body.url || body.serverUrl || body.apiUrl ||
+    (body.host && body.port ? `${body.host}:${body.port}` : null) ||
+    body.portal || body.endpoint;
+
+  const username = body.username || body.user || body.login || body.email || body.u;
+  const password = body.password || body.pass || body.pwd || body.p;
+
+  let baseUrl = (baseUrlRaw || "").toString().trim();
+  if (baseUrl && !/^https?:\/\//i.test(baseUrl)) baseUrl = `http://${baseUrl}`;
+
+  // nettoie éventuel double slash final
+  if (baseUrl.endsWith("//")) baseUrl = baseUrl.slice(0, -1);
+  // enlève slash final (optionnel)
+  if (baseUrl.endsWith("/")) baseUrl = baseUrl.slice(0, -1);
+
+  return { baseUrl, username, password };
+}
+
+function validateInput({ baseUrl, username, password }) {
+  const missing = [];
+  if (!baseUrl) missing.push("baseUrl");
+  if (!username) missing.push("username");
+  if (!password) missing.push("password");
+  return missing;
+}
+
+/* ================= Schema bootstrap (idempotent) ================= */
 async function ensureTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_xtream (
@@ -35,16 +68,28 @@ async function ensureTable() {
   `);
 }
 
+/* ================= Routes ================= */
+
+/** Lier / mettre à jour un compte Xtream */
 router.post("/link-xtream", async (req, res, next) => {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
-    const { baseUrl, username, password } = req.body || {};
-    if (!baseUrl || !username || !password) return res.status(400).json({ message: "baseUrl/username/password required" });
 
-    let url = String(baseUrl).trim();
-    if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+    // debug léger si besoin
+    // console.log("[LINK-XTREAM] auth user =", req.user);
+
+    const { baseUrl, username, password } = normalizeInput(req.body);
+    const missing = validateInput({ baseUrl, username, password });
+    if (missing.length) {
+      return res.status(422).json({
+        message: "Missing required fields",
+        missing, // ['baseUrl', ...]
+        expected: ["baseUrl", "username", "password"],
+      });
+    }
 
     await ensureTable();
+
     await pool.query(
       `INSERT INTO user_xtream (user_id, base_url, username_enc, password_enc)
        VALUES ($1,$2,$3,$4)
@@ -53,21 +98,24 @@ router.post("/link-xtream", async (req, res, next) => {
              username_enc=EXCLUDED.username_enc,
              password_enc=EXCLUDED.password_enc,
              updated_at=now();`,
-      [req.user.sub, url, enc(username), enc(password)]
+      [req.user.sub, baseUrl, enc(username), enc(password)]
     );
 
-    res.json({ ok: true });
+    return res.json({ ok: true, baseUrl });
   } catch (e) {
     e.status = e.status || 500;
     next(e);
   }
 });
 
+/** Obtenir l’état du lien Xtream (masqué) */
 router.get("/xtream", async (req, res, next) => {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
+    await ensureTable();
     const { rows } = await pool.query(
-      `SELECT base_url, username_enc FROM user_xtream WHERE user_id=$1`, [req.user.sub]
+      `SELECT base_url FROM user_xtream WHERE user_id=$1`,
+      [req.user.sub]
     );
     if (!rows.length) return res.json({ linked: false });
     return res.json({ linked: true, baseUrl: rows[0].base_url });
