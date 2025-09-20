@@ -14,14 +14,19 @@ import tmdbRouter from "./modules/tmdb.js";
 const app = express();
 app.set("trust proxy", 1);
 
-// CORS simple et strict : une seule origine autorisée (depuis l'env)
-const ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
-app.use(
-  cors({
-    origin: ORIGIN,
-    credentials: true,
-  })
-);
+// ✅ accepte plusieurs origins comma-séparés (CORS_ORIGIN="http://IP:5173,http://localhost:5173")
+const ORIGINS = (process.env.CORS_ORIGIN || "http://localhost:5173")
+  .split(",")
+  .map(s => s.trim())
+  .filter(Boolean);
+
+app.use(cors({
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    return cb(null, ORIGINS.includes(origin));
+  },
+  credentials: true,
+}));
 
 app.use(cookieParser());
 app.use(express.json({ limit: "1mb" }));
@@ -53,7 +58,6 @@ app.use((err, req, res, _next) => {
 
 const port = Number(process.env.API_PORT || 4000);
 
-// Initialize database before starting server
 async function startServer() {
   try {
     await initDatabase();
@@ -65,5 +69,4 @@ async function startServer() {
     process.exit(1);
   }
 }
-
 startServer();
