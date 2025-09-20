@@ -2,183 +2,112 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
-import { randomUUID } from "crypto";
-import { pool } from "../db/index.js";
-import { getDatabaseUuidSupport } from "../db/init.js";
+import { Pool } from "pg";
 
-const authRouter = Router();
+const router = Router();
 
-/* ------------------- Helpers ------------------- */
+// ⚠️ Si tu as déjà un pool ailleurs, remplace par ton import existant
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  // ssl: { rejectUnauthorized: false } // si besoin en prod
+});
 
 const ACCESS_TTL = Number(process.env.API_JWT_ACCESS_TTL || 900);        // 15 min
-const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL || 1209600);  // 14 jours
-const ACCESS_SECRET = process.env.API_JWT_SECRET || "Y7dD6Vh2mC4pQ8tR1sX9zK3wL5aN0fB2gU4hJ6iO8lT1qP3dV";
-const REFRESH_SECRET = process.env.API_REFRESH_SECRET || "mZ2xL7nH3qK9tC8vS4pD0rG6yB1wF5aE7uJ9hQ3oN2lM4kR8";
+const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL || 1209600);  // 14 j
+const COOKIE_SECURE = String(process.env.COOKIE_SECURE) === "true";
+const COOKIE_SAMESITE = process.env.COOKIE_SAMESITE || "lax";
 
-const COOKIE_SECURE = (process.env.NODE_ENV || "development") === "production";
-const COOKIE_SAMESITE = process.env.COOKIE_SAMESITE || "lax"; // "lax" suffisant en même-site (IP:port)
-const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || undefined; // laisse vide si IP
-
-function setAuthCookies(res, { accessToken, refreshToken }) {
-  res.cookie("nova_access", accessToken, {
+function signTokens(payload) {
+  const accessToken = jwt.sign(payload, process.env.API_JWT_SECRET, { expiresIn: ACCESS_TTL });
+  const refreshToken = jwt.sign(payload, process.env.API_REFRESH_SECRET, { expiresIn: REFRESH_TTL });
+  return { accessToken, refreshToken };
+}
+function setRefreshCookie(res, token) {
+  res.cookie("rt", token, {
     httpOnly: true,
     secure: COOKIE_SECURE,
-    sameSite: COOKIE_SAMESITE,
-    path: "/",
-    domain: COOKIE_DOMAIN,
-    maxAge: ACCESS_TTL * 1000,
-  });
-  res.cookie("nova_refresh", refreshToken, {
-    httpOnly: true,
-    secure: COOKIE_SECURE,
-    sameSite: COOKIE_SAMESITE,
-    path: "/",
-    domain: COOKIE_DOMAIN,
+    sameSite: COOKIE_SAMESITE,  // 'lax' en dev HTTP ; 'none' + secure:true en HTTPS cross-site
+    path: "/auth/refresh",
     maxAge: REFRESH_TTL * 1000,
   });
 }
 
-function clearAuthCookies(res) {
-  res.clearCookie("nova_access", { path: "/" });
-  res.clearCookie("nova_refresh", { path: "/" });
+// --- DB helpers (adapte aux noms de tes colonnes)
+async function getUserByEmail(email) {
+  const { rows } = await pool.query(`SELECT id, email, password FROM users WHERE email=$1 LIMIT 1`, [email]);
+  return rows[0] || null;
+}
+async function createUser(email, password) {
+  const hash = await bcrypt.hash(password, 10);
+  // id a un DEFAULT gen_random_uuid() (voir SQL d’init)
+  const { rows } = await pool.query(
+    `INSERT INTO users (email, password) VALUES ($1,$2) RETURNING id, email`,
+    [email, hash]
+  );
+  return rows[0];
+}
+async function validateUser(email, password) {
+  const u = await getUserByEmail(email);
+  if (!u) return null;
+  const ok = await bcrypt.compare(password, u.password);
+  if (!ok) return null;
+  return { id: u.id, email: u.email };
 }
 
-function signAccess(userId) {
-  return jwt.sign({ sub: userId }, ACCESS_SECRET, { expiresIn: ACCESS_TTL });
-}
-function signRefresh(userId) {
-  return jwt.sign({ sub: userId }, REFRESH_SECRET, { expiresIn: REFRESH_TTL });
-}
-
+// --- Middleware access JWT (Bearer)
 export function ensureAuth(req, res, next) {
+  const h = req.headers.authorization || "";
+  const [, token] = h.split(" ");
+  if (!token) return res.status(401).json({ message: "No token" });
   try {
-    const token = req.cookies?.nova_access;
-    if (!token) return res.status(401).json({ error: "Unauthorized" });
-    const payload = jwt.verify(token, ACCESS_SECRET);
-    req.user = { id: payload.sub };
-    req.userId = payload.sub;
-    next();
+    req.user = jwt.verify(token, process.env.API_JWT_SECRET);
+    return next();
   } catch {
-    return res.status(401).json({ error: "Unauthorized" });
+    return res.status(401).json({ message: "Invalid token" });
   }
 }
 
-/* ------------------- Routes ------------------- */
+// --- Routes
+router.post("/signup", async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ message: "email/password required" });
 
-// POST /auth/signup { email, password }
-authRouter.post("/signup", async (req, res) => {
+  const exists = await getUserByEmail(email);
+  if (exists) return res.status(409).json({ message: "Email already used" });
+
+  const user = await createUser(email, password);
+  const { accessToken, refreshToken } = signTokens({ sub: user.id, email: user.email });
+  setRefreshCookie(res, refreshToken);
+  return res.status(201).json({ accessToken });
+});
+
+router.post("/login", async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ message: "email/password required" });
+
+  const user = await validateUser(email, password);
+  if (!user) return res.status(401).json({ message: "Invalid credentials" });
+
+  const { accessToken, refreshToken } = signTokens({ sub: user.id, email: user.email });
+  setRefreshCookie(res, refreshToken);
+  return res.json({ accessToken });
+});
+
+router.post("/refresh", async (req, res) => {
+  const token = req.cookies && req.cookies.rt;
+  if (!token) return res.status(401).json({ message: "No refresh cookie" });
   try {
-    const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ error: "email et password requis" });
-
-    // Vérifie existence
-    const exists = await pool.query("SELECT id FROM users WHERE email = $1 LIMIT 1", [email]);
-    if (exists.rowCount > 0) return res.status(409).json({ error: "email déjà utilisé" });
-
-    const hash = await bcrypt.hash(password, 10);
-
-    // Generate user ID based on database capability
-    let userId;
-    if (getDatabaseUuidSupport()) {
-      try {
-        // Database can generate UUIDs, let it handle the ID
-        const q = "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id::text AS id";
-        const { rows } = await pool.query(q, [email, hash]);
-        if (rows[0].id) {
-          userId = rows[0].id;
-        } else {
-          throw new Error("Database returned null UUID");
-        }
-      } catch (dbError) {
-        console.warn("Database UUID generation failed, falling back to application level:", dbError.message);
-        // Fall back to application-level generation
-        const generatedId = randomUUID();
-        const q = "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3) RETURNING id::text AS id";
-        const { rows } = await pool.query(q, [generatedId, email, hash]);
-        userId = rows[0].id;
-      }
-    } else {
-      // Generate UUID in application
-      const generatedId = randomUUID();
-      const q = "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3) RETURNING id::text AS id";
-      const { rows } = await pool.query(q, [generatedId, email, hash]);
-      userId = rows[0].id;
-    }
-
-    const accessToken = signAccess(userId);
-    const refreshToken = signRefresh(userId);
-    setAuthCookies(res, { accessToken, refreshToken });
-
-    return res.status(201).json({ ok: true, user_id: userId });
-  } catch (e) {
-    console.error("signup error:", e);
-    return res.status(500).json({ error: "signup failed" });
+    const payload = jwt.verify(token, process.env.API_REFRESH_SECRET);
+    const { accessToken, refreshToken } = signTokens({ sub: payload.sub, email: payload.email });
+    setRefreshCookie(res, refreshToken); // rotation
+    return res.json({ accessToken });
+  } catch {
+    return res.status(401).json({ message: "Invalid refresh" });
   }
 });
 
-// POST /auth/login { email, password }
-authRouter.post("/login", async (req, res) => {
-  try {
-    const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ error: "email et password requis" });
-
-    const q = "SELECT id::text AS id, password_hash FROM users WHERE email=$1 LIMIT 1";
-    const { rows } = await pool.query(q, [email]);
-    if (rows.length === 0) return res.status(401).json({ error: "credentials invalides" });
-
-    const ok = await bcrypt.compare(password, rows[0].password_hash);
-    if (!ok) return res.status(401).json({ error: "credentials invalides" });
-
-    const userId = rows[0].id;
-    const accessToken = signAccess(userId);
-    const refreshToken = signRefresh(userId);
-    setAuthCookies(res, { accessToken, refreshToken });
-
-    return res.json({ ok: true, user_id: userId });
-  } catch (e) {
-    console.error("login error:", e);
-    return res.status(500).json({ error: "login failed" });
-  }
+router.get("/me", ensureAuth, (req, res) => {
+  return res.json(req.user);
 });
 
-// POST /auth/refresh
-authRouter.post("/refresh", async (req, res) => {
-  try {
-    const token = req.cookies?.nova_refresh;
-    if (!token) return res.status(401).json({ error: "no refresh" });
-    const payload = jwt.verify(token, REFRESH_SECRET);
-    const userId = payload.sub;
-
-    const accessToken = signAccess(userId);
-    const refreshToken = signRefresh(userId);
-    setAuthCookies(res, { accessToken, refreshToken });
-
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error("refresh error:", e);
-    clearAuthCookies(res);
-    return res.status(401).json({ error: "refresh failed" });
-  }
-});
-
-// POST /auth/logout
-authRouter.post("/logout", (req, res) => {
-  clearAuthCookies(res);
-  return res.json({ ok: true });
-});
-
-// GET /auth/me
-authRouter.get("/me", ensureAuth, async (req, res) => {
-  try {
-    const userId = req.userId;
-    const q = "SELECT id::text AS id, email FROM users WHERE id=$1 LIMIT 1";
-    const { rows } = await pool.query(q, [userId]);
-    if (rows.length === 0) return res.status(404).json({ error: "user not found" });
-    return res.json({ id: rows[0].id, email: rows[0].email });
-  } catch (e) {
-    console.error("me error:", e);
-    return res.status(500).json({ error: "me failed" });
-  }
-});
-
-export default authRouter;
+export default router;
