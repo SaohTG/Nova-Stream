@@ -80,10 +80,23 @@ authRouter.post("/signup", async (req, res) => {
     // Generate user ID based on database capability
     let userId;
     if (getDatabaseUuidSupport()) {
-      // Database can generate UUIDs, let it handle the ID
-      const q = "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id::text AS id";
-      const { rows } = await pool.query(q, [email, hash]);
-      userId = rows[0].id;
+      try {
+        // Database can generate UUIDs, let it handle the ID
+        const q = "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id::text AS id";
+        const { rows } = await pool.query(q, [email, hash]);
+        if (rows[0].id) {
+          userId = rows[0].id;
+        } else {
+          throw new Error("Database returned null UUID");
+        }
+      } catch (dbError) {
+        console.warn("Database UUID generation failed, falling back to application level:", dbError.message);
+        // Fall back to application-level generation
+        const generatedId = randomUUID();
+        const q = "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3) RETURNING id::text AS id";
+        const { rows } = await pool.query(q, [generatedId, email, hash]);
+        userId = rows[0].id;
+      }
     } else {
       // Generate UUID in application
       const generatedId = randomUUID();
