@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { randomUUID } from "crypto";
 import { pool } from "../db/index.js";
+import { getDatabaseUuidSupport } from "../db/init.js";
 
 const authRouter = Router();
 
@@ -76,27 +77,19 @@ authRouter.post("/signup", async (req, res) => {
 
     const hash = await bcrypt.hash(password, 10);
 
-    // INSERT et retourne l'id
-    // Adapté pour table "users(id uuid pk default gen_random_uuid(), email unique, password hash)"
+    // Generate user ID based on database capability
     let userId;
-    try {
-      // First try: let database generate UUID with default gen_random_uuid()
+    if (getDatabaseUuidSupport()) {
+      // Database can generate UUIDs, let it handle the ID
       const q = "INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id::text AS id";
       const { rows } = await pool.query(q, [email, hash]);
       userId = rows[0].id;
-    } catch (insertError) {
-      // Check if this is the null constraint error on id column
-      if (insertError.code === '23502' && insertError.column === 'id') {
-        console.warn("Database UUID generation failed, falling back to application UUID generation");
-        // Fallback: generate UUID in application and insert explicitly
-        const generatedId = randomUUID();
-        const qWithId = "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3) RETURNING id::text AS id";
-        const { rows } = await pool.query(qWithId, [generatedId, email, hash]);
-        userId = rows[0].id;
-      } else {
-        // Re-throw other errors
-        throw insertError;
-      }
+    } else {
+      // Generate UUID in application
+      const generatedId = randomUUID();
+      const q = "INSERT INTO users (id, email, password_hash) VALUES ($1, $2, $3) RETURNING id::text AS id";
+      const { rows } = await pool.query(q, [generatedId, email, hash]);
+      userId = rows[0].id;
     }
 
     const accessToken = signAccess(userId);

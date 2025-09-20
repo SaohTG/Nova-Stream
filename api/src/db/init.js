@@ -1,32 +1,58 @@
 // api/src/db/init.js
 import { pool } from "./index.js";
 
+// Global flag to track UUID generation capability
+let databaseUuidSupport = false;
+
+/**
+ * Check if database supports gen_random_uuid() function
+ */
+async function checkUuidSupport() {
+  try {
+    // First try to enable pgcrypto extension
+    await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
+    
+    // Test if gen_random_uuid() function works
+    await pool.query("SELECT gen_random_uuid()");
+    
+    console.log("✓ Database UUID generation (gen_random_uuid) is available");
+    return true;
+  } catch (error) {
+    console.log("ⓘ Database UUID generation not available, will use application-level generation");
+    console.log("  Reason:", error.message);
+    return false;
+  }
+}
+
+/**
+ * Get UUID generation capability
+ */
+export function getDatabaseUuidSupport() {
+  return databaseUuidSupport;
+}
+
 /**
  * Initialize core database schema
  * This ensures all required tables exist with proper structure
  */
 export async function initDatabase() {
   try {
-    // Enable pgcrypto extension for gen_random_uuid()
-    try {
-      await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
-      console.log("pgcrypto extension enabled successfully");
-    } catch (extError) {
-      console.warn("Warning: Could not enable pgcrypto extension:", extError.message);
-      console.warn("UUID generation will fall back to application-level generation");
-    }
+    // Check UUID generation capability first
+    databaseUuidSupport = await checkUuidSupport();
     
-    // Create core tables from schema
+    // Create core tables from schema with conditional UUID defaults
+    const uuidDefault = databaseUuidSupport ? "DEFAULT gen_random_uuid()" : "";
+    
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        id UUID PRIMARY KEY ${uuidDefault},
         email TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT now()
       );
       
       CREATE TABLE IF NOT EXISTS sessions (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        id UUID PRIMARY KEY ${uuidDefault},
         user_id UUID REFERENCES users(id) ON DELETE CASCADE,
         refresh_token TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT now(),
