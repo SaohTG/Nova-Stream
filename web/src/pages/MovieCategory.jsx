@@ -46,13 +46,13 @@ export default function MovieCategory() {
   };
 
   return (
-    <>
-      <div className="mb-4 flex items-end justify-between">
+    <div className="space-y-6">
+      <div className="flex items-end justify-between">
         <h1 className="text-2xl font-bold text-white">{catName}</h1>
         <div className="text-sm text-zinc-400">{items?.length || 0} éléments</div>
       </div>
 
-      {err && <div className="mb-4 rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
+      {err && <div className="rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
 
       {!items ? (
         <div className="text-zinc-400">Chargement…</div>
@@ -60,13 +60,16 @@ export default function MovieCategory() {
         <div className="text-zinc-400">Aucun film dans cette catégorie.</div>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8">
+          {/* ↑↑ Espacement augmenté via gap responsive ↑↑ */}
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 sm:gap-5 md:grid-cols-4 md:gap-6 lg:grid-cols-6 xl:grid-cols-8 2xl:grid-cols-10 2xl:gap-7">
             {items.map((it) => (
-              <PosterCard key={`m-${it.stream_id || it.name}`} item={it} kind="vod" />
+              <div key={`m-${it.stream_id || it.name}`} className="min-w-0">
+                <PosterCard item={it} kind="vod" />
+              </div>
             ))}
           </div>
 
-          <div className="mt-8 flex justify-center">
+          <div className="flex justify-center pt-2">
             <button
               className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-200 ring-1 ring-white/10 hover:bg-zinc-700 disabled:opacity-60"
               onClick={onMore}
@@ -77,6 +80,6 @@ export default function MovieCategory() {
           </div>
         </>
       )}
-    </>
+    </div>
   );
 }
