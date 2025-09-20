@@ -20,6 +20,8 @@ const ORIGINS = (process.env.CORS_ORIGIN || "http://localhost:5173")
 app.use(cors({
   origin: (origin, cb) => (!origin || ORIGINS.includes(origin)) ? cb(null, true) : cb(null, false),
   credentials: true,
+  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization"],
 }));
 
 app.use(cookieParser());
@@ -33,7 +35,7 @@ app.use("/user", ensureAuth, userRouter);
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
 
-// Debug temporaire : qui suis-je ?
+// Debug temporaire
 app.get("/debug/whoami", ensureAuth, (req, res) => res.json({ user: req.user }));
 
 // 404 JSON
