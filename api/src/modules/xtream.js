@@ -7,7 +7,7 @@ const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
-/* ========= AES-256-GCM ========= */
+/* ================= AES-256-GCM ================= */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY must be 64 hex chars");
@@ -34,20 +34,45 @@ function dec(blob) {
   return pt.toString("utf8");
 }
 
-/* ========= Utils ========= */
+/* ================= Utils ================= */
 function normalizeBaseUrl(u) {
   let s = (u || "").toString().trim();
-  if (!s) return "";
   if (!/^https?:\/\//i.test(s)) s = `http://${s}`;
   while (s.endsWith("/")) s = s.slice(0, -1);
   return s;
 }
-function mask(v = "") {
-  if (!v) return "";
-  if (v.length <= 2) return v;
-  return `${v[0]}${"*".repeat(Math.max(1, v.length - 2))}${v.at(-1)}`;
+function buildPlayerApi(baseUrl, username, password, action, extra = {}) {
+  const u = new URL(`${baseUrl}/player_api.php`);
+  u.searchParams.set("username", username);
+  u.searchParams.set("password", password);
+  if (action) u.searchParams.set("action", action);
+  for (const [k, v] of Object.entries(extra)) if (v != null) u.searchParams.set(k, String(v));
+  return u.toString();
 }
-async function ensureTable() {
+async function fetchWithTimeout(url, ms = 10000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal });
+    return r;
+  } finally {
+    clearTimeout(t);
+  }
+}
+async function fetchJson(url) {
+  const r = await fetchWithTimeout(url);
+  const txt = await r.text();
+  if (!r.ok) {
+    const err = new Error(`XTREAM_HTTP_${r.status}`);
+    err.status = r.status;
+    err.body = txt;
+    throw err;
+  }
+  try { return JSON.parse(txt); }
+  catch { const err = new Error("XTREAM_BAD_JSON"); err.body = txt; throw err; }
+}
+
+async function ensureTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS xtream_accounts (
       user_id uuid PRIMARY KEY,
@@ -58,123 +83,193 @@ async function ensureTable() {
       updated_at timestamptz DEFAULT now()
     );
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS user_xtream (
+      user_id uuid PRIMARY KEY,
+      base_url text NOT NULL,
+      username_enc text NOT NULL,
+      password_enc text NOT NULL,
+      created_at timestamptz DEFAULT now(),
+      updated_at timestamptz DEFAULT now()
+    );
+  `);
 }
+
+/** Récupère les creds depuis xtream_accounts OU user_xtream (compat) */
 async function getCreds(userId) {
-  await ensureTable();
-  const { rows } = await pool.query(
-    `SELECT base_url, username_enc, password_enc FROM xtream_accounts WHERE user_id=$1`,
-    [userId]
-  );
-  if (!rows.length) return null;
+  await ensureTables();
+  let row = (await pool.query(
+    `SELECT base_url, username_enc, password_enc FROM xtream_accounts WHERE user_id=$1 LIMIT 1`, [userId]
+  )).rows[0];
+  if (!row) {
+    row = (await pool.query(
+      `SELECT base_url, username_enc, password_enc FROM user_xtream WHERE user_id=$1 LIMIT 1`, [userId]
+    )).rows[0];
+  }
+  if (!row) return null;
   return {
-    baseUrl: rows[0].base_url,
-    username: dec(rows[0].username_enc),
-    password: dec(rows[0].password_enc),
+    baseUrl: normalizeBaseUrl(row.base_url),
+    username: dec(row.username_enc),
+    password: dec(row.password_enc),
   };
 }
-async function saveCreds(userId, baseUrl, username, password) {
-  await ensureTable();
-  await pool.query(
-    `INSERT INTO xtream_accounts (user_id, base_url, username_enc, password_enc)
-     VALUES ($1,$2,$3,$4)
-     ON CONFLICT (user_id) DO UPDATE
-       SET base_url=EXCLUDED.base_url,
-           username_enc=EXCLUDED.username_enc,
-           password_enc=EXCLUDED.password_enc,
-           updated_at=now()`,
-    [userId, baseUrl, enc(username), enc(password)]
-  );
-}
-async function deleteCreds(userId) {
-  await ensureTable();
-  await pool.query(`DELETE FROM xtream_accounts WHERE user_id=$1`, [userId]);
-}
-async function fetchWithTimeout(url, ms = 8000) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const r = await fetch(url, { signal: ctrl.signal });
-    return r;
-  } finally {
-    clearTimeout(t);
-  }
-}
-function playerApiUrl(baseUrl, username, password) {
-  const u = new URL(`${baseUrl}/player_api.php`);
-  u.searchParams.set("username", username);
-  u.searchParams.set("password", password);
-  return u.toString();
-}
-async function testCreds(baseUrl, username, password) {
-  const r = await fetchWithTimeout(playerApiUrl(baseUrl, username, password), 8000);
-  const text = await r.text();
-  if (!r.ok) return { ok: false, reason: `HTTP_${r.status}`, raw: text };
-  try {
-    const j = JSON.parse(text);
-    const ok = j?.user_info?.auth === 1 || j?.user_info?.status === "Active";
-    return { ok, raw: j, reason: ok ? "OK" : "Invalid credentials" };
-  } catch {
-    return { ok: false, reason: "Invalid JSON", raw: text };
-  }
-}
 
-/* ========= Routes ========= */
-
-/** POST /xtream/link  { baseUrl, username, password }  */
+/* ================= Link/Test/Status ================= */
+// (conserve les endpoints utiles si tu les appelles)
 router.post("/link", async (req, res, next) => {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
-
     const baseUrl = normalizeBaseUrl(req.body?.baseUrl);
     const username = (req.body?.username || "").toString().trim();
     const password = (req.body?.password || "").toString().trim();
+    if (!baseUrl || !username || !password) return res.status(422).json({ message: "Missing fields" });
 
-    const missing = [];
-    if (!baseUrl) missing.push("baseUrl");
-    if (!username) missing.push("username");
-    if (!password) missing.push("password");
-    if (missing.length) return res.status(422).json({ message: "Missing fields", missing });
+    // test rapide
+    const test = await fetchJson(buildPlayerApi(baseUrl, username, password));
+    const ok = test?.user_info?.auth === 1 || test?.user_info?.status === "Active";
+    if (!ok) return res.status(400).json({ message: "Xtream test failed" });
 
-    const check = await testCreds(baseUrl, username, password);
-    if (!check.ok) return res.status(400).json({ message: "Xtream test failed", reason: check.reason });
-
-    await saveCreds(req.user.sub, baseUrl, username, password);
-    return res.json({ ok: true, baseUrl, username: mask(username) });
+    await ensureTables();
+    await pool.query(
+      `INSERT INTO xtream_accounts (user_id, base_url, username_enc, password_enc)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (user_id) DO UPDATE
+         SET base_url=EXCLUDED.base_url,
+             username_enc=EXCLUDED.username_enc,
+             password_enc=EXCLUDED.password_enc,
+             updated_at=now()`,
+      [req.user.sub, baseUrl, enc(username), enc(password)]
+    );
+    res.json({ ok: true });
   } catch (e) { e.status = e.status || 500; next(e); }
 });
 
-/** GET /xtream/status */
 router.get("/status", async (req, res, next) => {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
     const c = await getCreds(req.user.sub);
-    if (!c) return res.json({ linked: false });
-    return res.json({ linked: true, baseUrl: c.baseUrl, username: mask(c.username) });
+    res.json({ linked: !!c, baseUrl: c?.baseUrl || null });
   } catch (e) { e.status = e.status || 500; next(e); }
 });
 
-/** POST /xtream/test  (optionnel: baseUrl, username, password) */
-router.post("/test", async (req, res, next) => {
-  try {
-    if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
-    let { baseUrl, username, password } = req.body || {};
-    if (!baseUrl || !username || !password) {
-      const saved = await getCreds(req.user.sub);
-      if (!saved) return res.status(400).json({ message: "No credentials" });
-      ({ baseUrl, username, password } = saved);
-    }
-    baseUrl = normalizeBaseUrl(baseUrl);
-    const out = await testCreds(baseUrl, username, password);
-    return res.status(out.ok ? 200 : 502).json(out);
-  } catch (e) { e.status = e.status || 500; next(e); }
-});
-
-/** DELETE /xtream/unlink */
 router.delete("/unlink", async (req, res, next) => {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
-    await deleteCreds(req.user.sub);
+    await ensureTables();
+    await pool.query(`DELETE FROM xtream_accounts WHERE user_id=$1`, [req.user.sub]);
+    await pool.query(`DELETE FROM user_xtream WHERE user_id=$1`, [req.user.sub]);
     res.status(204).end();
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/* ================= Catalogues & Contenu ================= */
+/** VOD: catégories */
+router.get("/movie-categories", async (req, res, next) => {
+  try {
+    const c = await getCreds(req.user?.sub);
+    if (!c) return res.status(404).json({ message: "No Xtream credentials" });
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"));
+    res.json(data || []);
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/** VOD: liste par catégorie ?category_id=XX (0 = toutes) */
+router.get("/movies", async (req, res, next) => {
+  try {
+    const c = await getCreds(req.user?.sub);
+    if (!c) return res.status(404).json({ message: "No Xtream credentials" });
+    const category_id = req.query.category_id ?? "0";
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }));
+    res.json(data || []);
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/** VOD: infos d’un film */
+router.get("/vod-info/:vod_id", async (req, res, next) => {
+  try {
+    const c = await getCreds(req.user?.sub);
+    if (!c) return res.status(404).json({ message: "No Xtream credentials" });
+    const vod_id = req.params.vod_id;
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_info", { vod_id }));
+    res.json(data || {});
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/** Séries: catégories */
+router.get("/series-categories", async (req, res, next) => {
+  try {
+    const c = await getCreds(req.user?.sub);
+    if (!c) return res.status(404).json({ message: "No Xtream credentials" });
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"));
+    res.json(data || []);
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/** Séries: liste par catégorie */
+router.get("/series", async (req, res, next) => {
+  try {
+    const c = await getCreds(req.user?.sub);
+    if (!c) return res.status(404).json({ message: "No Xtream credentials" });
+    const category_id = req.query.category_id ?? "0";
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id }));
+    res.json(data || []);
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/** Séries: infos d’une série (épisodes, saisons…) */
+router.get("/series-info/:series_id", async (req, res, next) => {
+  try {
+    const c = await getCreds(req.user?.sub);
+    if (!c) return res.status(404).json({ message: "No Xtream credentials" });
+    const series_id = req.params.series_id;
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_info", { series_id }));
+    res.json(data || {});
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/** Live: catégories */
+router.get("/live-categories", async (req, res, next) => {
+  try {
+    const c = await getCreds(req.user?.sub);
+    if (!c) return res.status(404).json({ message: "No Xtream credentials" });
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"));
+    res.json(data || []);
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/** Live: liste par catégorie */
+router.get("/live", async (req, res, next) => {
+  try {
+    const c = await getCreds(req.user?.sub);
+    if (!c) return res.status(404).json({ message: "No Xtream credentials" });
+    const category_id = req.query.category_id ?? "0";
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id }));
+    res.json(data || []);
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/* ================= URLs de lecture (facultatif mais pratique) ================= */
+/** URL directe VOD (calcule l’extension via get_vod_info) */
+router.get("/vod-url/:vod_id", async (req, res, next) => {
+  try {
+    const c = await getCreds(req.user?.sub);
+    if (!c) return res.status(404).json({ message: "No Xtream credentials" });
+    const vod_id = req.params.vod_id;
+    const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_info", { vod_id }));
+    const ext = info?.movie_data?.container_extension || "mp4";
+    const url = `${c.baseUrl}/movie/${encodeURIComponent(c.username)}/${encodeURIComponent(c.password)}/${vod_id}.${ext}`;
+    res.json({ url });
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/** URL directe Live (.m3u8 généralement) */
+router.get("/live-url/:stream_id", async (req, res, next) => {
+  try {
+    const c = await getCreds(req.user?.sub);
+    if (!c) return res.status(404).json({ message: "No Xtream credentials" });
+    const stream_id = req.params.stream_id;
+    const url = `${c.baseUrl}/live/${encodeURIComponent(c.username)}/${encodeURIComponent(c.password)}/${stream_id}.m3u8`;
+    res.json({ url });
   } catch (e) { e.status = e.status || 500; next(e); }
 });
 
