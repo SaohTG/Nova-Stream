@@ -1,6 +1,10 @@
 // api/src/modules/tmdb.js
 import { Router } from "express";
 
+const tmdb = Router();
+
+/* ---------- Helpers ---------- */
+
 const norm = (s) =>
   (s || "")
     .toLowerCase()
@@ -15,19 +19,32 @@ const getYear = (d) => {
   return /^\d{4}$/.test(y) ? Number(y) : null;
 };
 
-function pickBestMatch(tmdbItem, vodList, type) {
+const fetchJson = async (url, opts = {}, timeoutMs = 15000) => {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...opts, signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(id);
+  }
+};
+
+function pickBestMatch(tmdbItem, xtreamList, mediaType) {
+  // mediaType: "movie" | "tv"
   const title = norm(
-    type === "movie"
+    mediaType === "movie"
       ? tmdbItem.title || tmdbItem.original_title
       : tmdbItem.name || tmdbItem.original_name
   );
   const year =
-    type === "movie" ? getYear(tmdbItem.release_date) : getYear(tmdbItem.first_air_date);
+    mediaType === "movie" ? getYear(tmdbItem.release_date) : getYear(tmdbItem.first_air_date);
 
   let best = null;
   let bestScore = -1;
 
-  for (const it of vodList) {
+  for (const it of xtreamList) {
     const xtitle = norm(it.name || it.title || it.stream_display_name);
     if (!xtitle) continue;
 
@@ -36,6 +53,7 @@ function pickBestMatch(tmdbItem, vodList, type) {
     else if (xtitle.includes(title) || title.includes(xtitle)) score += 2;
 
     if (year) {
+      // Bonus si l'année est présente dans le nom Xtream
       const hasYear = new RegExp(`(?:\\s|\\(|\\[|\\{|\\-|\\.)${year}(?:\\s|\\)|\\]|\\}|\\-|\\.|$)`);
       if (hasYear.test(it.name || "")) score += 1;
     }
@@ -45,45 +63,66 @@ function pickBestMatch(tmdbItem, vodList, type) {
       bestScore = score;
     }
   }
+
+  // on garde seulement des correspondances correctes
   return bestScore >= 2 ? best : null;
 }
 
-const tmdb = Router();
+/* ---------- Route ---------- */
 
+/**
+ * GET /tmdb/trending-week-mapped
+ * - Auth requise (JWT en cookie)
+ * - Récupère TMDB trending/all/week (classement)
+ * - Récupère les listes Xtream (films + séries) via nos endpoints internes /xtream/*
+ * - Mappe chaque entrée TMDB vers une affiche Xtream (images Xtream uniquement)
+ * - Renvoie max 15 éléments { title, image, media_type, stream_id/series_id, __rank }
+ */
 tmdb.get("/trending-week-mapped", async (req, res) => {
   try {
     const apiKey = process.env.TMDB_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "TMDB_API_KEY manquant" });
 
-    const tmdbUrl = `https://api.themoviedb.org/3/trending/all/week?api_key=${encodeURIComponent(
-      apiKey
-    )}&language=fr-FR`;
-    const r = await fetch(tmdbUrl, { timeout: 15000 }).catch(() => null);
-    if (!r || !r.ok) return res.status(502).json({ error: "TMDB indisponible" });
-    const payload = await r.json().catch(() => ({}));
-    const results = Array.isArray(payload?.results) ? payload.results : [];
+    // 1) TMDB – tendances semaine (FR)
+    const tmdbUrl =
+      `https://api.themoviedb.org/3/trending/all/week` +
+      `?api_key=${encodeURIComponent(apiKey)}&language=fr-FR`;
+    const tmdbData = await fetchJson(tmdbUrl);
 
+    const results = Array.isArray(tmdbData?.results) ? tmdbData.results : [];
+    if (results.length === 0) return res.json([]);
+
+    // 2) Récup listes Xtream via nos endpoints internes, avec le cookie du client
     const base = `http://localhost:${process.env.API_PORT || 4000}`;
-    const headers = { cookie: req.headers.cookie || "", "content-type": "application/json" };
+    const headers = {
+      cookie: req.headers.cookie || "",
+      "content-type": "application/json",
+    };
 
-    const vodRes = await fetch(`${base}/xtream/movies`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ limit: 5000 }),
-    }).catch(() => null);
-    const vodList = (vodRes && vodRes.ok ? await vodRes.json().catch(() => []) : []) || [];
+    // On limite pour éviter les timeouts – ajuste si besoin
+    const [moviesList, seriesList] = await Promise.all([
+      fetchJson(`${base}/xtream/movies`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ limit: 2000 }),
+      }).catch(() => []),
+      fetchJson(`${base}/xtream/series`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ limit: 2000 }),
+      }).catch(() => []),
+    ]);
 
-    const serRes = await fetch(`${base}/xtream/series`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ limit: 5000 }),
-    }).catch(() => null);
-    const seriesList = (serRes && serRes.ok ? await serRes.json().catch(() => []) : []) || [];
+    const vod = Array.isArray(moviesList) ? moviesList : [];
+    const tvs = Array.isArray(seriesList) ? seriesList : [];
 
+    // 3) Mapping TMDB -> Xtream (images Xtream only)
     const mapped = [];
     for (const item of results) {
-      const isTv = item.media_type === "tv";
-      const match = pickBestMatch(item, isTv ? seriesList : vodList, isTv ? "tv" : "movie");
+      const mediaType = item.media_type === "tv" ? "tv" : "movie";
+      const list = mediaType === "movie" ? vod : tvs;
+
+      const match = pickBestMatch(item, list, mediaType);
       if (!match) continue;
 
       const image =
@@ -98,10 +137,11 @@ tmdb.get("/trending-week-mapped", async (req, res) => {
       mapped.push({
         title: item.title || item.name || match.name || match.title || "Sans titre",
         image,
-        media_type: isTv ? "tv" : "movie",
+        media_type: mediaType,
         stream_id: match.stream_id || null,
         series_id: match.series_id || null,
       });
+
       if (mapped.length >= 15) break;
     }
 
