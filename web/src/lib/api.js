@@ -44,7 +44,7 @@ export const getJson  = (p, o) => requestJson("GET", p, null, o);
 export const postJson = (p, b, o) => requestJson("POST", p, b, o);
 export const delJson  = (p, o) => requestJson("DELETE", p, null, o);
 
-/* Auth helpers */
+/* Auth */
 export async function login(email, password) {
   const { accessToken } = await postJson("/auth/login", { email, password });
   setAccess(accessToken);
@@ -57,8 +57,8 @@ export async function signup(email, password) {
 }
 export const me = () => getJson("/auth/me");
 
-/* Xtream helpers (nouveaux endpoints) */
-export const xtreamLink   = (baseUrl, username, password) => postJson("/xtream/link", { baseUrl, username, password });
+/* Xtream */
+export const xtreamLink   = (baseUrl, username, password) => postJson("/xtream/link",   { baseUrl, username, password });
 export const xtreamStatus = () => getJson("/xtream/status");
 export const xtreamTest   = (args) => postJson("/xtream/test", args || {});
 export const xtreamUnlink = () => delJson("/xtream/unlink");
