@@ -13,7 +13,7 @@ export default function LinkXtream() {
   async function load() {
     setErr(""); setMsg("");
     try { await ensureAccess(); } catch {}
-    try { setStatus(await xtreamStatus()); } catch (e) { setStatus(null); }
+    try { setStatus(await xtreamStatus()); } catch { setStatus(null); }
   }
   useEffect(() => { load(); }, []);
 
@@ -24,20 +24,18 @@ export default function LinkXtream() {
       await ensureAccess();
       const r = await xtreamLink(baseUrl, username, password);
       setMsg(`Compte lié: ${r.username} @ ${r.baseUrl}`);
+      setBaseUrl(""); setUsername(""); setPassword("");
       await load();
     } catch (e) {
-      setErr(e?.data?.message ? `${e.data.message}${e.data.missing ? " → " + e.data.missing.join(", ") : ""}` : (e.message || "Erreur"));
+      setErr(e?.data?.message
+        ? `${e.data.message}${e?.data?.missing ? " → " + e.data.missing.join(", ") : ""}`
+        : (e.message || "Erreur"));
     }
   }
   async function onTest() {
     setErr(""); setMsg("");
-    try {
-      await ensureAccess();
-      const r = await xtreamTest(); // test avec creds sauvegardés
-      setMsg(r.ok ? "Test OK" : `Test KO: ${r.reason || "?"}`);
-    } catch (e) {
-      setErr(e?.data?.message || e.message || "Erreur");
-    }
+    try { await ensureAccess(); const r = await xtreamTest(); setMsg(r.ok ? "Test OK" : `Test KO: ${r.reason || "?"}`); }
+    catch (e) { setErr(e?.data?.message || e.message || "Erreur"); }
   }
   async function onUnlink() {
     setErr(""); setMsg("");
@@ -62,16 +60,13 @@ export default function LinkXtream() {
       )}
 
       <form onSubmit={onLink}>
-        <div>
-          <label>Base URL</label>
+        <div><label>Base URL</label>
           <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="http://serveur:port" required />
         </div>
-        <div>
-          <label>Utilisateur</label>
+        <div><label>Utilisateur</label>
           <input value={username} onChange={e => setUsername(e.target.value)} required />
         </div>
-        <div>
-          <label>Mot de passe</label>
+        <div><label>Mot de passe</label>
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} required />
         </div>
         <button type="submit">Lier</button>
