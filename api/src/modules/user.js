@@ -26,7 +26,6 @@ function enc(plain) {
 
 /* ================= Utils ================= */
 function normalizeInput(body = {}) {
-  // tolère plusieurs noms de champs côté front
   const baseUrlRaw =
     body.baseUrl || body.url || body.serverUrl || body.apiUrl ||
     (body.host && body.port ? `${body.host}:${body.port}` : null) ||
@@ -37,15 +36,11 @@ function normalizeInput(body = {}) {
 
   let baseUrl = (baseUrlRaw || "").toString().trim();
   if (baseUrl && !/^https?:\/\//i.test(baseUrl)) baseUrl = `http://${baseUrl}`;
-
-  // nettoie éventuel double slash final
   if (baseUrl.endsWith("//")) baseUrl = baseUrl.slice(0, -1);
-  // enlève slash final (optionnel)
   if (baseUrl.endsWith("/")) baseUrl = baseUrl.slice(0, -1);
 
-  return { baseUrl, username, password };
+  return { baseUrl, username: username?.toString().trim(), password: password?.toString().trim() };
 }
-
 function validateInput({ baseUrl, username, password }) {
   const missing = [];
   if (!baseUrl) missing.push("baseUrl");
@@ -69,27 +64,31 @@ async function ensureTable() {
 }
 
 /* ================= Routes ================= */
-
-/** Lier / mettre à jour un compte Xtream */
 router.post("/link-xtream", async (req, res, next) => {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
 
-    // debug léger si besoin
-    // console.log("[LINK-XTREAM] auth user =", req.user);
+    // DEBUG utile quand 422
+    if (process.env.NODE_ENV !== "production") {
+      console.log("[LINK-XTREAM] raw body =", req.body);
+    }
 
     const { baseUrl, username, password } = normalizeInput(req.body);
     const missing = validateInput({ baseUrl, username, password });
     if (missing.length) {
       return res.status(422).json({
         message: "Missing required fields",
-        missing, // ['baseUrl', ...]
+        missing, // ex: ['baseUrl']
         expected: ["baseUrl", "username", "password"],
+        received: {
+          baseUrl: Boolean(baseUrl),
+          username: Boolean(username),
+          password: Boolean(password),
+        },
       });
     }
 
     await ensureTable();
-
     await pool.query(
       `INSERT INTO user_xtream (user_id, base_url, username_enc, password_enc)
        VALUES ($1,$2,$3,$4)
@@ -108,7 +107,6 @@ router.post("/link-xtream", async (req, res, next) => {
   }
 });
 
-/** Obtenir l’état du lien Xtream (masqué) */
 router.get("/xtream", async (req, res, next) => {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
