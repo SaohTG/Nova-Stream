@@ -1,52 +1,90 @@
 // web/src/lib/api.js
-const API_BASE = import.meta.env.VITE_API_BASE || "http://85.31.239.110:4000";
 
-async function request(path, { method = "GET", body, headers = {}, retry = true } = {}) {
-  const url = path.startsWith("http") ? path : `${API_BASE}${path}`;
-  const init = {
-    method,
-    credentials: "include", // indispensable pour cookies
-    headers: { "Content-Type": "application/json", ...headers },
-  };
-  if (body !== undefined) init.body = typeof body === "string" ? body : JSON.stringify(body);
+// Base API depuis l'env Vite; fallback local
+const API_BASE =
+  (typeof import.meta !== "undefined" && import.meta.env && import.meta.env.VITE_API_BASE) ||
+  "http://localhost:4000";
 
-  let res, txt, data;
+// Petit utilitaire interne pour parser JSON en gérant 204/empty
+async function parseJsonSafe(res) {
+  if (res.status === 204) return null;
+  const text = await res.text();
   try {
-    res = await fetch(url, init);
-  } catch (e) {
-    const err = new Error(`Network error to ${path}: ${e.message}`);
-    err.cause = e;
-    throw err;
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
   }
-
-  txt = await res.text().catch(() => "");
-  try { data = txt ? JSON.parse(txt) : null; } catch { data = null; }
-
-  if (!res.ok) {
-    // Auto refresh 401 une fois
-    if (res.status === 401 && retry) {
-      try {
-        const r = await fetch(`${API_BASE}/auth/refresh`, {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: "{}",
-        });
-        if (r.ok) return request(path, { method, body, headers, retry: false });
-      } catch {}
-    }
-    const msg = data?.error || data?.message || `HTTP ${res.status} on ${path}${txt ? ` – ${txt.slice(0, 200)}` : ""}`;
-    const err = new Error(msg);
-    err.status = res.status;
-    err.path = path;
-    err.body = txt;
-    throw err;
-  }
-
-  return data ?? null;
 }
 
-export const getJson = (path, opts) => request(path, { ...opts, method: "GET" });
-export const postJson = (path, body, opts) => request(path, { ...opts, method: "POST", body });
-export const delJson  = (path, opts) => request(path, { ...opts, method: "DELETE" });
+// Tente un refresh de session et renvoie true/false
+async function tryRefresh() {
+  try {
+    const r = await fetch(`${API_BASE}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Requête générique avec:
+ * - credentials: 'include' (cookies httpOnly)
+ * - retry automatique 1x sur 401 via /auth/refresh
+ */
+async function request(path, { method = "GET", body, headers } = {}) {
+  const first = await fetch(`${API_BASE}${path}`, {
+    method,
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(headers || {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+
+  if (first.status === 401) {
+    const ok = await tryRefresh();
+    if (ok) {
+      const second = await fetch(`${API_BASE}${path}`, {
+        method,
+        credentials: "include",
+        headers: { "Content-Type": "application/json", ...(headers || {}) },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      if (!second.ok) {
+        const data = await parseJsonSafe(second);
+        const msg = data?.error || `HTTP ${second.status}`;
+        throw new Error(msg);
+      }
+      return parseJsonSafe(second);
+    }
+  }
+
+  if (!first.ok) {
+    const data = await parseJsonSafe(first);
+    const msg = data?.error || `HTTP ${first.status}`;
+    throw new Error(msg);
+  }
+  return parseJsonSafe(first);
+}
+
+/* -------------------- Helpers haut-niveau -------------------- */
+
+export function getJson(path) {
+  return request(path, { method: "GET" });
+}
+
+export function postJson(path, body) {
+  return request(path, { method: "POST", body });
+}
+
+export function putJson(path, body) {
+  return request(path, { method: "PUT", body });
+}
+
+export function delJson(path, body) {
+  return request(path, { method: "DELETE", body });
+}
+
+/* -------------------- Expose la base -------------------- */
 export { API_BASE };
