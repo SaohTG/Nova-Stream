@@ -7,7 +7,7 @@ const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
-/* ====== AES-256-GCM ====== */
+/* ========= AES-256-GCM ========= */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY must be 64 hex chars (32 bytes)");
@@ -22,7 +22,7 @@ function enc(plain) {
   return `v1:${iv.toString("base64")}:${tag.toString("base64")}:${ct.toString("base64")}`;
 }
 
-/* ====== Utils ====== */
+/* ========= Utils ========= */
 function normalizeBaseUrl(u) {
   let s = (u || "").toString().trim();
   if (!s) return "";
@@ -37,6 +37,10 @@ function collectStringsDeep(obj, acc = []) {
   for (const v of Object.values(obj)) collectStringsDeep(v, acc);
   return acc;
 }
+function getFirst(body, keys) {
+  for (const k of keys) if (body?.[k] != null) return body[k];
+  return undefined;
+}
 function parseXtreamFromString(s) {
   if (typeof s !== "string") return null;
   const str = s.trim();
@@ -46,34 +50,56 @@ function parseXtreamFromString(s) {
     const user = u.searchParams.get("username");
     const pass = u.searchParams.get("password");
     if (!user || !pass) return null;
-    const base = `${u.protocol}//${u.host}`; // racine propre
-    return {
-      baseUrl: normalizeBaseUrl(base),
-      username: String(user).trim(),
-      password: String(pass).trim(),
-    };
-  } catch {
-    return null;
-  }
+    const base = `${u.protocol}//${u.host}`;
+    return { baseUrl: normalizeBaseUrl(base), username: String(user).trim(), password: String(pass).trim() };
+  } catch { return null; }
 }
-function getFirst(body, keys) {
-  for (const k of keys) {
-    if (body?.[k] != null) return body[k];
+// host/IP éventuel (sans schéma), avec port optionnel
+const HOST_RE = /^(?:[a-z0-9.-]+|\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?$/i;
+function findHostPortDeep(body) {
+  let host = null, port = null;
+  function walk(o) {
+    if (!o || typeof o !== "object") return;
+    for (const [k,v] of Object.entries(o)) {
+      if (typeof v === "string") {
+        const key = k.toLowerCase();
+        if (!host && (key.includes("host") || key.includes("domain") || key.includes("server") || key === "ip" || key.includes("addr"))) {
+          const val = v.trim();
+          if (/^https?:\/\//i.test(val)) {
+            try { const u = new URL(val); host = u.hostname; if (!port) port = u.port; } catch {}
+          } else if (HOST_RE.test(val)) {
+            if (val.includes(":")) { const [h,p] = val.split(":"); host = h; if (!port) port = p; }
+            else { host = val; }
+          }
+        }
+        // parfois le port est donné seul
+        if (!port && (key === "port" || key.endsWith("_port")) && /^\d{1,5}$/.test(v.trim())) port = v.trim();
+      } else if (typeof v === "number") {
+        const key = k.toLowerCase();
+        if (!port && (key === "port" || key.endsWith("_port"))) port = String(v);
+      } else {
+        walk(v);
+      }
+    }
   }
-  return undefined;
+  walk(body);
+  return host ? normalizeBaseUrl(`${host}${port ? ":"+port : ""}`) : "";
 }
+
 function extractFields(body = {}) {
-  // 🔁 alias très larges
+  // aliases snake_case + camelCase
   let baseUrl = getFirst(body, [
-    "baseUrl", "baseURL", "url", "serverUrl", "serverURL", "portal", "endpoint",
-    "server", "domain", "hostName", "address", "addr", "ip", "m3uUrl", "playlist", "line",
+    "baseUrl","baseURL","base_url",
+    "url","serverUrl","serverURL","server_url",
+    "portal","endpoint","server","domain",
+    "hostName","hostname","address","addr","ip",
+    "m3uUrl","m3uURL","playlist","line",
   ]);
   if (!baseUrl && body.host && body.port) baseUrl = `${body.host}:${body.port}`;
+  let username = getFirst(body, ["username","user","login","email","u","user_name","userName"]);
+  let password = getFirst(body, ["password","pass","pwd","p","pass_word","passWord"]);
 
-  let username = getFirst(body, ["username", "user", "login", "email", "u"]);
-  let password = getFirst(body, ["password", "pass", "pwd", "p"]);
-
-  // si baseUrl absent, tente d'extraire depuis n'importe quelle string du payload (m3u / player_api)
+  // si manques, tenter liens complets
   if (!baseUrl || !username || !password) {
     const strings = collectStringsDeep(body);
     for (const s of strings) {
@@ -86,6 +112,11 @@ function extractFields(body = {}) {
       }
     }
   }
+  // si baseUrl toujours vide, chercher un host nu + port
+  if (!baseUrl) {
+    const built = findHostPortDeep(body);
+    if (built) baseUrl = built;
+  }
 
   baseUrl = normalizeBaseUrl(baseUrl);
   username = (username || "").toString().trim();
@@ -93,6 +124,7 @@ function extractFields(body = {}) {
   return { baseUrl, username, password };
 }
 
+/* ========= DB ========= */
 async function ensureTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_xtream (
@@ -106,7 +138,7 @@ async function ensureTable() {
   `);
 }
 
-/* ====== Routes ====== */
+/* ========= Routes ========= */
 router.post("/link-xtream", async (req, res, next) => {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
@@ -123,6 +155,7 @@ router.post("/link-xtream", async (req, res, next) => {
         received: { baseUrl: !!baseUrl, username: !!username, password: !!password },
         tips: [
           "Envoie { baseUrl, username, password }",
+          "Aliases acceptés: baseURL/base_url/url/server/domain/host(+port)...",
           "Ou colle un lien complet: http://host:port/get.php?username=U&password=P&type=m3u",
         ],
       });
@@ -141,10 +174,7 @@ router.post("/link-xtream", async (req, res, next) => {
     );
 
     return res.json({ ok: true, baseUrl });
-  } catch (e) {
-    e.status = e.status || 500;
-    next(e);
-  }
+  } catch (e) { e.status = e.status || 500; next(e); }
 });
 
 router.get("/xtream", async (req, res, next) => {
@@ -154,10 +184,7 @@ router.get("/xtream", async (req, res, next) => {
     const { rows } = await pool.query(`SELECT base_url FROM user_xtream WHERE user_id=$1`, [req.user.sub]);
     if (!rows.length) return res.json({ linked: false });
     return res.json({ linked: true, baseUrl: rows[0].base_url });
-  } catch (e) {
-    e.status = e.status || 500;
-    next(e);
-  }
+  } catch (e) { e.status = e.status || 500; next(e); }
 });
 
 export default router;
