@@ -12,7 +12,7 @@ export default function XtreamLinkForm() {
   const [okMsg, setOkMsg] = useState(null);
 
   // Utilise /api si défini, sinon racine (les deux fonctionnent côté API)
-  const API_BASE = (import.meta.env.VITE_API_BASE || "http://85.31.239.110:4000").replace(/\/+$/, "");
+  const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
 
   // Si l’utilisateur colle une URL complète (http(s)://host:port), on récupère le port auto si vide
   function onHostBlur() {
