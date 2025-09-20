@@ -1,66 +1,136 @@
 // web/src/App.jsx
-import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom";
-import { getJson, postJson } from "./lib/api";
-import LayoutShell from "./components/LayoutShell.jsx";
+import { useEffect, useState } from "react";
+import {
+  BrowserRouter,
+  Routes,
+  Route,
+  Navigate,
+  Outlet,
+  useLocation,
+} from "react-router-dom";
+import { getJson } from "./lib/api";
+
+// Layout & pages
+import Layout from "./components/Layout.jsx";
 import Home from "./pages/Home.jsx";
 import Movies from "./pages/Movies.jsx";
 import Series from "./pages/Series.jsx";
 import Live from "./pages/Live.jsx";
-import MyList from "./pages/MyList.jsx";
+import Settings from "./pages/Settings.jsx";
 import OnboardingXtream from "./pages/OnboardingXtream.jsx";
+
+// Voir plus (catégories complètes)
+import MovieCategory from "./pages/MovieCategory.jsx";
+import SeriesCategory from "./pages/SeriesCategory.jsx";
+
+// Auth
 import Login from "./pages/Login.jsx";
 import Signup from "./pages/Signup.jsx";
-import { useEffect, useState } from "react";
+
+/* ------------------------------ Garde Auth ------------------------------ */
+
+function CenterLoader({ label = "Chargement…" }) {
+  return (
+    <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">
+      {label}
+    </div>
+  );
+}
 
 function RequireAuth() {
-  const [state, setState] = useState({ loading: true, user: null });
+  const [state, setState] = useState({ checking: true, authed: false });
+  const loc = useLocation();
 
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        let me = await getJson("/auth/me");
+        await getJson("/auth/me");
         if (!alive) return;
-        setState({ loading: false, user: me?.user || null });
+        setState({ checking: false, authed: true });
       } catch {
-        // tente un refresh silencieux
-        try { await postJson("/auth/refresh", {}); } catch {}
-        try {
-          let me = await getJson("/auth/me");
-          if (!alive) return;
-          setState({ loading: false, user: me?.user || null });
-          return;
-        } catch {
-          if (!alive) return;
-          setState({ loading: false, user: null });
-        }
+        if (!alive) return;
+        setState({ checking: false, authed: false });
       }
     })();
-    return () => { alive = false; };
-  }, []);
+    return () => {
+      alive = false;
+    };
+  }, [loc.pathname]);
 
-  if (state.loading) return <div className="p-6 text-zinc-300">Chargement…</div>;
-  if (!state.user) return <Navigate to="/login" replace />;
+  if (state.checking) return <CenterLoader />;
+  if (!state.authed) return <Navigate to="/login" replace />;
   return <Outlet />;
 }
+
+/* --------------------------- Garde Xtream link --------------------------- */
+
+function RequireXtream() {
+  const [state, setState] = useState({ checking: true, linked: false });
+  const loc = useLocation();
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const j = await getJson("/user/has-xtream");
+        if (!alive) return;
+        setState({ checking: false, linked: !!j?.linked });
+      } catch {
+        if (!alive) return;
+        setState({ checking: false, linked: false });
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [loc.pathname]);
+
+  if (state.checking) return <CenterLoader />;
+  if (!state.linked) return <Navigate to="/onboarding/xtream" replace />;
+  return <Outlet />;
+}
+
+/* --------------------------- Shell = Layout once -------------------------- */
+
+function Shell() {
+  // Layout doit rendre <Outlet/> quelque part dans ses children
+  return (
+    <Layout>
+      <Outlet />
+    </Layout>
+  );
+}
+
+/* --------------------------------- App ---------------------------------- */
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Routes publiques (sans header) */}
+        {/* Public */}
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<Signup />} />
 
-        {/* Routes privées (avec header unique via LayoutShell) */}
+        {/* Protégé: nécessite auth */}
         <Route element={<RequireAuth />}>
-          <Route element={<LayoutShell />}>
-            <Route index element={<Home />} />
-            <Route path="/movies" element={<Movies />} />
-            <Route path="/series" element={<Series />} />
-            <Route path="/live" element={<Live />} />
-            <Route path="/my-list" element={<MyList />} />
-            <Route path="/onboarding" element={<OnboardingXtream />} />
+          {/* Layout unique */}
+          <Route element={<Shell />}>
+            {/* Onboarding/Settings : auth requis mais Xtream facultatif */}
+            <Route path="/onboarding/xtream" element={<OnboardingXtream />} />
+            <Route path="/settings" element={<Settings />} />
+
+            {/* Contenus : nécessitent également un compte Xtream lié */}
+            <Route element={<RequireXtream />}>
+              <Route index element={<Home />} />
+              <Route path="/movies" element={<Movies />} />
+              <Route path="/series" element={<Series />} />
+              <Route path="/live" element={<Live />} />
+
+              {/* “Voir plus” catégories */}
+              <Route path="/movies/category/:id" element={<MovieCategory />} />
+              <Route path="/series/category/:id" element={<SeriesCategory />} />
+            </Route>
           </Route>
         </Route>
 
