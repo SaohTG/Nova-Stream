@@ -1,5 +1,4 @@
 // api/src/main.js
-import "dotenv/config";
 import express from "express";
 import cookieParser from "cookie-parser";
 import cors from "cors";
@@ -13,19 +12,11 @@ import tmdbRouter from "./modules/tmdb.js";
 const app = express();
 app.set("trust proxy", 1);
 
-const origins =
-  (process.env.CORS_ORIGIN || "http://localhost:5173")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-
+// CORS simple et strict : une seule origine autorisée (depuis l'env)
+const ORIGIN = process.env.CORS_ORIGIN || "http://localhost:5173";
 app.use(
   cors({
-    origin(origin, cb) {
-      if (!origin) return cb(null, true);
-      if (origins.includes(origin)) return cb(null, true);
-      return cb(new Error(`CORS blocked: ${origin}`));
-    },
+    origin: ORIGIN,
     credentials: true,
   })
 );
@@ -41,11 +32,14 @@ app.use("/user", ensureAuth, userRouter);
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
 
+// 404 JSON
 app.use((req, res, next) => {
   if (res.headersSent) return next();
   res.status(404).json({ error: "Not Found", path: req.path });
 });
 
+// Error JSON
+// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
   const status = err.status || err.statusCode || 500;
   const message = err.message || "Internal Server Error";
