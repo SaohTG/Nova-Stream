@@ -1,68 +1,67 @@
 // api/src/main.js
+import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import morgan from "morgan";
 
-// ⚠️ morgan optionnel (fallback no-op si non installé)
-let morgan = () => (_req, _res, next) => next();
-try {
-  const mod = await import("morgan");
-  morgan = mod.default || mod;
-} catch {
-  console.warn("[init] morgan non installé — logging HTTP désactivé");
-}
-
-// Routes modules
+// Routers (tous exportent `default`)
 import authRouter from "./modules/auth.js";
 import userRouter from "./modules/user.js";
 import xtreamRouter from "./modules/xtream.js";
+import tmdbRouter from "./modules/tmdb.js";
 
 const app = express();
 
-app.disable("x-powered-by");
+const PORT = Number(process.env.API_PORT || 4000);
+
+// CORS: accepter une ou plusieurs origines (séparées par des virgules)
+const ORIGIN_ENV = process.env.CORS_ORIGIN || "http://localhost:5173";
+const ALLOWED_ORIGINS = ORIGIN_ENV.split(",").map(s => s.trim()).filter(Boolean);
+
+// Utilitaires
 app.set("trust proxy", 1);
-
-// Logs HTTP (no-op si morgan absent)
 app.use(morgan("dev"));
-
-// Cookies (ns_access, ns_refresh)
+app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
-
-// CORS (avec cookies)
-const ORIGIN = process.env.CORS_ORIGIN || "http://85.31.239.110:5173";
 app.use(
   cors({
-    origin: ORIGIN,
+    origin: (origin, cb) => {
+      // autoriser requêtes server-to-server ou outils locaux
+      if (!origin) return cb(null, true);
+      // match exact sur la whitelist
+      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+      return cb(new Error(`Not allowed by CORS: ${origin}`));
+    },
     credentials: true,
   })
 );
 
-// JSON body
-app.use(express.json({ limit: "2mb" }));
-app.use(express.urlencoded({ extended: true }));
-
-// Health
-app.get("/", (_req, res) => res.json({ ok: true, service: "nova-stream-api" }));
-app.get("/healthz", (_req, res) => res.status(200).send("ok"));
+// Healthcheck
+app.get("/healthz", (_req, res) => res.json({ ok: true }));
 
 // Routes
-app.use(authRouter);
-app.use(userRouter);
-app.use(xtreamRouter);
+app.use(authRouter);   // /auth/...
+app.use(userRouter);   // /user/...
+app.use(xtreamRouter); // /xtream/...
+app.use(tmdbRouter);   // /tmdb/...
 
-// 404 + Error handler
-app.use((req, res) => res.status(404).json({ ok: false, error: "Not Found", path: req.path }));
+// 404
+app.use((req, res) => {
+  res.status(404).json({ ok: false, error: "Not Found" });
+});
+
+// Error handler
 app.use((err, _req, res, _next) => {
   const status = err?.status || 500;
   const message = err?.message || "Internal Server Error";
-  if (status >= 500) console.error("[API error]", message, err?.stack || "");
+  if (process.env.NODE_ENV !== "production") {
+    console.error("[API ERROR]", err);
+  }
   res.status(status).json({ ok: false, error: message });
 });
 
 // Start
-const port = Number(process.env.API_PORT || 4000);
-app.listen(port, () => console.log(`API on :${port}`));
-
-// Safety
-process.on("unhandledRejection", (r) => console.error("UnhandledRejection:", r));
-process.on("uncaughtException", (e) => console.error("UncaughtException:", e));
+app.listen(PORT, () => {
+  console.log(`API on :${PORT}`);
+});
