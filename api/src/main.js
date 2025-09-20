@@ -14,17 +14,12 @@ import tmdbRouter from "./modules/tmdb.js";
 const app = express();
 app.set("trust proxy", 1);
 
-// ✅ accepte plusieurs origins comma-séparés (CORS_ORIGIN="http://IP:5173,http://localhost:5173")
+// ✅ multi-origines
 const ORIGINS = (process.env.CORS_ORIGIN || "http://localhost:5173")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
+  .split(",").map(s => s.trim()).filter(Boolean);
 
 app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin) return cb(null, true);
-    return cb(null, ORIGINS.includes(origin));
-  },
+  origin: (origin, cb) => (!origin || ORIGINS.includes(origin)) ? cb(null, true) : cb(null, false),
   credentials: true,
 }));
 
@@ -51,19 +46,25 @@ app.use((err, req, res, _next) => {
   const status = err.status || err.statusCode || 500;
   const message = err.message || "Internal Server Error";
   if (process.env.NODE_ENV !== "production") {
-    console.error("[API ERROR]", status, message, err.stack);
+    console.error("[API ERROR]", status, message, err.stack || err);
   }
   if (!res.headersSent) res.status(status).json({ error: message });
 });
 
 const port = Number(process.env.API_PORT || 4000);
 
+// 🔴 Logs globaux pour éviter les “silents crash” (sinon le socket se ferme → ERR_EMPTY_RESPONSE)
+process.on("unhandledRejection", (e) => {
+  console.error("[UNHANDLED_REJECTION]", e);
+});
+process.on("uncaughtException", (e) => {
+  console.error("[UNCAUGHT_EXCEPTION]", e);
+});
+
 async function startServer() {
   try {
     await initDatabase();
-    app.listen(port, () => {
-      console.log(`API on :${port}`);
-    });
+    app.listen(port, () => console.log(`API on :${port}`));
   } catch (error) {
     console.error("Failed to start server:", error);
     process.exit(1);
