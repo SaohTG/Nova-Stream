@@ -2,8 +2,8 @@
 import jwt from "jsonwebtoken";
 
 /**
- * Ce middleware vérifie le cookie ns_access.
- * S'il est absent/expiré mais que ns_refresh est présent et valide,
+ * Ce middleware vérifie le cookie nova_access.
+ * S'il est absent/expiré mais que nova_refresh est présent et valide,
  * il régénère un access token et continue.
  */
 
@@ -25,7 +25,7 @@ function cookieBaseOptions() {
 }
 
 function setAccessCookie(res, accessToken) {
-  res.cookie("ns_access", accessToken, {
+  res.cookie("nova_access", accessToken, {
     ...cookieBaseOptions(),
     maxAge: ACCESS_TTL_SEC * 1000,
   });
@@ -34,7 +34,7 @@ function setAccessCookie(res, accessToken) {
 export function requireAuthUserId(req, res) {
   // version "sync" pour pouvoir l'appeler dans du code non-middleware
   try {
-    const tok = req.cookies?.ns_access;
+    const tok = req.cookies?.nova_access;
     if (tok) {
       const payload = jwt.verify(tok, ACCESS_SECRET);
       if (payload?.sub) return payload.sub;
@@ -44,7 +44,7 @@ export function requireAuthUserId(req, res) {
   }
 
   // Fallback refresh
-  const rtk = req.cookies?.ns_refresh;
+  const rtk = req.cookies?.nova_refresh;
   if (rtk) {
     try {
       const p = jwt.verify(rtk, REFRESH_SECRET);
