@@ -60,10 +60,10 @@ export default function SeriesCategory() {
         <div className="text-zinc-400">Aucune série dans cette catégorie.</div>
       ) : (
         <>
-          {/* ↑↑ Espacement augmenté via gap responsive ↑↑ */}
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 sm:gap-5 md:grid-cols-4 md:gap-6 lg:grid-cols-6 xl:grid-cols-8 2xl:grid-cols-10 2xl:gap-7">
+          {/* Grille avec vrais espacements horizontaux/verticaux */}
+          <div className="grid grid-cols-2 gap-x-5 gap-y-8 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 2xl:grid-cols-10">
             {items.map((it) => (
-              <div key={`s-${it.series_id || it.name}`} className="min-w-0">
+              <div key={`s-${it.series_id || it.name}`} className="min-w-0 p-0.5">
                 <PosterCard item={it} kind="series" />
               </div>
             ))}
