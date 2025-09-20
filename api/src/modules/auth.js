@@ -8,58 +8,78 @@ const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
-const ACCESS_TTL = Number(process.env.API_JWT_ACCESS_TTL || 900);
-const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL || 1209600);
+const ACCESS_TTL = Number(process.env.API_JWT_ACCESS_TTL ?? 900);        // 15 min
+const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL ?? 1209600);  // 14 j
 const COOKIE_SECURE = String(process.env.COOKIE_SECURE) === "true";
-const COOKIE_SAMESITE = process.env.COOKIE_SAMESITE || "lax";
+const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || "lax").toLowerCase();
 
-// util: wrapper async pour propager les erreurs à l’error middleware
+/** Async wrapper to forward errors to error middleware */
 const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
+/** Detect the password column name or create one if none exists */
+let PASSWORD_COL; // cache
+async function getPasswordColumn() {
+  if (PASSWORD_COL) return PASSWORD_COL;
+  const candidates = ["password", "password_hash", "hashed_password", "pass"];
+  const { rows } = await pool.query(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_name='users' AND column_name = ANY($1::text[])`,
+    [candidates]
+  );
+  if (rows.length) {
+    PASSWORD_COL = rows[0].column_name;
+    console.log(`[AUTH] Using users.${PASSWORD_COL} for password`);
+    return PASSWORD_COL;
+  }
+  // Fallback: create "password" column (text)
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password text`);
+  PASSWORD_COL = "password";
+  console.warn(`[AUTH] No password-like column found. Created users.password (text).`);
+  return PASSWORD_COL;
+}
 
 function signTokens(payload) {
   const accessToken  = jwt.sign(payload, process.env.API_JWT_SECRET,  { expiresIn: ACCESS_TTL });
   const refreshToken = jwt.sign(payload, process.env.API_REFRESH_SECRET, { expiresIn: REFRESH_TTL });
   return { accessToken, refreshToken };
 }
+
 function setRefreshCookie(res, token) {
+  const sameSite = ["lax", "strict", "none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
   res.cookie("rt", token, {
     httpOnly: true,
     secure: COOKIE_SECURE,
-    sameSite: COOKIE_SAMESITE, // 'none' + secure:true en prod HTTPS cross-site
+    sameSite,
     path: "/auth/refresh",
     maxAge: REFRESH_TTL * 1000,
   });
 }
 
-// DB helpers (avec try/catch -> throw pour passer au middleware d’erreur)
+// --- DB helpers -------------------------------------------------------------
 async function getUserByEmail(email) {
-  try {
-    const { rows } = await pool.query(`SELECT id, email, password FROM users WHERE email=$1 LIMIT 1`, [email]);
-    return rows[0] || null;
-  } catch (e) {
-    e.status = 500; throw e;
-  }
+  const col = await getPasswordColumn();
+  const sql = `SELECT id, email, ${col} AS password FROM users WHERE email=$1 LIMIT 1`;
+  const { rows } = await pool.query(sql, [email]);
+  return rows[0] || null;
 }
-async function createUser(email, password) {
-  try {
-    const hash = await bcrypt.hash(password, 10);
-    const { rows } = await pool.query(
-      `INSERT INTO users (email, password) VALUES ($1,$2) RETURNING id, email`,
-      [email, hash]
-    );
-    return rows[0];
-  } catch (e) {
-    e.status = 500; throw e;
-  }
+
+async function createUser(email, passwordPlain) {
+  const col = await getPasswordColumn();
+  const hash = await bcrypt.hash(passwordPlain, 10);
+  const sql = `INSERT INTO users (email, "${col}") VALUES ($1,$2) RETURNING id, email`;
+  const { rows } = await pool.query(sql, [email, hash]);
+  return rows[0];
 }
-async function validateUser(email, password) {
+
+async function validateUser(email, passwordPlain) {
   const u = await getUserByEmail(email);
-  if (!u) return null;
-  const ok = await bcrypt.compare(password, u.password);
+  if (!u || !u.password) return null;
+  const ok = await bcrypt.compare(passwordPlain, u.password);
   return ok ? { id: u.id, email: u.email } : null;
 }
 
-// Access guard (Bearer)
+// --- Access guard (Bearer) --------------------------------------------------
 export function ensureAuth(req, res, next) {
   const h = req.headers.authorization || "";
   const [, token] = h.split(" ");
@@ -72,7 +92,7 @@ export function ensureAuth(req, res, next) {
   }
 }
 
-// Routes (toutes wrappées avec ah)
+// --- Routes -----------------------------------------------------------------
 router.post("/signup", ah(async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ message: "email/password required" });
