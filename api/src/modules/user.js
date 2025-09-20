@@ -30,7 +30,6 @@ function normalizeBaseUrl(u) {
   while (s.endsWith("/")) s = s.slice(0, -1);
   return s;
 }
-// parcours profond: récupère toutes les chaînes présentes dans l'objet
 function collectStringsDeep(obj, acc = []) {
   if (obj == null) return acc;
   if (typeof obj === "string") { acc.push(obj); return acc; }
@@ -38,7 +37,6 @@ function collectStringsDeep(obj, acc = []) {
   for (const v of Object.values(obj)) collectStringsDeep(v, acc);
   return acc;
 }
-// essaie d'extraire baseUrl/username/password à partir d'un lien Xtream complet
 function parseXtreamFromString(s) {
   if (typeof s !== "string") return null;
   const str = s.trim();
@@ -48,13 +46,7 @@ function parseXtreamFromString(s) {
     const user = u.searchParams.get("username");
     const pass = u.searchParams.get("password");
     if (!user || !pass) return null;
-    // player_api.php ou get.php -> on retire le fichier final pour retrouver la racine
-    let base = `${u.protocol}//${u.host}`;
-    if (/\/(player_api|get)\.php$/i.test(u.pathname)) {
-      // rien à faire, on garde juste origin
-    } else {
-      // si c'est un autre chemin, on garde l'origin (propre et sûr)
-    }
+    const base = `${u.protocol}//${u.host}`; // racine propre
     return {
       baseUrl: normalizeBaseUrl(base),
       username: String(user).trim(),
@@ -64,21 +56,27 @@ function parseXtreamFromString(s) {
     return null;
   }
 }
-
-// extraction souple (aliases + parsing de liens)
+function getFirst(body, keys) {
+  for (const k of keys) {
+    if (body?.[k] != null) return body[k];
+  }
+  return undefined;
+}
 function extractFields(body = {}) {
-  // alias "plats"
-  let baseUrl = body.baseUrl || body.url || body.serverUrl || body.apiUrl || body.portal || body.endpoint;
+  // 🔁 alias très larges
+  let baseUrl = getFirst(body, [
+    "baseUrl", "baseURL", "url", "serverUrl", "serverURL", "portal", "endpoint",
+    "server", "domain", "hostName", "address", "addr", "ip", "m3uUrl", "playlist", "line",
+  ]);
   if (!baseUrl && body.host && body.port) baseUrl = `${body.host}:${body.port}`;
-  let username = body.username || body.user || body.login || body.email || body.u;
-  let password = body.password || body.pass || body.pwd || body.p;
 
-  baseUrl = baseUrl ? normalizeBaseUrl(baseUrl) : "";
+  let username = getFirst(body, ["username", "user", "login", "email", "u"]);
+  let password = getFirst(body, ["password", "pass", "pwd", "p"]);
 
-  // si un des champs manque, on essaie de parser des liens complets présents quelque part dans le payload
+  // si baseUrl absent, tente d'extraire depuis n'importe quelle string du payload (m3u / player_api)
   if (!baseUrl || !username || !password) {
-    const allStrings = collectStringsDeep(body);
-    for (const s of allStrings) {
+    const strings = collectStringsDeep(body);
+    for (const s of strings) {
       const hit = parseXtreamFromString(s);
       if (hit) {
         if (!baseUrl) baseUrl = hit.baseUrl;
@@ -89,11 +87,9 @@ function extractFields(body = {}) {
     }
   }
 
-  // normalisation finale
   baseUrl = normalizeBaseUrl(baseUrl);
   username = (username || "").toString().trim();
   password = (password || "").toString().trim();
-
   return { baseUrl, username, password };
 }
 
@@ -116,20 +112,18 @@ router.post("/link-xtream", async (req, res, next) => {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
 
     const { baseUrl, username, password } = extractFields(req.body || {});
-    const missing = [];
-    if (!baseUrl) missing.push("baseUrl");
-    if (!username) missing.push("username");
-    if (!password) missing.push("password");
-
-    if (missing.length) {
-      // message clair + indices (ne log pas les secrets)
+    if (!baseUrl || !username || !password) {
       return res.status(422).json({
         message: "Missing required fields",
-        missing,
+        missing: [
+          ...(baseUrl ? [] : ["baseUrl"]),
+          ...(username ? [] : ["username"]),
+          ...(password ? [] : ["password"]),
+        ],
         received: { baseUrl: !!baseUrl, username: !!username, password: !!password },
         tips: [
-          "Tu peux envoyer { baseUrl, username, password }",
-          "OU bien un lien complet Xtream: http://host:port/get.php?username=U&password=P&type=m3u",
+          "Envoie { baseUrl, username, password }",
+          "Ou colle un lien complet: http://host:port/get.php?username=U&password=P&type=m3u",
         ],
       });
     }
@@ -157,10 +151,7 @@ router.get("/xtream", async (req, res, next) => {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
     await ensureTable();
-    const { rows } = await pool.query(
-      `SELECT base_url FROM user_xtream WHERE user_id=$1`,
-      [req.user.sub]
-    );
+    const { rows } = await pool.query(`SELECT base_url FROM user_xtream WHERE user_id=$1`, [req.user.sub]);
     if (!rows.length) return res.json({ linked: false });
     return res.json({ linked: true, baseUrl: rows[0].base_url });
   } catch (e) {
