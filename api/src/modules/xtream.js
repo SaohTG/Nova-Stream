@@ -1,290 +1,204 @@
 // api/src/modules/xtream.js
-import express from "express";
-import { pool } from "../db/index.js";
-import { decrypt } from "../lib/crypto.js";
-import { requireAuthUserId } from "../middleware/resolveMe.js";
+import { Router } from "express";
+import { Pool } from "pg";
+import crypto from "crypto";
 
-const router = express.Router();
+const router = Router();
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+pool.on("error", (e) => console.error("[PG ERROR]", e));
 
-// Cache catégories 10 min
-const catCache = new Map();
-const CAT_TTL_MS = 10 * 60 * 1000;
-
-const TIMEOUT = Math.max(5000, Number(process.env.XTREAM_TIMEOUT_MS || 10000));
-
-function buildBaseUrl(host, port) {
-  let h = String(host || "").trim();
-  if (!h) throw new Error("host requis");
-  if (!/^https?:\/\//i.test(h)) h = `http://${h}`;
-  let url;
-  try { url = new URL(h); } catch { throw new Error("host invalide"); }
-  const p = port ? parseInt(String(port), 10) : null;
-  if (p && Number.isFinite(p) && p > 0) url.port = String(p);
-  url.pathname = url.pathname.replace(/\/+$/, "");
-  return url.toString().replace(/\/+$/, "");
+/* ============ AES-256-GCM ============ */
+function getKey() {
+  const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY must be 64 hex chars");
+  return Buffer.from(hex, "hex");
+}
+function enc(plain) {
+  const key = getKey();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([cipher.update(String(plain), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1:${iv.toString("base64")}:${tag.toString("base64")}:${ct.toString("base64")}`;
+}
+function dec(blob) {
+  const [v, ivb64, tagb64, ctb64] = String(blob).split(":");
+  if (v !== "v1") throw new Error("Unsupported enc version");
+  const key = getKey();
+  const iv = Buffer.from(ivb64, "base64");
+  const tag = Buffer.from(tagb64, "base64");
+  const ct = Buffer.from(ctb64, "base64");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+  return pt.toString("utf8");
 }
 
-async function httpGetJson(url, timeoutMs = TIMEOUT) {
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), timeoutMs);
-  try {
-    const r = await fetch(url, { signal: ac.signal, headers: { Accept: "application/json,*/*" } });
-    if (!r.ok) {
-      const text = await r.text().catch(() => "");
-      const err = new Error(`HTTP ${r.status}`);
-      err.status = r.status;
-      err.body = text;
-      throw err;
-    }
-    const txt = await r.text();
-    try { return JSON.parse(txt); }
-    catch {
-      if (!txt || txt === "null") return null;
-      const err = new Error("Réponse JSON invalide depuis Xtream");
-      err.status = 502;
-      err.body = txt.slice(0, 300);
-      throw err;
-    }
-  } catch (e) {
-    if (e?.name === "AbortError") {
-      const err = new Error("Xtream a mis trop de temps à répondre");
-      err.status = 504;
-      throw err;
-    }
-    throw e;
-  } finally { clearTimeout(t); }
+/* ============ Utils ============ */
+function normalizeBaseUrl(u) {
+  let s = (u || "").toString().trim();
+  if (!s) return "";
+  if (!/^https?:\/\//i.test(s)) s = `http://${s}`;
+  while (s.endsWith("/")) s = s.slice(0, -1);
+  return s;
 }
-
-async function getLinkedCredentials(userId) {
+function mask(v = "") {
+  if (!v) return "";
+  if (v.length <= 2) return v;
+  return `${v[0]}${"*".repeat(Math.max(1, v.length - 2))}${v.at(-1)}`;
+}
+async function ensureTable() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS xtream_accounts (
+      user_id uuid PRIMARY KEY,
+      base_url text NOT NULL,
+      username_enc text NOT NULL,
+      password_enc text NOT NULL,
+      created_at timestamptz DEFAULT now(),
+      updated_at timestamptz DEFAULT now()
+    );
+  `);
+}
+async function getCreds(userId) {
   const { rows } = await pool.query(
-    "SELECT host, port, username_enc, password_enc FROM xtream_links WHERE user_id=$1",
+    `SELECT base_url, username_enc, password_enc FROM xtream_accounts WHERE user_id=$1`,
     [userId]
   );
-  if (!rows.length) {
-    const err = new Error("Aucun compte Xtream lié");
-    err.status = 404;
-    throw err;
-  }
-  const key = process.env.API_ENCRYPTION_KEY;
-  const username = await decrypt(rows[0].username_enc, key);
-  const password = await decrypt(rows[0].password_enc, key);
-  const base = buildBaseUrl(rows[0].host, rows[0].port);
-  return { base, username, password };
-}
-
-function catActionFor(type) {
-  if (type === "movie") return "get_vod_categories";
-  if (type === "series") return "get_series_categories";
-  if (type === "live") return "get_live_categories";
-  throw new Error("type inconnu");
-}
-function listActionFor(type) {
-  if (type === "movie") return "get_vod_streams";
-  if (type === "series") return "get_series";
-  if (type === "live") return "get_live_streams";
-  throw new Error("type inconnu");
-}
-
-async function getCategoriesMap(userId, type, creds) {
-  const key = `${userId}:${type}`;
-  const now = Date.now();
-  const hit = catCache.get(key);
-  if (hit && now - hit.t < CAT_TTL_MS) return hit.map;
-
-  const url = `${creds.base}/player_api.php?username=${encodeURIComponent(creds.username)}&password=${encodeURIComponent(creds.password)}&action=${catActionFor(type)}`;
-  const arr = await httpGetJson(url, TIMEOUT);
-  const map = new Map();
-  if (Array.isArray(arr)) {
-    for (const c of arr) {
-      const id = String(c.category_id ?? "");
-      const name = c.category_name ?? "Autres";
-      if (id) map.set(id, name);
-    }
-  }
-  catCache.set(key, { t: now, map });
-  return map;
-}
-
-/* ---------------------------- Mapping normalisé --------------------------- */
-function pickImage(...candidates) {
-  for (const v of candidates) {
-    if (v && typeof v === "string") return v;
-  }
-  return null;
-}
-
-function mapMovieItem(it, catMap) {
-  const cid = String(it.category_id ?? "");
+  if (!rows.length) return null;
   return {
-    stream_id: it.stream_id,
-    name: it.name,
-    // image normalisée + champs bruts
-    image: pickImage(it.stream_icon, it.cover),
-    stream_icon: it.stream_icon || null,
-    cover: it.cover || null,
-    category_id: cid || "0",
-    category_name: catMap.get(cid) || "Autres",
-    container_extension: it.container_extension || null,
-    rating: it.rating || null,
-    added: it.added || null,
-    plot: it.plot || it.description || null,
+    baseUrl: rows[0].base_url,
+    username: dec(rows[0].username_enc),
+    password: dec(rows[0].password_enc),
   };
 }
-function mapSeriesItem(it, catMap) {
-  const cid = String(it.category_id ?? "");
-  const img = pickImage(it.cover, it.stream_icon);
-  return {
-    series_id: it.series_id,
-    name: it.name,
-    image: img,
-    cover: it.cover || null,
-    stream_icon: it.stream_icon || null,
-    category_id: cid || "0",
-    category_name: catMap.get(cid) || "Autres",
-    rating: it.rating || null,
-    plot: it.plot || it.overview || null,
-    last_modified: it.last_modified || null,
-  };
+async function saveCreds(userId, baseUrl, username, password) {
+  await ensureTable();
+  await pool.query(
+    `INSERT INTO xtream_accounts (user_id, base_url, username_enc, password_enc)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (user_id) DO UPDATE
+       SET base_url=EXCLUDED.base_url,
+           username_enc=EXCLUDED.username_enc,
+           password_enc=EXCLUDED.password_enc,
+           updated_at=now()`,
+    [userId, baseUrl, enc(username), enc(password)]
+  );
 }
-function mapLiveItem(it, catMap) {
-  const cid = String(it.category_id ?? "");
-  const img = pickImage(it.stream_icon);
-  return {
-    stream_id: it.stream_id,
-    name: it.name,
-    image: img,
-    stream_icon: it.stream_icon || null,
-    category_id: cid || "0",
-    category_name: catMap.get(cid) || "Autres",
-    stream_type: it.stream_type || null,
-  };
+async function deleteCreds(userId) {
+  await ensureTable();
+  await pool.query(`DELETE FROM xtream_accounts WHERE user_id=$1`, [userId]);
 }
-
-/* ------------------------------ Utilitaires ------------------------------ */
-function makeUrl(creds, qs) {
-  const base = `${creds.base}/player_api.php?username=${encodeURIComponent(creds.username)}&password=${encodeURIComponent(creds.password)}`;
-  return `${base}&${qs}`;
-}
-async function listMovies(creds, category_id) {
-  const extra = category_id ? `&category_id=${encodeURIComponent(category_id)}` : "";
-  return httpGetJson(makeUrl(creds, `action=${listActionFor("movie")}${extra}`), TIMEOUT);
-}
-async function listSeries(creds, category_id) {
-  const extra = category_id ? `&category_id=${encodeURIComponent(category_id)}` : "";
-  return httpGetJson(makeUrl(creds, `action=${listActionFor("series")}${extra}`), TIMEOUT);
-}
-async function listLive(creds, category_id) {
-  const extra = category_id ? `&category_id=${encodeURIComponent(category_id)}` : "";
-  return httpGetJson(makeUrl(creds, `action=${listActionFor("live")}${extra}`), TIMEOUT);
-}
-
-/* -------------------------------- Endpoints ------------------------------- */
-
-// Catégories
-router.get("/xtream/movie-categories", async (req, res) => {
+async function fetchWithTimeout(url, ms = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
   try {
-    const userId = requireAuthUserId(req, res);
-    const creds = await getLinkedCredentials(userId);
-    const map = await getCategoriesMap(userId, "movie", creds);
-    res.json(Array.from(map, ([category_id, category_name]) => ({ category_id, category_name })));
-  } catch (e) { res.status(e?.status || 500).json({ ok: false, error: e?.message || "Erreur" }); }
-});
-router.get("/xtream/series-categories", async (req, res) => {
-  try {
-    const userId = requireAuthUserId(req, res);
-    const creds = await getLinkedCredentials(userId);
-    const map = await getCategoriesMap(userId, "series", creds);
-    res.json(Array.from(map, ([category_id, category_name]) => ({ category_id, category_name })));
-  } catch (e) { res.status(e?.status || 500).json({ ok: false, error: e?.message || "Erreur" }); }
-});
-router.get("/xtream/live-categories", async (req, res) => {
-  try {
-    const userId = requireAuthUserId(req, res);
-    const creds = await getLinkedCredentials(userId);
-    const map = await getCategoriesMap(userId, "live", creds);
-    res.json(Array.from(map, ([category_id, category_name]) => ({ category_id, category_name })));
-  } catch (e) { res.status(e?.status || 500).json({ ok: false, error: e?.message || "Erreur" }); }
-});
+    const r = await fetch(url, { signal: ctrl.signal });
+    return r;
+  } finally {
+    clearTimeout(t);
+  }
+}
+function buildPlayerApi(baseUrl, username, password) {
+  const u = new URL(`${baseUrl}/player_api.php`);
+  u.searchParams.set("username", username);
+  u.searchParams.set("password", password);
+  return u.toString();
+}
 
-// Movies (support category_id & limit)
-router.post("/xtream/movies", async (req, res) => {
-  try {
-    const userId = requireAuthUserId(req, res);
-    const { limit: rawLimit, category_id } = req.body || {};
-    const limit = Math.max(1, Math.min(Number(rawLimit || 200), 2000));
-    const creds = await getLinkedCredentials(userId);
-    const catMap = await getCategoriesMap(userId, "movie", creds);
+/* ============ Routes ============ */
 
-    let out = [];
-    if (category_id) {
-      const arr = await listMovies(creds, String(category_id));
-      out = (Array.isArray(arr) ? arr : []).map((it) => mapMovieItem(it, catMap)).slice(0, limit);
-    } else {
-      // on itère catégorie par catégorie jusqu'à atteindre le limit
-      for (const [cid] of catMap) {
-        const arr = await listMovies(creds, cid);
-        const mapped = (Array.isArray(arr) ? arr : []).map((it) => mapMovieItem(it, catMap));
-        out.push(...mapped);
-        if (out.length >= limit) { out = out.slice(0, limit); break; }
+/** POST /xtream/link  { baseUrl, username, password }
+ *  Enregistre (chiffré) et teste l’accès.
+ */
+router.post("/link", async (req, res, next) => {
+  try {
+    if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
+    const baseUrl = normalizeBaseUrl(req.body?.baseUrl);
+    const username = (req.body?.username || "").toString().trim();
+    const password = (req.body?.password || "").toString().trim();
+
+    const missing = [];
+    if (!baseUrl) missing.push("baseUrl");
+    if (!username) missing.push("username");
+    if (!password) missing.push("password");
+    if (missing.length) return res.status(422).json({ message: "Missing fields", missing });
+
+    // Test avant sauvegarde
+    const testUrl = buildPlayerApi(baseUrl, username, password);
+    const r = await fetchWithTimeout(testUrl, 8000);
+    const text = await r.text();
+    let ok = false, reason = "";
+    if (r.ok) {
+      try {
+        const j = JSON.parse(text);
+        ok = j?.user_info?.auth === 1 || j?.user_info?.status === "Active";
+        reason = ok ? "OK" : "Invalid credentials";
+      } catch {
+        ok = false; reason = "Invalid response";
       }
+    } else {
+      reason = `HTTP_${r.status}`;
     }
-    res.json(out);
+    if (!ok) return res.status(400).json({ message: "Xtream test failed", reason });
+
+    await saveCreds(req.user.sub, baseUrl, username, password);
+    return res.json({ ok: true, baseUrl, username: mask(username) });
   } catch (e) {
-    res.status(e?.status || 500).json({ ok: false, error: e?.message || "Erreur" });
+    e.status = e.status || 500;
+    next(e);
   }
 });
 
-// Series
-router.post("/xtream/series", async (req, res) => {
+/** GET /xtream/status  -> { linked, baseUrl, username } */
+router.get("/status", async (req, res, next) => {
   try {
-    const userId = requireAuthUserId(req, res);
-    const { limit: rawLimit, category_id } = req.body || {};
-    const limit = Math.max(1, Math.min(Number(rawLimit || 200), 2000));
-    const creds = await getLinkedCredentials(userId);
-    const catMap = await getCategoriesMap(userId, "series", creds);
-
-    let out = [];
-    if (category_id) {
-      const arr = await listSeries(creds, String(category_id));
-      out = (Array.isArray(arr) ? arr : []).map((it) => mapSeriesItem(it, catMap)).slice(0, limit);
-    } else {
-      for (const [cid] of catMap) {
-        const arr = await listSeries(creds, cid);
-        const mapped = (Array.isArray(arr) ? arr : []).map((it) => mapSeriesItem(it, catMap));
-        out.push(...mapped);
-        if (out.length >= limit) { out = out.slice(0, limit); break; }
-      }
-    }
-    res.json(out);
+    if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
+    const c = await getCreds(req.user.sub);
+    if (!c) return res.json({ linked: false });
+    return res.json({ linked: true, baseUrl: c.baseUrl, username: mask(c.username) });
   } catch (e) {
-    res.status(e?.status || 500).json({ ok: false, error: e?.message || "Erreur" });
+    e.status = e.status || 500;
+    next(e);
   }
 });
 
-// Live
-router.post("/xtream/live", async (req, res) => {
+/** POST /xtream/test  (optionnel: baseUrl, username, password) */
+router.post("/test", async (req, res, next) => {
   try {
-    const userId = requireAuthUserId(req, res);
-    const { limit: rawLimit, category_id } = req.body || {};
-    const limit = Math.max(1, Math.min(Number(rawLimit || 300), 3000));
-    const creds = await getLinkedCredentials(userId);
-    const catMap = await getCategoriesMap(userId, "live", creds);
-
-    let out = [];
-    if (category_id) {
-      const arr = await listLive(creds, String(category_id));
-      out = (Array.isArray(arr) ? arr : []).map((it) => mapLiveItem(it, catMap)).slice(0, limit);
-    } else {
-      for (const [cid] of catMap) {
-        const arr = await listLive(creds, cid);
-        const mapped = (Array.isArray(arr) ? arr : []).map((it) => mapLiveItem(it, catMap));
-        out.push(...mapped);
-        if (out.length >= limit) { out = out.slice(0, limit); break; }
-      }
+    if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
+    let { baseUrl, username, password } = req.body || {};
+    if (!baseUrl || !username || !password) {
+      const saved = await getCreds(req.user.sub);
+      if (!saved) return res.status(400).json({ message: "No credentials provided or saved" });
+      ({ baseUrl, username, password } = saved);
     }
-    res.json(out);
+    baseUrl = normalizeBaseUrl(baseUrl);
+
+    const r = await fetchWithTimeout(buildPlayerApi(baseUrl, username, password), 8000);
+    const text = await r.text();
+    if (!r.ok) return res.status(r.status).json({ ok: false, reason: `HTTP_${r.status}` });
+    try {
+      const j = JSON.parse(text);
+      const ok = j?.user_info?.auth === 1 || j?.user_info?.status === "Active";
+      return res.json({ ok, raw: j });
+    } catch {
+      return res.status(502).json({ ok: false, reason: "Invalid JSON" });
+    }
   } catch (e) {
-    res.status(e?.status || 500).json({ ok: false, error: e?.message || "Erreur" });
+    e.status = e.status || 500;
+    next(e);
+  }
+});
+
+/** DELETE /xtream/unlink */
+router.delete("/unlink", async (req, res, next) => {
+  try {
+    if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
+    await deleteCreds(req.user.sub);
+    res.status(204).end();
+  } catch (e) {
+    e.status = e.status || 500;
+    next(e);
   }
 });
 
