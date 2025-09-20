@@ -1,4 +1,3 @@
-// api/src/main.js
 import "dotenv/config";
 import express from "express";
 import cookieParser from "cookie-parser";
@@ -14,7 +13,7 @@ import tmdbRouter from "./modules/tmdb.js";
 const app = express();
 app.set("trust proxy", 1);
 
-// ✅ multi-origines
+// Multi-origines via CORS_ORIGIN="http://85.31.239.110:5173,http://localhost:5173"
 const ORIGINS = (process.env.CORS_ORIGIN || "http://localhost:5173")
   .split(",").map(s => s.trim()).filter(Boolean);
 
@@ -33,6 +32,9 @@ app.use("/auth", authRouter);
 app.use("/user", ensureAuth, userRouter);
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
+
+// Debug temporaire : qui suis-je ?
+app.get("/debug/whoami", ensureAuth, (req, res) => res.json({ user: req.user }));
 
 // 404 JSON
 app.use((req, res, next) => {
@@ -53,13 +55,8 @@ app.use((err, req, res, _next) => {
 
 const port = Number(process.env.API_PORT || 4000);
 
-// 🔴 Logs globaux pour éviter les “silents crash” (sinon le socket se ferme → ERR_EMPTY_RESPONSE)
-process.on("unhandledRejection", (e) => {
-  console.error("[UNHANDLED_REJECTION]", e);
-});
-process.on("uncaughtException", (e) => {
-  console.error("[UNCAUGHT_EXCEPTION]", e);
-});
+process.on("unhandledRejection", (e) => console.error("[UNHANDLED_REJECTION]", e));
+process.on("uncaughtException", (e) => console.error("[UNCAUGHT_EXCEPTION]", e));
 
 async function startServer() {
   try {
