@@ -17,7 +17,7 @@ const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch
 let PASSWORD_COL;
 async function getPasswordColumn() {
   if (PASSWORD_COL) return PASSWORD_COL;
-  const candidates = ["password", "password_hash", "hashed_password", "pass"];
+  const candidates = ["password","password_hash","hashed_password","pass"];
   const { rows } = await pool.query(
     `SELECT column_name FROM information_schema.columns
      WHERE table_name='users' AND column_name = ANY($1::text[])`, [candidates]
@@ -38,11 +38,20 @@ function signTokens(payload) {
   const refreshToken = jwt.sign(payload, process.env.API_REFRESH_SECRET, { expiresIn: REFRESH_TTL });
   return { accessToken, refreshToken };
 }
+
 function setRefreshCookie(res, token) {
-  const sameSite = ["lax", "strict", "none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
+  const sameSite = ["lax","strict","none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
   res.cookie("rt", token, {
     httpOnly: true, secure: COOKIE_SECURE, sameSite,
     path: "/auth/refresh", maxAge: REFRESH_TTL * 1000,
+  });
+}
+function setAccessCookie(res, token) {
+  // httpOnly cookie contenant l'access token (fallback si le header Authorization manque côté front)
+  const sameSite = ["lax","strict","none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
+  res.cookie("at", token, {
+    httpOnly: true, secure: COOKIE_SECURE, sameSite,
+    path: "/", maxAge: ACCESS_TTL * 1000,
   });
 }
 
@@ -69,14 +78,17 @@ async function validateUser(email, passwordPlain) {
   return ok ? { id: u.id, email: u.email } : null;
 }
 
-// Bearer guard
+// Bearer OR cookie('at') guard
 export function ensureAuth(req, res, next) {
   const h = req.headers.authorization || "";
-  if (!h) {
-    console.warn("[AUTH] Missing Authorization", req.method, req.originalUrl);
+  let token = null;
+  if (h.startsWith("Bearer ")) token = h.split(" ")[1];
+  if (!token && req.cookies?.at) token = req.cookies.at;
+
+  if (!token) {
+    console.warn("[AUTH] Missing token (no Authorization header and no 'at' cookie)");
     return res.status(401).json({ message: "No token" });
   }
-  const [, token] = h.split(" ");
   try {
     req.user = jwt.verify(token, process.env.API_JWT_SECRET);
     next();
@@ -95,6 +107,7 @@ router.post("/signup", ah(async (req, res) => {
   const user = await createUser(email, password);
   const { accessToken, refreshToken } = signTokens({ sub: user.id, email: user.email });
   setRefreshCookie(res, refreshToken);
+  setAccessCookie(res, accessToken);
   res.status(201).json({ accessToken });
 }));
 
@@ -107,6 +120,7 @@ router.post("/login", ah(async (req, res) => {
 
   const { accessToken, refreshToken } = signTokens({ sub: user.id, email: user.email });
   setRefreshCookie(res, refreshToken);
+  setAccessCookie(res, accessToken);
   res.json({ accessToken });
 }));
 
@@ -117,6 +131,7 @@ router.post("/refresh", ah(async (req, res) => {
   const payload = jwt.verify(token, process.env.API_REFRESH_SECRET);
   const { accessToken, refreshToken } = signTokens({ sub: payload.sub, email: payload.email });
   setRefreshCookie(res, refreshToken);
+  setAccessCookie(res, accessToken);
   res.json({ accessToken });
 }));
 
