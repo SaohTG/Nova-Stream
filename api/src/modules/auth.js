@@ -10,8 +10,8 @@ const authRouter = Router();
 
 const ACCESS_TTL = Number(process.env.API_JWT_ACCESS_TTL || 900);        // 15 min
 const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL || 1209600);  // 14 jours
-const ACCESS_SECRET = process.env.API_JWT_SECRET || "dev_access_secret";
-const REFRESH_SECRET = process.env.API_REFRESH_SECRET || "dev_refresh_secret";
+const ACCESS_SECRET = process.env.API_JWT_SECRET || "Y7dD6Vh2mC4pQ8tR1sX9zK3wL5aN0fB2gU4hJ6iO8lT1qP3dV";
+const REFRESH_SECRET = process.env.API_REFRESH_SECRET || "mZ2xL7nH3qK9tC8vS4pD0rG6yB1wF5aE7uJ9hQ3oN2lM4kR8";
 
 const COOKIE_SECURE = (process.env.NODE_ENV || "development") === "production";
 const COOKIE_SAMESITE = process.env.COOKIE_SAMESITE || "lax"; // "lax" suffisant en même-site (IP:port)
