@@ -21,11 +21,16 @@ export default function LinkXtream() {
     e.preventDefault();
     setErr(""); setLoading(true);
     try {
-      await ensureAccess(); // garantit un Authorization présent
-      await postJson("/user/link-xtream", { baseUrl, username, password });
+      await ensureAccess();
+      const payload = { baseUrl, username, password };
+      // debug local
+      // console.log("[LINK XTREAM] sending", payload);
+      await postJson("/user/link-xtream", payload);
       setStatus(await getJson("/user/xtream"));
     } catch (e) {
-      setErr(e.message || "Erreur");
+      setErr(e?.data?.message
+        ? `${e.data.message} ${e.data.missing ? `→ manquants: ${e.data.missing.join(", ")}` : ""}`
+        : (e.message || "Erreur"));
     } finally {
       setLoading(false);
     }
@@ -50,7 +55,7 @@ export default function LinkXtream() {
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} required />
         </div>
         <button disabled={loading} type="submit">{loading ? "Lien..." : "Lier"}</button>
-        {err && <p style={{ color: "crimson" }}>{err}</p>}
+        {err && <p style={{ color: "crimson", whiteSpace: "pre-wrap" }}>{err}</p>}
       </form>
     </div>
   );
