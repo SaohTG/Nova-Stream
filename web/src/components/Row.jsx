@@ -3,14 +3,19 @@ import { Link } from "react-router-dom";
 import PosterCard from "./PosterCard.jsx";
 
 function SkeletonCard({ kind = "vod" }) {
-  const cls =
-    kind === "live"
-      ? "h-[120px] w-[12rem] shrink-0 rounded-xl bg-zinc-800 skeleton"
-      : "h-[270px] w-40 shrink-0 rounded-xl bg-zinc-800 skeleton";
-  return <div className={cls} />;
+  const itemWidthClass = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
+  const ratioClass = kind === "live" ? "aspect-video" : "aspect-[2/3]";
+  return (
+    <div className={`${itemWidthClass} shrink-0`}>
+      <div className={`relative ${ratioClass} w-full overflow-hidden rounded-xl bg-zinc-800 skeleton`} />
+      <div className="mt-2 h-4 w-3/4 rounded bg-zinc-800 skeleton" />
+    </div>
+  );
 }
 
 export default function Row({ title, items = [], kind = "vod", loading = false, seeMoreHref }) {
+  const itemWidthClass = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
+
   return (
     <section className="mb-10">
       <div className="mb-3 flex items-baseline justify-between">
@@ -26,12 +31,16 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
       </div>
 
       <div className="-mx-4 overflow-x-auto px-4 pb-2">
-        <div className="flex gap-3">
+        <div className="flex gap-4 md:gap-5 lg:gap-6">
           {loading
-            ? Array.from({ length: 10 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
+            ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
             : items.map((item) => {
                 const key = `${kind}-${item.stream_id || item.series_id || item.name}`;
-                return <PosterCard key={key} item={item} kind={kind} />;
+                return (
+                  <div className={`${itemWidthClass} shrink-0`} key={key}>
+                    <PosterCard item={item} kind={kind} />
+                  </div>
+                );
               })}
         </div>
       </div>
