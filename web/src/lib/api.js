@@ -1,22 +1,21 @@
 // web/src/lib/api.js
 const API = import.meta.env.VITE_API_URL || "http://85.31.239.110:4000";
 
-function getAccess() {
-  return localStorage.getItem("access_token") || "";
-}
-function setAccess(t) {
-  if (t) localStorage.setItem("access_token", t);
-}
+function getAccess() { return localStorage.getItem("access_token") || ""; }
+function setAccess(t) { if (t) localStorage.setItem("access_token", t); }
 
 export async function refresh() {
-  const res = await fetch(`${API}/auth/refresh`, { method: "POST", credentials: "include" });
-  if (!res.ok) throw new Error("REFRESH_FAIL");
-  const { accessToken } = await res.json();
+  const r = await fetch(`${API}/auth/refresh`, { method: "POST", credentials: "include" });
+  const txt = await r.text();
+  if (!r.ok) {
+    const err = new Error("REFRESH_FAIL"); err.status = r.status;
+    try { err.data = JSON.parse(txt); } catch { err.data = txt; }
+    throw err;
+  }
+  const { accessToken } = JSON.parse(txt || "{}");
   setAccess(accessToken);
   return accessToken;
 }
-
-/** S'assure qu'on a un access token (via localStorage ou refresh cookie) */
 export async function ensureAccess() {
   if (getAccess()) return getAccess();
   return await refresh();
@@ -28,38 +27,27 @@ function withAuth(headers = {}) {
 }
 
 async function requestJson(method, path, body, options = {}, _retried = false, _ensured = false) {
-  // Si endpoint protégé (pas /auth/*), on s’assure d’avoir un token avant l’appel
   if (!_ensured && !path.startsWith("/auth")) {
-    try { await ensureAccess(); } catch { /* ignore: tombera 401 et on remontera une erreur propre */ }
+    try { await ensureAccess(); } catch {}
   }
-
   const headers = withAuth({ "Content-Type": "application/json", ...(options.headers || {}) });
 
-  const res = await fetch(`${API}${path}`, {
-    method,
-    headers,
-    credentials: "include",
-    body: body != null ? JSON.stringify(body) : undefined,
-    ...options,
+  const r = await fetch(`${API}${path}`, {
+    method, headers, credentials: "include",
+    body: body != null ? JSON.stringify(body) : undefined, ...options,
   });
 
-  if (res.status === 401 && !_retried) {
-    // token manquant/expiré → tente un refresh puis rejoue UNE fois
-    await refresh();
-    const headers2 = withAuth({ "Content-Type": "application/json", ...(options.headers || {}) });
-    const res2 = await fetch(`${API}${path}`, {
-      method,
-      headers: headers2,
-      credentials: "include",
-      body: body != null ? JSON.stringify(body) : undefined,
-      ...options,
-    });
-    if (!res2.ok) throw new Error(`HTTP_${res2.status}`);
-    return res2.status === 204 ? null : res2.json();
+  const txt = await r.text();
+  if (!r.ok) {
+    if (r.status === 401 && !_retried) {
+      await refresh();
+      return requestJson(method, path, body, options, true, true);
+    }
+    const err = new Error(`HTTP_${r.status}`); err.status = r.status;
+    try { err.data = JSON.parse(txt); } catch { err.data = txt; }
+    throw err;
   }
-
-  if (!res.ok) throw new Error(`HTTP_${res.status}`);
-  return res.status === 204 ? null : res.json();
+  return txt ? JSON.parse(txt) : null;
 }
 
 export function getJson(path, options = {}) { return requestJson("GET", path, null, options); }
