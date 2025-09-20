@@ -1,3 +1,4 @@
+// api/src/modules/auth.js
 import { Router } from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
@@ -7,9 +8,9 @@ const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
-const ACCESS_TTL = Number(process.env.API_JWT_ACCESS_TTL ?? 900);        // 15 min
-const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL ?? 1209600);  // 14 j
-const COOKIE_SECURE = String(process.env.COOKIE_SECURE) === "true";
+const ACCESS_TTL  = Number(process.env.API_JWT_ACCESS_TTL ?? 900);        // 15 min
+const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL ?? 1209600);   // 14 j
+const COOKIE_SECURE   = String(process.env.COOKIE_SECURE) === "true";
 const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || "lax").toLowerCase();
 
 const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
@@ -34,11 +35,10 @@ async function getPasswordColumn() {
 }
 
 function signTokens(payload) {
-  const accessToken  = jwt.sign(payload, process.env.API_JWT_SECRET,  { expiresIn: ACCESS_TTL });
+  const accessToken  = jwt.sign(payload, process.env.API_JWT_SECRET,     { expiresIn: ACCESS_TTL });
   const refreshToken = jwt.sign(payload, process.env.API_REFRESH_SECRET, { expiresIn: REFRESH_TTL });
   return { accessToken, refreshToken };
 }
-
 function setRefreshCookie(res, token) {
   const sameSite = ["lax","strict","none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
   res.cookie("rt", token, {
@@ -47,7 +47,6 @@ function setRefreshCookie(res, token) {
   });
 }
 function setAccessCookie(res, token) {
-  // httpOnly cookie contenant l'access token (fallback si le header Authorization manque côté front)
   const sameSite = ["lax","strict","none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
   res.cookie("at", token, {
     httpOnly: true, secure: COOKIE_SECURE, sameSite,
@@ -55,7 +54,7 @@ function setAccessCookie(res, token) {
   });
 }
 
-// DB helpers
+/* ============== DB helpers ============== */
 async function getUserByEmail(email) {
   const col = await getPasswordColumn();
   const { rows } = await pool.query(
@@ -78,27 +77,46 @@ async function validateUser(email, passwordPlain) {
   return ok ? { id: u.id, email: u.email } : null;
 }
 
-// Bearer OR cookie('at') guard
+/* ============== Auth middlewares ============== */
 export function ensureAuth(req, res, next) {
   const h = req.headers.authorization || "";
   let token = null;
   if (h.startsWith("Bearer ")) token = h.split(" ")[1];
   if (!token && req.cookies?.at) token = req.cookies.at;
+  if (!token) return res.status(401).json({ message: "No token" });
 
-  if (!token) {
-    console.warn("[AUTH] Missing token (no Authorization header and no 'at' cookie)");
-    return res.status(401).json({ message: "No token" });
+  try { req.user = jwt.verify(token, process.env.API_JWT_SECRET); return next(); }
+  catch { return res.status(401).json({ message: "Invalid token" }); }
+}
+
+/** Tente d’abord Authorization/cookie 'at'. Si KO mais cookie 'rt' présent et valide,
+ *  rafraîchit en arrière-plan, pose les nouveaux cookies et CONTINUE avec req.user. */
+function ensureAuthOrRefresh(req, res, next) {
+  const h = req.headers.authorization || "";
+  let token = null;
+  if (h.startsWith("Bearer ")) token = h.split(" ")[1];
+  if (!token && req.cookies?.at) token = req.cookies.at;
+
+  if (token) {
+    try { req.user = jwt.verify(token, process.env.API_JWT_SECRET); return next(); }
+    catch { /* on tentera refresh ci-dessous */ }
   }
+  const rt = req.cookies?.rt;
+  if (!rt) return res.status(401).json({ message: "Unauthorized" });
+
   try {
-    req.user = jwt.verify(token, process.env.API_JWT_SECRET);
-    next();
-  } catch (e) {
-    console.warn("[AUTH] Invalid token:", e.message);
-    res.status(401).json({ message: "Invalid token" });
+    const payload = jwt.verify(rt, process.env.API_REFRESH_SECRET);
+    const { accessToken, refreshToken } = signTokens({ sub: payload.sub, email: payload.email });
+    setRefreshCookie(res, refreshToken);
+    setAccessCookie(res, accessToken);
+    req.user = { sub: payload.sub, email: payload.email };
+    return next();
+  } catch {
+    return res.status(401).json({ message: "Unauthorized" });
   }
 }
 
-// Routes
+/* ============== Routes ============== */
 router.post("/signup", ah(async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ message: "email/password required" });
@@ -135,6 +153,10 @@ router.post("/refresh", ah(async (req, res) => {
   res.json({ accessToken });
 }));
 
-router.get("/me", ensureAuth, ah(async (req, res) => res.json(req.user)));
+// ⬇️ /me devient “auto-refresh si besoin” (fini les 401 bruyants au boot)
+router.get("/me", ensureAuthOrRefresh, (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json(req.user);
+});
 
 export default router;
