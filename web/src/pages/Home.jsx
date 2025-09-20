@@ -10,7 +10,7 @@ const HOME_LIVE_ROWS = 4;    // nombre de catégories live à afficher
 const ROW_LIMIT = 15;        // nombre d’éléments par row
 
 export default function Home() {
-  // Trending (Top 15)
+  // Trending (Top 15 from TMDB only)
   const [trending, setTrending] = useState([]);
   const [loadingTrend, setLoadingTrend] = useState(true);
 
@@ -26,37 +26,29 @@ export default function Home() {
   const [liveRows, setLiveRows] = useState([]);
   const [loadingLive, setLoadingLive] = useState(true);
 
-  // --- Load Trending (Top 15) ---
+  // --- Load Trending (Top 15) — ALWAYS from TMDB mapped endpoint ---
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        // Idéal: endpoint qui renvoie déjà les tendances TMDB mappées vers des affiches Xtream
-        // (images Xtream uniquement)
-        let data;
-        try {
-          data = await getJson("/tmdb/trending-week-mapped");
-        } catch {
-          data = null;
-        }
-
-        // Fallback si l’endpoint n’existe pas: on prend 15 films Xtream récents/généraux
-        if (!data || !Array.isArray(data) || data.length === 0) {
-          const list = await postJson("/xtream/movies", { limit: 30 }); // on sur-demande un peu
-          data = Array.isArray(list) ? list.slice(0, 15) : [];
-        }
-
-        const top = (data || []).slice(0, 15).map((it, i) => ({ ...it, __rank: i + 1 }));
+        // Doit renvoyer les tendances TMDB mappées vers les affiches Xtream (images Xtream uniquement)
+        const data = await getJson("/tmdb/trending-week-mapped");
+        const top = Array.isArray(data)
+          ? data.slice(0, 15).map((it, i) => ({ ...it, __rank: i + 1 }))
+          : [];
         if (!alive) return;
         setTrending(top);
       } catch {
         if (!alive) return;
+        // Aucun fallback → si TMDB KO, pas de tendances
         setTrending([]);
       } finally {
         if (alive) setLoadingTrend(false);
       }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // --- Load Movies rows by categories ---
@@ -77,7 +69,9 @@ export default function Home() {
               id: Number(cat.category_id),
               title: cat.category_name || "Autre",
               items: Array.isArray(items) ? items : [],
-              seeMoreHref: `/movies/category/${cat.category_id}?name=${encodeURIComponent(cat.category_name || "Catégorie")}`,
+              seeMoreHref: `/movies/category/${cat.category_id}?name=${encodeURIComponent(
+                cat.category_name || "Catégorie"
+              )}`,
             };
           })
         );
@@ -91,7 +85,9 @@ export default function Home() {
         if (alive) setLoadingMovies(false);
       }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // --- Load Series rows by categories ---
@@ -112,7 +108,9 @@ export default function Home() {
               id: Number(cat.category_id),
               title: cat.category_name || "Autre",
               items: Array.isArray(items) ? items : [],
-              seeMoreHref: `/series/category/${cat.category_id}?name=${encodeURIComponent(cat.category_name || "Catégorie")}`,
+              seeMoreHref: `/series/category/${cat.category_id}?name=${encodeURIComponent(
+                cat.category_name || "Catégorie"
+              )}`,
             };
           })
         );
@@ -126,7 +124,9 @@ export default function Home() {
         if (alive) setLoadingSeries(false);
       }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // --- Load Live rows by categories ---
@@ -147,7 +147,7 @@ export default function Home() {
               id: Number(cat.category_id),
               title: cat.category_name || "Autre",
               items: Array.isArray(items) ? items : [],
-              // seeMoreHref: `/live?cat=${cat.category_id}` // active si /live sait filtrer
+              // seeMoreHref: `/live?cat=${cat.category_id}` // si tu veux activer un "voir plus" pour live
             };
           })
         );
@@ -161,18 +161,15 @@ export default function Home() {
         if (alive) setLoadingLive(false);
       }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, []);
 
   return (
     <div className="space-y-10">
-      {/* Top 15 – Tendances de la semaine (numéros en overlay) */}
-      <TopRow
-        title="Tendances de la semaine"
-        items={trending}
-        kind="vod"
-        loading={loadingTrend}
-      />
+      {/* Top 15 – Tendances de la semaine (TMDB only, numéros en overlay) */}
+      <TopRow title="Tendances de la semaine" items={trending} kind="vod" loading={loadingTrend} />
 
       {/* Films par catégories */}
       {movieRows.map((row, i) => (
@@ -206,7 +203,6 @@ export default function Home() {
           items={row.items}
           kind="live"
           loading={loadingLive}
-          // seeMoreHref={row.seeMoreHref}
         />
       ))}
     </div>
