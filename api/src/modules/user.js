@@ -7,7 +7,7 @@ const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
-/* ========= AES-256-GCM ========= */
+/* ====== AES-256-GCM ====== */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY must be 64 hex chars (32 bytes)");
@@ -22,7 +22,7 @@ function enc(plain) {
   return `v1:${iv.toString("base64")}:${tag.toString("base64")}:${ct.toString("base64")}`;
 }
 
-/* ========= Utils ========= */
+/* ====== Utils / aliases ====== */
 function normalizeBaseUrl(u) {
   let s = (u || "").toString().trim();
   if (!s) return "";
@@ -37,10 +37,6 @@ function collectStringsDeep(obj, acc = []) {
   for (const v of Object.values(obj)) collectStringsDeep(v, acc);
   return acc;
 }
-function getFirst(body, keys) {
-  for (const k of keys) if (body?.[k] != null) return body[k];
-  return undefined;
-}
 function parseXtreamFromString(s) {
   if (typeof s !== "string") return null;
   const str = s.trim();
@@ -54,7 +50,10 @@ function parseXtreamFromString(s) {
     return { baseUrl: normalizeBaseUrl(base), username: String(user).trim(), password: String(pass).trim() };
   } catch { return null; }
 }
-// host/IP éventuel (sans schéma), avec port optionnel
+function getFirst(body, keys) {
+  for (const k of keys) if (body?.[k] != null) return body[k];
+  return undefined;
+}
 const HOST_RE = /^(?:[a-z0-9.-]+|\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?$/i;
 function findHostPortDeep(body) {
   let host = null, port = null;
@@ -72,7 +71,6 @@ function findHostPortDeep(body) {
             else { host = val; }
           }
         }
-        // parfois le port est donné seul
         if (!port && (key === "port" || key.endsWith("_port")) && /^\d{1,5}$/.test(v.trim())) port = v.trim();
       } else if (typeof v === "number") {
         const key = k.toLowerCase();
@@ -85,21 +83,16 @@ function findHostPortDeep(body) {
   walk(body);
   return host ? normalizeBaseUrl(`${host}${port ? ":"+port : ""}`) : "";
 }
-
 function extractFields(body = {}) {
-  // aliases snake_case + camelCase
   let baseUrl = getFirst(body, [
-    "baseUrl","baseURL","base_url",
-    "url","serverUrl","serverURL","server_url",
-    "portal","endpoint","server","domain",
-    "hostName","hostname","address","addr","ip",
+    "baseUrl","baseURL","base_url","url","serverUrl","serverURL","server_url",
+    "portal","endpoint","server","domain","hostName","hostname","address","addr","ip",
     "m3uUrl","m3uURL","playlist","line",
   ]);
   if (!baseUrl && body.host && body.port) baseUrl = `${body.host}:${body.port}`;
   let username = getFirst(body, ["username","user","login","email","u","user_name","userName"]);
   let password = getFirst(body, ["password","pass","pwd","p","pass_word","passWord"]);
 
-  // si manques, tenter liens complets
   if (!baseUrl || !username || !password) {
     const strings = collectStringsDeep(body);
     for (const s of strings) {
@@ -112,7 +105,6 @@ function extractFields(body = {}) {
       }
     }
   }
-  // si baseUrl toujours vide, chercher un host nu + port
   if (!baseUrl) {
     const built = findHostPortDeep(body);
     if (built) baseUrl = built;
@@ -124,7 +116,7 @@ function extractFields(body = {}) {
   return { baseUrl, username, password };
 }
 
-/* ========= DB ========= */
+/* ====== DB ====== */
 async function ensureTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_xtream (
@@ -138,7 +130,37 @@ async function ensureTable() {
   `);
 }
 
-/* ========= Routes ========= */
+/* ====== Routes ====== */
+
+// alias attendu par ton front: GET /user/has-xtream  → 200 { has, linked }
+router.get("/has-xtream", async (req, res, next) => {
+  try {
+    if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
+    await ensureTable();
+    const { rows } = await pool.query(
+      `SELECT 1 FROM user_xtream WHERE user_id=$1 LIMIT 1`,
+      [req.user.sub]
+    );
+    const has = rows.length > 0;
+    res.json({ has, linked: has });
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+// statut détaillé (déjà utile si tu l’appelles ailleurs)
+router.get("/xtream", async (req, res, next) => {
+  try {
+    if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
+    await ensureTable();
+    const { rows } = await pool.query(
+      `SELECT base_url FROM user_xtream WHERE user_id=$1`,
+      [req.user.sub]
+    );
+    if (!rows.length) return res.json({ linked: false });
+    return res.json({ linked: true, baseUrl: rows[0].base_url });
+  } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+// enregistrement des identifiants
 router.post("/link-xtream", async (req, res, next) => {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
@@ -153,11 +175,6 @@ router.post("/link-xtream", async (req, res, next) => {
           ...(password ? [] : ["password"]),
         ],
         received: { baseUrl: !!baseUrl, username: !!username, password: !!password },
-        tips: [
-          "Envoie { baseUrl, username, password }",
-          "Aliases acceptés: baseURL/base_url/url/server/domain/host(+port)...",
-          "Ou colle un lien complet: http://host:port/get.php?username=U&password=P&type=m3u",
-        ],
       });
     }
 
@@ -174,16 +191,6 @@ router.post("/link-xtream", async (req, res, next) => {
     );
 
     return res.json({ ok: true, baseUrl });
-  } catch (e) { e.status = e.status || 500; next(e); }
-});
-
-router.get("/xtream", async (req, res, next) => {
-  try {
-    if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
-    await ensureTable();
-    const { rows } = await pool.query(`SELECT base_url FROM user_xtream WHERE user_id=$1`, [req.user.sub]);
-    if (!rows.length) return res.json({ linked: false });
-    return res.json({ linked: true, baseUrl: rows[0].base_url });
   } catch (e) { e.status = e.status || 500; next(e); }
 });
 
