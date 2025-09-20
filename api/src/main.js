@@ -1,5 +1,5 @@
 // api/src/main.js
-import "dotenv/config";
+import('dotenv/config').catch(() => {});
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
