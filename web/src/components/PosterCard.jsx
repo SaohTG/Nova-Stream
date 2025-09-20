@@ -1,25 +1,32 @@
 // web/src/components/PosterCard.jsx
-export default function PosterCard({ item, aspect = "2/3" }) {
-  const img = item.poster || item.logo || null;
+export default function PosterCard({ item, onClick }) {
+  const img =
+    item?.image ||
+    item?.cover ||
+    item?.stream_icon ||
+    null;
+
   return (
-    <article className="group rounded-xl bg-zinc-900/60 p-2 ring-1 ring-white/10">
-      <div className={`relative overflow-hidden rounded-lg bg-zinc-800 aspect-[${aspect}]`}>
-        {img ? (
-          <img
-            src={img}
-            alt={item.name}
-            className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.04]"
-            loading="lazy"
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center text-zinc-500 text-xs">image indisponible</div>
-        )}
-        <div className="absolute inset-0 flex items-end bg-gradient-to-t from-black/60 via-transparent to-transparent opacity-0 transition-opacity group-hover:opacity-100">
-          <div className="w-full p-2">
-            <div className="truncate text-xs text-white/90">{item.name}</div>
-          </div>
+    <button
+      className="group relative aspect-[2/3] w-40 shrink-0 overflow-hidden rounded-xl bg-zinc-900 card-hover"
+      onClick={onClick}
+      title={item?.name || ""}
+    >
+      {img ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={img}
+          alt={item?.name || ""}
+          className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-105"
+          onError={(e) => { e.currentTarget.style.display = "none"; }}
+        />
+      ) : (
+        <div className="flex h-full w-full items-end justify-start bg-gradient-to-b from-zinc-800 to-zinc-900 p-2">
+          <div className="line-clamp-2 text-left text-xs text-zinc-300">{item?.name}</div>
         </div>
-      </div>
-    </article>
+      )}
+
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/70 to-transparent" />
+    </button>
   );
 }
