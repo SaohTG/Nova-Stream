@@ -1,48 +1,51 @@
 // web/src/components/PosterCard.jsx
-export default function PosterCard({ item, kind = "vod", onClick }) {
-  const img = item?.image || item?.cover || item?.stream_icon || null;
-  const isLive = kind === "live";
+export default function PosterCard({ item = {}, kind = "vod" }) {
+  const title =
+    item.title ||
+    item.name ||
+    item.stream_display_name ||
+    "Sans titre";
 
-  const containerCls = isLive
-    ? "group relative aspect-[16/9] w-[12rem] shrink-0 overflow-hidden rounded-xl bg-zinc-900/80 ring-1 ring-white/5 card-hover"
-    : "group relative aspect-[2/3] w-40 shrink-0 overflow-hidden rounded-xl bg-zinc-900/80 ring-1 ring-white/5 card-hover";
+  // On prend UNIQUEMENT des images Xtream
+  const img =
+    item.image ||
+    item.cover ||
+    item.stream_icon ||
+    item.stream_logo ||
+    null;
 
-  const imgCls = isLive
-    ? "h-full w-full object-contain p-3 transition-transform duration-200 group-hover:scale-105"
-    : "h-full w-full object-cover transition-transform duration-200 group-hover:scale-105";
+  const ratioClass = kind === "live" ? "aspect-video" : "aspect-[2/3]";
 
   return (
-    <button className={containerCls} onClick={onClick} title={item?.name || item?.title || ""}>
-      {img ? (
-        <img
-          src={img}
-          alt={item?.name || item?.title || "image"}
-          className={imgCls}
-          onError={(e) => { e.currentTarget.style.display = "none"; }}
-        />
-      ) : (
-        <div className="flex h-full w-full items-end justify-start bg-gradient-to-b from-zinc-800 to-zinc-900 p-2">
-          <div className="line-clamp-2 text-left text-xs text-zinc-300">
-            {item?.name || item?.title}
-          </div>
-        </div>
-      )}
+    <div className="group w-full">
+      <div
+        className={`relative ${ratioClass} overflow-hidden rounded-xl ring-1 ring-white/10 bg-zinc-800`}
+      >
+        {img ? (
+          <img
+            src={img}
+            alt={title}
+            className="block h-full w-full object-cover"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />
+        ) : (
+          <div className="h-full w-full bg-zinc-700" />
+        )}
 
-      {/* Grand numéro translucide pour les tendances */}
-      {typeof item?.rank === "number" && (
-        <>
-          <div className="pointer-events-none absolute -left-1 -bottom-2 select-none text-6xl font-extrabold leading-none text-white/10 drop-shadow">
-            {item.rank}
-          </div>
-          <div className="pointer-events-none absolute left-2 top-2 rounded-md bg-black/70 px-2 py-1 text-xs font-bold text-white">
+        {/* Badge rang (tendances) optionnel */}
+        {item.rank ? (
+          <div className="absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-xs font-bold text-white">
             #{item.rank}
           </div>
-        </>
-      )}
+        ) : null}
 
-      {!isLive && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/60 to-transparent" />
-      )}
-    </button>
+        {/* Dégradé bas pour lisibilité, n’affecte pas la hauteur */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/70 to-transparent" />
+      </div>
+
+      {/* Espace vertical sous l’image */}
+      <div className="mt-2 truncate text-sm text-zinc-200">{title}</div>
+    </div>
   );
 }
