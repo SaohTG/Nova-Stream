@@ -1,18 +1,18 @@
 // web/src/pages/Movies.jsx
-import { useEffect, useMemo, useState } from "react";
-import { getJson, postJson } from "../lib/api";
+import { useEffect, useState } from "react";
+import { postJson } from "../lib/api";
 import Row from "../components/Row.jsx";
 
-function groupByCategory(items) {
-  const map = new Map();
+function groupByCatName(items) {
+  const m = new Map();
   for (const it of items || []) {
-    const id = it.category_id ?? it.category ?? "autres";
-    const name = it.category_name ?? it.category_label ?? it.category ?? "Autres";
-    const key = `${id}::${name}`;
-    if (!map.has(key)) map.set(key, { id, name, items: [] });
-    map.get(key).items.push(it);
+    const id = String(it.category_id ?? "0");
+    const name = it.category_name || "Autres";
+    const k = `${id}::${name}`;
+    if (!m.has(k)) m.set(k, { id, name, items: [] });
+    m.get(k).items.push(it);
   }
-  return Array.from(map.values());
+  return Array.from(m.values());
 }
 
 export default function Movies() {
@@ -24,34 +24,10 @@ export default function Movies() {
     (async () => {
       try {
         setErr(null);
-
-        // 1) essaie l’endpoint catégories s’il existe
-        let categories = [];
-        try {
-          const c = await getJson("/xtream/movie-categories");
-          if (Array.isArray(c)) categories = c;
-        } catch { /* ignore */ }
-
-        // 2) récupère les films
-        const list = await postJson("/xtream/movies", { limit: 500 }); // assez large pour grouper
-        const items = Array.isArray(list) ? list : [];
-
-        let grouped;
-        if (categories.length) {
-          const byCat = new Map(categories.map(c => [String(c.category_id), { id: c.category_id, name: c.category_name, items: [] }]));
-          for (const it of items) {
-            const cid = String(it.category_id ?? "");
-            const bucket = byCat.get(cid) || byCat.get("0");
-            if (bucket) bucket.items.push(it);
-          }
-          grouped = Array.from(byCat.values()).filter(g => g.items.length);
-        } else {
-          grouped = groupByCategory(items);
-        }
-
+        const list = await postJson("/xtream/movies", { limit: 1000 }); // enrichi avec category_name
+        const grouped = groupByCatName(Array.isArray(list) ? list : []);
         if (!alive) return;
-        // limite le nb de rangées pour la perf
-        setRows(grouped.slice(0, 10));
+        setRows(grouped.slice(0, 12));
       } catch (e) {
         if (!alive) return;
         setErr(e?.message || "Erreur de chargement");
@@ -70,9 +46,7 @@ export default function Movies() {
       ) : rows.length === 0 ? (
         <div className="text-zinc-400">Aucun film trouvé.</div>
       ) : (
-        rows.map((g) => (
-          <Row key={`cat-${g.id}`} title={g.name} items={g.items} kind="vod" />
-        ))
+        rows.map((g) => <Row key={`cat-${g.id}`} title={g.name} items={g.items} kind="vod" />)
       )}
     </>
   );
