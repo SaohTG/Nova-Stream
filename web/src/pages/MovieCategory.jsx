@@ -60,12 +60,11 @@ export default function MovieCategory() {
         <div className="text-zinc-400">Aucun film dans cette catégorie.</div>
       ) : (
         <>
-          {/* Grille avec vrais espacements horizontaux/verticaux */}
-          <div className="grid grid-cols-2 gap-x-5 gap-y-8 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 2xl:grid-cols-10">
+          {/* Grille avec items de largeur identique aux carrousels (w-40 md:w-44 xl:w-48) */}
+          <div className="grid grid-cols-2 justify-items-center gap-x-5 gap-y-8 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 2xl:grid-cols-10">
             {items.map((it) => (
-              <div key={`m-${it.stream_id || it.name}`} className="min-w-0 p-0.5">
-                {/* PosterCard impose un ratio 2:3 + espace sous l’image */}
-                <PosterCard item={it} kind="vod" />
+              <div key={`m-${it.stream_id || it.name}`} className="w-40 md:w-44 xl:w-48">
+                <PosterCard item={it} kind="vod" showTitle={false} />
               </div>
             ))}
           </div>
