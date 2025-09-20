@@ -14,11 +14,9 @@ import tmdbRouter from "./modules/tmdb.js";
 const app = express();
 app.set("trust proxy", 1);
 
-// CORS: accepte plusieurs origines via CORS_ORIGIN="http://85.31.239.110:5173,http://localhost:5173"
+// CORS
 const ORIGINS = (process.env.CORS_ORIGIN || "http://localhost:5173")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
+  .split(",").map(s => s.trim()).filter(Boolean);
 
 app.use(cors({
   origin: (origin, cb) => (!origin || ORIGINS.includes(origin)) ? cb(null, true) : cb(null, false),
@@ -29,27 +27,23 @@ app.use(cors({
 
 app.use(cookieParser());
 app.use(express.json({ limit: "1mb" }));
+app.use(express.urlencoded({ extended: true, limit: "1mb" })); // ⬅️ support form-urlencoded
 app.use(morgan("dev"));
 
-// Healthcheck
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
-// Routes
 app.use("/auth", authRouter);
-app.use("/user", ensureAuth, userRouter);
+app.use("/user", ensureAuth, userRouter);     // /user/link-xtream ici
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
 
-// Debug (temporaire)
 app.get("/debug/whoami", ensureAuth, (req, res) => res.json({ user: req.user }));
 
-// 404 JSON
 app.use((req, res, next) => {
   if (res.headersSent) return next();
   res.status(404).json({ error: "Not Found", path: req.path });
 });
 
-// Error JSON
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
   const status = err.status || err.statusCode || 500;
@@ -57,12 +51,10 @@ app.use((err, req, res, _next) => {
   if (process.env.NODE_ENV !== "production") {
     console.error("[API ERROR]", status, message, err.stack || err);
   }
-  if (!res.headersSent) res.status(status).json({ error: message });
+  if (!res.headersSent) res.status(status).json({ error: message, detail: err.detail });
 });
 
 const port = Number(process.env.API_PORT || 4000);
-
-// Anti-crash (évite ERR_EMPTY_RESPONSE silencieux)
 process.on("unhandledRejection", (e) => console.error("[UNHANDLED_REJECTION]", e));
 process.on("uncaughtException", (e) => console.error("[UNCAUGHT_EXCEPTION]", e));
 
@@ -75,5 +67,4 @@ async function startServer() {
     process.exit(1);
   }
 }
-
 startServer();
