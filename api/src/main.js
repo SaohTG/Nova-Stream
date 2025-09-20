@@ -5,6 +5,7 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import morgan from "morgan";
 
+import { initDatabase } from "./db/init.js";
 import authRouter, { ensureAuth } from "./modules/auth.js";
 import userRouter from "./modules/user.js";
 import xtreamRouter from "./modules/xtream.js";
@@ -51,6 +52,18 @@ app.use((err, req, res, _next) => {
 });
 
 const port = Number(process.env.API_PORT || 4000);
-app.listen(port, () => {
-  console.log(`API on :${port}`);
-});
+
+// Initialize database before starting server
+async function startServer() {
+  try {
+    await initDatabase();
+    app.listen(port, () => {
+      console.log(`API on :${port}`);
+    });
+  } catch (error) {
+    console.error("Failed to start server:", error);
+    process.exit(1);
+  }
+}
+
+startServer();
