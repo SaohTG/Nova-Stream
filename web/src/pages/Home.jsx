@@ -1,174 +1,214 @@
 // web/src/pages/Home.jsx
 import { useEffect, useState } from "react";
-import { postJson, getJson } from "../lib/api";
-import Hero from "../components/Hero.jsx";
 import Row from "../components/Row.jsx";
+import TopRow from "../components/TopRow.jsx";
+import { getJson, postJson } from "../lib/api";
 
-/* --------------------------- Normalisation & match --------------------------- */
-
-const STOPWORDS = new Set([
-  "le","la","les","un","une","des","de","du","d","l","et","en","au","aux","avec",
-  "the","a","an","of","and","in","on","with",
-]);
-
-const TAG_RE = new RegExp(
-  String.raw`\b(2160p|1080p|720p|480p|4k|hdr|dv|x265|x264|h264|hevc|multi|truehd|dts|ac3|webrip|web[-\s]?dl|bluray|brrip|hdtv|cam|vostfr|vf|vo|french|en|fr|atmos|remux|rip)\b`,
-  "gi"
-);
-
-function normTitle(s = "") {
-  let t = String(s).toLowerCase();
-  t = t.normalize("NFD").replace(/\p{Diacritic}/gu, "");
-  t = t.replace(/[\[\(][^\]\)]*[\]\)]/g, " ");
-  t = t.replace(TAG_RE, " ");
-  t = t.replace(/[\.:,'"!?/\\\-_|]+/g, " ");
-  t = t.replace(/\s+/g, " ").trim();
-  const tokens = t.split(" ").filter((w) => w && !STOPWORDS.has(w) && w.length > 1);
-  return tokens.join(" ");
-}
-
-function extractYear(s) {
-  const m = String(s || "").match(/\b(19[3-9]\d|20[0-3]\d)\b/);
-  return m ? Number(m[1]) : null;
-}
-
-function diceCoefficient(aTokens, bTokens) {
-  if (!aTokens.length || !bTokens.length) return 0;
-  const A = new Set(aTokens);
-  const B = new Set(bTokens);
-  let inter = 0;
-  for (const t of A) if (B.has(t)) inter++;
-  return (2 * inter) / (A.size + B.size);
-}
-
-function tokenize(s) { return s ? s.split(" ").filter(Boolean) : []; }
-
-function scoreTitle(aRaw, bRaw, tmdbYear = null) {
-  const a = normTitle(aRaw);
-  const b = normTitle(bRaw);
-  if (!a || !b) return 0;
-  if (a === b) return 100;
-
-  const aT = tokenize(a);
-  const bT = tokenize(b);
-  let score = Math.round(diceCoefficient(aT, bT) * 100);
-
-  if (a.includes(b) || b.includes(a)) score = Math.max(score, 88);
-  if (tmdbYear && new RegExp(`\\b${tmdbYear}\\b`).test(String(bRaw))) {
-    score = Math.min(100, score + 7);
-  }
-  return score;
-}
-
-/* ---------------------------------- Page ---------------------------------- */
+const HOME_MOVIE_ROWS = 6;   // nombre de catégories films à afficher
+const HOME_SERIES_ROWS = 6;  // nombre de catégories séries à afficher
+const HOME_LIVE_ROWS = 4;    // nombre de catégories live à afficher
+const ROW_LIMIT = 15;        // nombre d’éléments par row
 
 export default function Home() {
-  const [rows, setRows] = useState(null);
-  const [err, setErr] = useState(null);
+  // Trending (Top 15)
+  const [trending, setTrending] = useState([]);
+  const [loadingTrend, setLoadingTrend] = useState(true);
 
+  // Movies rows
+  const [movieRows, setMovieRows] = useState([]);
+  const [loadingMovies, setLoadingMovies] = useState(true);
+
+  // Series rows
+  const [seriesRows, setSeriesRows] = useState([]);
+  const [loadingSeries, setLoadingSeries] = useState(true);
+
+  // Live rows
+  const [liveRows, setLiveRows] = useState([]);
+  const [loadingLive, setLoadingLive] = useState(true);
+
+  // --- Load Trending (Top 15) ---
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        setErr(null);
-        setRows([]);
-
-        // Tendances TMDB (15) — sans images TMDB
-        const trending = await getJson("/tmdb/trending?media_type=all&time_window=week&limit=15");
-
-        // Pool Xtream pour matcher correctement
-        const [movies, series, live] = await Promise.all([
-          postJson("/xtream/movies", { limit: 800 }),
-          postJson("/xtream/series", { limit: 800 }),
-          postJson("/xtream/live",   { limit: 120 }),
-        ]);
-
-        const movieIdx = new Map();
-        for (const it of Array.isArray(movies) ? movies : []) {
-          const key = normTitle(it?.name);
-          if (!key) continue;
-          if (!movieIdx.has(key)) movieIdx.set(key, []);
-          movieIdx.get(key).push(it);
-        }
-        const seriesIdx = new Map();
-        for (const it of Array.isArray(series) ? series : []) {
-          const key = normTitle(it?.name);
-          if (!key) continue;
-          if (!seriesIdx.has(key)) seriesIdx.set(key, []);
-          seriesIdx.get(key).push(it);
+        // Idéal: endpoint qui renvoie déjà les tendances TMDB mappées vers des affiches Xtream
+        // (images Xtream uniquement)
+        let data;
+        try {
+          data = await getJson("/tmdb/trending-week-mapped");
+        } catch {
+          data = null;
         }
 
-        const ranked = (Array.isArray(trending) ? trending : []).map((t, idx) => {
-          const title = t.title || "";
-          const tmdbYear = extractYear(t.release_date);
+        // Fallback si l’endpoint n’existe pas: on prend 15 films Xtream récents/généraux
+        if (!data || !Array.isArray(data) || data.length === 0) {
+          const list = await postJson("/xtream/movies", { limit: 30 }); // on sur-demande un peu
+          data = Array.isArray(list) ? list.slice(0, 15) : [];
+        }
 
-          const key = normTitle(title);
-          let candidates = [
-            ...(movieIdx.get(key) || []),
-            ...(seriesIdx.get(key) || []),
-          ];
+        const top = (data || []).slice(0, 15).map((it, i) => ({ ...it, __rank: i + 1 }));
+        if (!alive) return;
+        setTrending(top);
+      } catch {
+        if (!alive) return;
+        setTrending([]);
+      } finally {
+        if (alive) setLoadingTrend(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
-          if (candidates.length === 0) {
-            const poolM = (Array.isArray(movies) ? movies.slice(0, 200) : []);
-            const poolS = (Array.isArray(series) ? series.slice(0, 200) : []);
-            candidates = [...poolM, ...poolS]
-              .map((it) => ({ it, sc: scoreTitle(title, it?.name, tmdbYear) }))
-              .filter((x) => x.sc >= 70)
-              .sort((a, b) => b.sc - a.sc)
-              .slice(0, 6)
-              .map((x) => x.it);
-          }
+  // --- Load Movies rows by categories ---
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const cats = await getJson("/xtream/movie-categories");
+        const listCats = Array.isArray(cats) ? cats.slice(0, HOME_MOVIE_ROWS) : [];
 
-          let best = null, bestScore = -1;
-          for (const it of candidates) {
-            const sc = scoreTitle(title, it?.name, tmdbYear);
-            if (sc > bestScore) { best = it; bestScore = sc; }
-          }
-
-          const image = best?.image || best?.cover || best?.stream_icon || null;
-
-          return {
-            name: title,
-            title,
-            image,         // UNIQUEMENT image Xtream
-            tmdb_id: t.id,
-            media_type: t.media_type,
-            vote_average: t.vote_average,
-            rank: idx + 1, // #1..#15
-          };
-        });
-
-        const pick = (arr = [], n = 20) => arr.slice(0, n);
-        const rowsData = [
-          { title: "Tendances de la semaine", items: ranked, kind: "vod" },
-          { title: "Films populaires", items: pick(movies, 20), kind: "vod" },
-          { title: "Séries en vue", items: pick(series, 20), kind: "series" },
-          { title: "Chaînes en direct", items: pick(live, 24), kind: "live" },
-        ];
+        const rows = await Promise.all(
+          listCats.map(async (cat) => {
+            const items = await postJson("/xtream/movies", {
+              category_id: Number(cat.category_id),
+              limit: ROW_LIMIT,
+            }).catch(() => []);
+            return {
+              id: Number(cat.category_id),
+              title: cat.category_name || "Autre",
+              items: Array.isArray(items) ? items : [],
+              seeMoreHref: `/movies/category/${cat.category_id}?name=${encodeURIComponent(cat.category_name || "Catégorie")}`,
+            };
+          })
+        );
 
         if (!alive) return;
-        setRows(rowsData);
-      } catch (e) {
+        setMovieRows(rows);
+      } catch {
         if (!alive) return;
-        setErr(e?.message || "Erreur de chargement");
-        setRows([]);
+        setMovieRows([]);
+      } finally {
+        if (alive) setLoadingMovies(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  // --- Load Series rows by categories ---
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const cats = await getJson("/xtream/series-categories");
+        const listCats = Array.isArray(cats) ? cats.slice(0, HOME_SERIES_ROWS) : [];
+
+        const rows = await Promise.all(
+          listCats.map(async (cat) => {
+            const items = await postJson("/xtream/series", {
+              category_id: Number(cat.category_id),
+              limit: ROW_LIMIT,
+            }).catch(() => []);
+            return {
+              id: Number(cat.category_id),
+              title: cat.category_name || "Autre",
+              items: Array.isArray(items) ? items : [],
+              seeMoreHref: `/series/category/${cat.category_id}?name=${encodeURIComponent(cat.category_name || "Catégorie")}`,
+            };
+          })
+        );
+
+        if (!alive) return;
+        setSeriesRows(rows);
+      } catch {
+        if (!alive) return;
+        setSeriesRows([]);
+      } finally {
+        if (alive) setLoadingSeries(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  // --- Load Live rows by categories ---
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const cats = await getJson("/xtream/live-categories");
+        const listCats = Array.isArray(cats) ? cats.slice(0, HOME_LIVE_ROWS) : [];
+
+        const rows = await Promise.all(
+          listCats.map(async (cat) => {
+            const items = await postJson("/xtream/live", {
+              category_id: Number(cat.category_id),
+              limit: ROW_LIMIT,
+            }).catch(() => []);
+            return {
+              id: Number(cat.category_id),
+              title: cat.category_name || "Autre",
+              items: Array.isArray(items) ? items : [],
+              // seeMoreHref: `/live?cat=${cat.category_id}` // active si /live sait filtrer
+            };
+          })
+        );
+
+        if (!alive) return;
+        setLiveRows(rows);
+      } catch {
+        if (!alive) return;
+        setLiveRows([]);
+      } finally {
+        if (alive) setLoadingLive(false);
       }
     })();
     return () => { alive = false; };
   }, []);
 
   return (
-    <>
-      <Hero />
-      {err && <div className="mb-4 rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
+    <div className="space-y-10">
+      {/* Top 15 – Tendances de la semaine (numéros en overlay) */}
+      <TopRow
+        title="Tendances de la semaine"
+        items={trending}
+        kind="vod"
+        loading={loadingTrend}
+      />
 
-      {!rows || rows.length === 0 ? (
-        <div className="text-zinc-400">Chargement…</div>
-      ) : (
-        rows.map((g, i) => (
-          <Row key={`home-row-${i}`} title={g.title} items={g.items} kind={g.kind} />
-        ))
-      )}
-    </>
+      {/* Films par catégories */}
+      {movieRows.map((row, i) => (
+        <Row
+          key={`row-m-${row.id}-${i}`}
+          title={row.title}
+          items={row.items}
+          kind="vod"
+          loading={loadingMovies}
+          seeMoreHref={row.seeMoreHref}
+        />
+      ))}
+
+      {/* Séries par catégories */}
+      {seriesRows.map((row, i) => (
+        <Row
+          key={`row-s-${row.id}-${i}`}
+          title={row.title}
+          items={row.items}
+          kind="series"
+          loading={loadingSeries}
+          seeMoreHref={row.seeMoreHref}
+        />
+      ))}
+
+      {/* TV par catégories */}
+      {liveRows.map((row, i) => (
+        <Row
+          key={`row-l-${row.id}-${i}`}
+          title={row.title}
+          items={row.items}
+          kind="live"
+          loading={loadingLive}
+          // seeMoreHref={row.seeMoreHref}
+        />
+      ))}
+    </div>
   );
 }
