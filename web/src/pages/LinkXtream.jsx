@@ -1,5 +1,6 @@
-import { useState, useEffect } from "react";
-import { postJson, getJson } from "../lib/api";
+// web/src/pages/LinkXtream.jsx
+import { useEffect, useState } from "react";
+import { ensureAccess, postJson, getJson } from "../lib/api";
 
 export default function LinkXtream() {
   const [baseUrl, setBaseUrl] = useState("");
@@ -9,19 +10,20 @@ export default function LinkXtream() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  useEffect(() => { loadStatus(); }, []);
-
-  async function loadStatus() {
-    try { setStatus(await getJson("/user/xtream")); }
-    catch { setStatus(null); }
-  }
+  useEffect(() => {
+    (async () => {
+      try { await ensureAccess(); } catch {}
+      try { setStatus(await getJson("/user/xtream")); } catch {}
+    })();
+  }, []);
 
   async function onSubmit(e) {
     e.preventDefault();
     setErr(""); setLoading(true);
     try {
+      await ensureAccess(); // garantit un Authorization présent
       await postJson("/user/link-xtream", { baseUrl, username, password });
-      await loadStatus();
+      setStatus(await getJson("/user/xtream"));
     } catch (e) {
       setErr(e.message || "Erreur");
     } finally {
@@ -50,7 +52,6 @@ export default function LinkXtream() {
         <button disabled={loading} type="submit">{loading ? "Lien..." : "Lier"}</button>
         {err && <p style={{ color: "crimson" }}>{err}</p>}
       </form>
-      <button onClick={loadStatus} style={{ marginTop: 12 }}>Rafraîchir l’état</button>
     </div>
   );
 }
