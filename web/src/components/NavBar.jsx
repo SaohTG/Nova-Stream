@@ -7,7 +7,7 @@ const cls = ({ isActive }) =>
     isActive ? "bg-zinc-800 text-white" : "text-zinc-300 hover:text-white",
   ].join(" ");
 
-const API_BASE = (import.meta.env.VITE_API_BASE || "http://85.31.239.110:4000").replace(/\/+$/, "");
+const API_BASE = (import.meta.env.VITE_API_BASE || "http://localhost:4000").replace(/\/+$/, "");
 
 export default function NavBar() {
   const nav = useNavigate();
