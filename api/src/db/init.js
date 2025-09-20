@@ -8,7 +8,13 @@ import { pool } from "./index.js";
 export async function initDatabase() {
   try {
     // Enable pgcrypto extension for gen_random_uuid()
-    await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
+    try {
+      await pool.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto";`);
+      console.log("pgcrypto extension enabled successfully");
+    } catch (extError) {
+      console.warn("Warning: Could not enable pgcrypto extension:", extError.message);
+      console.warn("UUID generation will fall back to application-level generation");
+    }
     
     // Create core tables from schema
     await pool.query(`
