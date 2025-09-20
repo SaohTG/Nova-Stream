@@ -1,5 +1,4 @@
-// web/src/pages/LinkXtream.jsx
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { postJson, getJson } from "../lib/api";
 
 export default function LinkXtream() {
@@ -10,19 +9,16 @@ export default function LinkXtream() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
+  useEffect(() => { loadStatus(); }, []);
+
   async function loadStatus() {
-    try {
-      const s = await getJson("/user/xtream");
-      setStatus(s);
-    } catch (e) {
-      setStatus(null);
-    }
+    try { setStatus(await getJson("/user/xtream")); }
+    catch { setStatus(null); }
   }
 
   async function onSubmit(e) {
     e.preventDefault();
-    setErr("");
-    setLoading(true);
+    setErr(""); setLoading(true);
     try {
       await postJson("/user/link-xtream", { baseUrl, username, password });
       await loadStatus();
@@ -36,22 +32,19 @@ export default function LinkXtream() {
   return (
     <div style={{ maxWidth: 520, margin: "40px auto" }}>
       <h2>Lier un compte Xtream</h2>
-      {status && status.linked && (
+      {status?.linked && (
         <p style={{ background: "#eef", padding: 8, borderRadius: 6 }}>
-          Compte lié : <b>{status.username}</b> — <span>{status.baseUrl}</span>
+          Compte lié — <b>{status.baseUrl}</b>
         </p>
       )}
       <form onSubmit={onSubmit}>
-        <div>
-          <label>Base URL</label>
+        <div><label>Base URL</label>
           <input value={baseUrl} onChange={e => setBaseUrl(e.target.value)} placeholder="http://serveur:port" required />
         </div>
-        <div>
-          <label>Utilisateur</label>
+        <div><label>Utilisateur</label>
           <input value={username} onChange={e => setUsername(e.target.value)} required />
         </div>
-        <div>
-          <label>Mot de passe</label>
+        <div><label>Mot de passe</label>
           <input type="password" value={password} onChange={e => setPassword(e.target.value)} required />
         </div>
         <button disabled={loading} type="submit">{loading ? "Lien..." : "Lier"}</button>
