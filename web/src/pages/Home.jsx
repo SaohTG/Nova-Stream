@@ -16,9 +16,9 @@ export default function Home() {
       try {
         setErr(null);
         const [m, s, l] = await Promise.all([
-          postJson("/xtream/movies", { limit: 24 }),
-          postJson("/xtream/series", { limit: 24 }),
-          postJson("/xtream/live",   { limit: 24 }),
+          postJson("/xtream/movies", { limit: 120 }),
+          postJson("/xtream/series", { limit: 120 }),
+          postJson("/xtream/live",   { limit: 120 }),
         ]);
         if (!alive) return;
         setMovies(Array.isArray(m) ? m : []);
