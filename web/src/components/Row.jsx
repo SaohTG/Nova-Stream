@@ -8,7 +8,7 @@ function SkeletonCard({ kind = "vod" }) {
   return (
     <div className={`${itemWidthClass} shrink-0`}>
       <div className={`relative ${ratioClass} w-full overflow-hidden rounded-xl bg-zinc-800 skeleton`} />
-      <div className="mt-2 h-4 w-3/4 rounded bg-zinc-800 skeleton" />
+      {/* pas de titre */}
     </div>
   );
 }
@@ -38,7 +38,8 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
                 const key = `${kind}-${item.stream_id || item.series_id || item.name}`;
                 return (
                   <div className={`${itemWidthClass} shrink-0`} key={key}>
-                    <PosterCard item={item} kind={kind} />
+                    {/* 🔥 on masque le titre dans tous les carrousels */}
+                    <PosterCard item={item} kind={kind} showTitle={false} />
                   </div>
                 );
               })}
