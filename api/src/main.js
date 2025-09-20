@@ -1,67 +1,83 @@
 // api/src/main.js
-import('dotenv/config').catch(() => {});
+import "dotenv/config";
 import express from "express";
-import cors from "cors";
 import cookieParser from "cookie-parser";
+import cors from "cors";
 import morgan from "morgan";
 
-// Routers (tous exportent `default`)
-import authRouter from "./modules/auth.js";
+// Routes internes
+import authRouter, { ensureAuth } from "./modules/auth.js";
 import userRouter from "./modules/user.js";
 import xtreamRouter from "./modules/xtream.js";
 import tmdbRouter from "./modules/tmdb.js";
 
+/* ----------------------- App & Middlewares ----------------------- */
+
 const app = express();
 
-const PORT = Number(process.env.API_PORT || 4000);
-
-// CORS: accepter une ou plusieurs origines (séparées par des virgules)
-const ORIGIN_ENV = process.env.CORS_ORIGIN || "http://localhost:5173";
-const ALLOWED_ORIGINS = ORIGIN_ENV.split(",").map(s => s.trim()).filter(Boolean);
-
-// Utilitaires
+// Derrière un proxy (Portainer/traefik/nginx) → cookies SameSite=None, etc.
 app.set("trust proxy", 1);
-app.use(morgan("dev"));
-app.use(express.json({ limit: "1mb" }));
-app.use(cookieParser());
+
+// CORS : accepte plusieurs origines séparées par des virgules
+const origins =
+  (process.env.CORS_ORIGIN || "http://localhost:5173")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
 app.use(
   cors({
-    origin: (origin, cb) => {
-      // autoriser requêtes server-to-server ou outils locaux
+    origin: function (origin, cb) {
+      // autorise requêtes sans Origin (ex: curl/healthchecks)
       if (!origin) return cb(null, true);
-      // match exact sur la whitelist
-      if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-      return cb(new Error(`Not allowed by CORS: ${origin}`));
+      if (origins.includes(origin)) return cb(null, true);
+      return cb(new Error(`CORS blocked: ${origin}`));
     },
     credentials: true,
   })
 );
 
-// Healthcheck
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
+app.use(cookieParser());
+app.use(express.json({ limit: "1mb" }));
+app.use(morgan("dev"));
 
-// Routes
-app.use(authRouter);   // /auth/...
-app.use(userRouter);   // /user/...
-app.use(xtreamRouter); // /xtream/...
-app.use(tmdbRouter);   // /tmdb/...
+/* ----------------------------- Routes ---------------------------- */
 
-// 404
-app.use((req, res) => {
-  res.status(404).json({ ok: false, error: "Not Found" });
+app.get("/health", (_req, res) => res.json({ ok: true }));
+
+// Auth publique
+app.use("/auth", authRouter);
+
+// Zones protégées par JWT (cookie httpOnly)
+app.use("/user", ensureAuth, userRouter);
+app.use("/xtream", ensureAuth, xtreamRouter);
+app.use("/tmdb", ensureAuth, tmdbRouter);
+
+/* --------------------- 404 & Error Handlers ---------------------- */
+
+// 404 JSON
+app.use((req, res, next) => {
+  if (res.headersSent) return next();
+  res.status(404).json({ error: "Not Found", path: req.path });
 });
 
-// Error handler
-app.use((err, _req, res, _next) => {
-  const status = err?.status || 500;
-  const message = err?.message || "Internal Server Error";
+// Error JSON
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
+  const status = err.status || err.statusCode || 500;
+  const message = err.message || "Internal Server Error";
   if (process.env.NODE_ENV !== "production") {
-    console.error("[API ERROR]", err);
+    console.error("[API ERROR]", status, message, err.stack);
   }
-  res.status(status).json({ ok: false, error: message });
+  // Évite de casser CORS sur erreur
+  if (!res.headersSent) {
+    res.status(status).json({ error: message });
+  }
 });
 
-// Start
-app.listen(PORT, () => {
-  console.log(`API on :${PORT}`);
+/* --------------------------- Boot server ------------------------- */
+
+const port = Number(process.env.API_PORT || 4000);
+app.listen(port, () => {
+  console.log(`API on :${port}`);
 });
