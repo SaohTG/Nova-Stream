@@ -1,5 +1,5 @@
 // web/src/components/PosterCard.jsx
-export default function PosterCard({ item = {}, kind = "vod" }) {
+export default function PosterCard({ item = {}, kind = "vod", showTitle = true }) {
   const title =
     item.title ||
     item.name ||
@@ -42,8 +42,9 @@ export default function PosterCard({ item = {}, kind = "vod" }) {
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/70 to-transparent" />
       </div>
 
-      {/* espace vertical + hauteur minimale du texte pour éviter les reflows */}
-      <div className="mt-2 line-clamp-2 min-h-[2.75rem] text-sm text-zinc-200">{title}</div>
+      {showTitle && (
+        <div className="mt-2 line-clamp-2 min-h-[2.75rem] text-sm text-zinc-200">{title}</div>
+      )}
     </div>
   );
 }
