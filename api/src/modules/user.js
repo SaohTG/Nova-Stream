@@ -22,7 +22,7 @@ function enc(plain) {
   return `v1:${iv.toString("base64")}:${tag.toString("base64")}:${ct.toString("base64")}`;
 }
 
-/* ====== Utils robustes ====== */
+/* ====== Utils ====== */
 function normalizeBaseUrl(u) {
   let s = (u || "").toString().trim();
   if (!s) return "";
@@ -30,41 +30,73 @@ function normalizeBaseUrl(u) {
   while (s.endsWith("/")) s = s.slice(0, -1);
   return s;
 }
-// Deep-scan pour trouver un champ par “intent” (url/user/pass)
-function deepFind(obj, matchFn) {
-  if (!obj || typeof obj !== "object") return undefined;
-  for (const [k, v] of Object.entries(obj)) {
-    if (matchFn(k, v)) return v;
-    if (v && typeof v === "object") {
-      const r = deepFind(v, matchFn);
-      if (r !== undefined) return r;
-    }
-  }
-  return undefined;
+// parcours profond: récupère toutes les chaînes présentes dans l'objet
+function collectStringsDeep(obj, acc = []) {
+  if (obj == null) return acc;
+  if (typeof obj === "string") { acc.push(obj); return acc; }
+  if (typeof obj !== "object") return acc;
+  for (const v of Object.values(obj)) collectStringsDeep(v, acc);
+  return acc;
 }
+// essaie d'extraire baseUrl/username/password à partir d'un lien Xtream complet
+function parseXtreamFromString(s) {
+  if (typeof s !== "string") return null;
+  const str = s.trim();
+  if (!/^https?:\/\//i.test(str)) return null;
+  try {
+    const u = new URL(str);
+    const user = u.searchParams.get("username");
+    const pass = u.searchParams.get("password");
+    if (!user || !pass) return null;
+    // player_api.php ou get.php -> on retire le fichier final pour retrouver la racine
+    let base = `${u.protocol}//${u.host}`;
+    if (/\/(player_api|get)\.php$/i.test(u.pathname)) {
+      // rien à faire, on garde juste origin
+    } else {
+      // si c'est un autre chemin, on garde l'origin (propre et sûr)
+    }
+    return {
+      baseUrl: normalizeBaseUrl(base),
+      username: String(user).trim(),
+      password: String(pass).trim(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// extraction souple (aliases + parsing de liens)
 function extractFields(body = {}) {
-  // Sources directes
+  // alias "plats"
   let baseUrl = body.baseUrl || body.url || body.serverUrl || body.apiUrl || body.portal || body.endpoint;
   if (!baseUrl && body.host && body.port) baseUrl = `${body.host}:${body.port}`;
   let username = body.username || body.user || body.login || body.email || body.u;
   let password = body.password || body.pass || body.pwd || body.p;
 
-  // Deep (si payload nested ou “data: { … }”)
-  if (!baseUrl) {
-    baseUrl = deepFind(body, (k, v) => /base|server|portal|endpoint|url/i.test(k) && typeof v === "string");
-  }
-  if (!username) {
-    username = deepFind(body, (k, v) => /(user(name)?|login|email|u$)/i.test(k) && typeof v === "string");
-  }
-  if (!password) {
-    password = deepFind(body, (k, v) => /(pass(word)?|pwd|p$)/i.test(k) && typeof v === "string");
+  baseUrl = baseUrl ? normalizeBaseUrl(baseUrl) : "";
+
+  // si un des champs manque, on essaie de parser des liens complets présents quelque part dans le payload
+  if (!baseUrl || !username || !password) {
+    const allStrings = collectStringsDeep(body);
+    for (const s of allStrings) {
+      const hit = parseXtreamFromString(s);
+      if (hit) {
+        if (!baseUrl) baseUrl = hit.baseUrl;
+        if (!username) username = hit.username;
+        if (!password) password = hit.password;
+        if (baseUrl && username && password) break;
+      }
+    }
   }
 
+  // normalisation finale
   baseUrl = normalizeBaseUrl(baseUrl);
   username = (username || "").toString().trim();
   password = (password || "").toString().trim();
+
   return { baseUrl, username, password };
 }
+
 async function ensureTable() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_xtream (
@@ -88,12 +120,17 @@ router.post("/link-xtream", async (req, res, next) => {
     if (!baseUrl) missing.push("baseUrl");
     if (!username) missing.push("username");
     if (!password) missing.push("password");
+
     if (missing.length) {
+      // message clair + indices (ne log pas les secrets)
       return res.status(422).json({
         message: "Missing required fields",
         missing,
         received: { baseUrl: !!baseUrl, username: !!username, password: !!password },
-        example: { baseUrl: "http://server:8080", username: "demo", password: "demo" },
+        tips: [
+          "Tu peux envoyer { baseUrl, username, password }",
+          "OU bien un lien complet Xtream: http://host:port/get.php?username=U&password=P&type=m3u",
+        ],
       });
     }
 
@@ -109,7 +146,7 @@ router.post("/link-xtream", async (req, res, next) => {
       [req.user.sub, baseUrl, enc(username), enc(password)]
     );
 
-    return res.json({ ok: true, baseUrl, username });
+    return res.json({ ok: true, baseUrl });
   } catch (e) {
     e.status = e.status || 500;
     next(e);
