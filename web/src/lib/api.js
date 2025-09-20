@@ -11,25 +11,28 @@ function withAuth(h = {}) {
 export async function refresh() {
   const r = await fetch(`${API}/auth/refresh`, { method: "POST", credentials: "include" });
   const txt = await r.text();
-  if (!r.ok) { const e = new Error("REFRESH_FAIL"); e.status = r.status; e.data = txt; throw e; }
+  if (!r.ok) throw new Error("REFRESH_FAIL");
   const { accessToken } = JSON.parse(txt || "{}");
   setAccess(accessToken);
   return accessToken;
 }
+
 export async function ensureAccess() {
   if (getAccess()) return getAccess();
-  return await refresh();
+  try { return await refresh(); } catch { return ""; }
 }
 
-async function requestJson(method, path, body, options = {}, _retried = false) {
+async function requestJson(method, path, body, options = {}, retried = false) {
   const headers = withAuth({ "Content-Type": "application/json", ...(options.headers || {}) });
   const r = await fetch(`${API}${path}`, {
     method, headers, credentials: "include",
     body: body != null ? JSON.stringify(body) : undefined, ...options,
   });
   const txt = await r.text();
+
+  // Si /auth/me renvoie 401, l’API retentera déjà côté serveur via cookie rt.
   if (!r.ok) {
-    if (r.status === 401 && !_retried) {
+    if (r.status === 401 && !retried) {
       await refresh();
       return requestJson(method, path, body, options, true);
     }
@@ -44,7 +47,7 @@ export const getJson  = (p, o) => requestJson("GET", p, null, o);
 export const postJson = (p, b, o) => requestJson("POST", p, b, o);
 export const delJson  = (p, o) => requestJson("DELETE", p, null, o);
 
-/* Auth */
+/* Auth helpers */
 export async function login(email, password) {
   const { accessToken } = await postJson("/auth/login", { email, password });
   setAccess(accessToken);
@@ -55,12 +58,12 @@ export async function signup(email, password) {
   setAccess(accessToken);
   return accessToken;
 }
-export const me = () => getJson("/auth/me");
 
-/* Xtream */
-export const xtreamLink   = (baseUrl, username, password) => postJson("/xtream/link",   { baseUrl, username, password });
-export const xtreamStatus = () => getJson("/xtream/status");
-export const xtreamTest   = (args) => postJson("/xtream/test", args || {});
-export const xtreamUnlink = () => delJson("/xtream/unlink");
+/* Session helpers */
+export async function me() {
+  // petit filet: pré-ensure si pas d’AT local (premier boot)
+  if (!getAccess()) await ensureAccess();
+  return getJson("/auth/me");
+}
 
-export default { getJson, postJson, delJson, login, signup, me, refresh, ensureAccess, xtreamLink, xtreamStatus, xtreamTest, xtreamUnlink };
+export default { getJson, postJson, delJson, login, signup, me, refresh, ensureAccess };
