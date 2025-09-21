@@ -8,18 +8,17 @@ services:
       - "80:80"
       - "443:443"
     environment:
-      # ⬅️ remplace par TON domaine qui pointe vers 85.31.239.110
-      SITE_DOMAIN: lorna.tv
+      SITE_DOMAIN: lector.lorna.tv
       CADDYFILE: |
         {$SITE_DOMAIN} {
           encode zstd gzip
 
-          # API sous /api  → service "api" (port interne 4000)
+          # API sous /api → service "api" (port interne 4000)
           handle_path /api/* {
             reverse_proxy api:4000
           }
 
-          # tout le reste → service "web" (port interne 5173 ou nginx:80)
+          # tout le reste → service "web" (port interne 5173)
           handle {
             reverse_proxy web:5173
           }
@@ -80,9 +79,6 @@ services:
         npm run build
         node dist/main.js
     depends_on: [db]
-    # plus besoin d'exposer 4000 publiquement (Caddy proxy)
-    # ports:
-    #   - "4000:4000"
     networks: [webnet]
     restart: unless-stopped
 
@@ -138,9 +134,6 @@ services:
         npm run build
         npm run preview -- --host 0.0.0.0 --port 5173
     depends_on: [api]
-    # plus besoin d'exposer 5173 publiquement (Caddy proxy)
-    # ports:
-    #   - "5173:5173"
     networks: [webnet]
     restart: unless-stopped
 
