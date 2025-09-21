@@ -18,7 +18,8 @@ const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch
 let PASSWORD_COL;
 async function getPasswordColumn() {
   if (PASSWORD_COL) return PASSWORD_COL;
-  const candidates = ["password","password_hash","hashed_password","pass"];
+  // Priorise password_hash pour éviter les 401 si deux colonnes existent
+  const candidates = ["password_hash","password","hashed_password","pass"];
   const { rows } = await pool.query(
     `SELECT column_name FROM information_schema.columns
      WHERE table_name='users' AND column_name = ANY($1::text[])`, [candidates]
@@ -35,6 +36,9 @@ async function getPasswordColumn() {
 }
 
 function signTokens(payload) {
+  if (!process.env.API_JWT_SECRET || !process.env.API_REFRESH_SECRET) {
+    throw new Error("MISSING_JWT_SECRETS");
+  }
   const accessToken  = jwt.sign(payload, process.env.API_JWT_SECRET,     { expiresIn: ACCESS_TTL });
   const refreshToken = jwt.sign(payload, process.env.API_REFRESH_SECRET, { expiresIn: REFRESH_TTL });
   return { accessToken, refreshToken };
@@ -42,12 +46,11 @@ function signTokens(payload) {
 
 function setRefreshCookie(res, token) {
   const sameSite = ["lax","strict","none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
-  // IMPORTANT: chemin '/' pour que /auth/me reçoive le cookie
   res.cookie("rt", token, {
     httpOnly: true,
     secure: COOKIE_SECURE,
     sameSite,
-    path: "/",                // <-- au lieu de "/auth/refresh"
+    path: "/",
     maxAge: REFRESH_TTL * 1000,
   });
 }
@@ -97,7 +100,7 @@ export function ensureAuth(req, res, next) {
   catch { return res.status(401).json({ message: "Invalid token" }); }
 }
 
-function ensureAuthOrRefresh(req, res, next) {
+export function ensureAuthOrRefresh(req, res, next) {
   const h = req.headers.authorization || "";
   let token = null;
   if (h.startsWith("Bearer ")) token = h.split(" ")[1];
