@@ -1,5 +1,5 @@
 // web/src/components/Row.jsx
-import { useRef, useState, useCallback } from "react";
+import { useRef, useState, useCallback, useEffect } from "react";
 import { Link } from "react-router-dom";
 import PosterCard from "./PosterCard.jsx";
 
@@ -17,47 +17,72 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   const itemWidthClass = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
 
   const trackRef = useRef(null);
-  const [drag, setDrag] = useState({ active: false, startX: 0, scrollLeft: 0 });
+  const rafRef = useRef(0);
+  const lastXRef = useRef(0);
+  const lastDxRef = useRef(0);
+  const [drag, setDrag] = useState({ active: false });
+
+  // évite la sélection pendant le drag
+  useEffect(() => {
+    if (drag.active) document.body.style.userSelect = "none";
+    else document.body.style.userSelect = "";
+    return () => { document.body.style.userSelect = ""; };
+  }, [drag.active]);
+
+  const stopInertia = () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
 
   const onPointerDown = useCallback((e) => {
-    const el = trackRef.current;
-    if (!el) return;
+    const el = trackRef.current; if (!el) return;
     el.setPointerCapture?.(e.pointerId);
-    setDrag({ active: true, startX: e.clientX, scrollLeft: el.scrollLeft });
+    stopInertia();
+    lastXRef.current = e.clientX;
+    lastDxRef.current = 0;
+    setDrag({ active: true });
   }, []);
 
-  const onPointerMove = useCallback(
-    (e) => {
-      if (!drag.active) return;
-      const el = trackRef.current;
-      if (!el) return;
-      const dx = e.clientX - drag.startX;
-      el.scrollLeft = drag.scrollLeft - dx;
-    },
-    [drag]
-  );
+  const onPointerMove = useCallback((e) => {
+    if (!drag.active) return;
+    const el = trackRef.current; if (!el) return;
+    const x = e.clientX;
+    const dx = x - lastXRef.current;
+    el.scrollLeft -= dx;                // défilement direct
+    lastDxRef.current = dx;             // vitesse instantanée
+    lastXRef.current = x;
+  }, [drag.active]);
 
-  const endDrag = useCallback(
-    (e) => {
-      if (!drag.active) return;
-      trackRef.current?.releasePointerCapture?.(e.pointerId);
-      setDrag((d) => ({ ...d, active: false }));
-    },
-    [drag.active]
-  );
+  const startInertia = useCallback(() => {
+    const el = trackRef.current; if (!el) return;
+    let v = lastDxRef.current;          // px/frame approximatif
+    const friction = 0.92;
+    const step = () => {
+      v *= friction;
+      if (Math.abs(v) < 0.4) return;    // fin
+      el.scrollLeft -= v;
+      rafRef.current = requestAnimationFrame(step);
+    };
+    rafRef.current = requestAnimationFrame(step);
+  }, []);
+
+  const endDrag = useCallback((e) => {
+    if (!drag.active) return;
+    trackRef.current?.releasePointerCapture?.(e.pointerId);
+    setDrag({ active: false });
+    startInertia();
+  }, [drag.active, startInertia]);
 
   const onWheel = useCallback((e) => {
-    const el = trackRef.current;
-    if (!el) return;
+    const el = trackRef.current; if (!el) return;
     if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
       e.preventDefault();
       el.scrollBy({ left: e.deltaY, behavior: "auto" });
     }
   }, []);
 
+  const preventImgDrag = useCallback((e) => { e.preventDefault(); }, []);
+
   const go = useCallback((dir) => {
-    const el = trackRef.current;
-    if (!el) return;
+    const el = trackRef.current; if (!el) return;
+    stopInertia();
     const amount = Math.round(el.clientWidth * 0.9) * (dir > 0 ? 1 : -1);
     el.scrollBy({ left: amount, behavior: "smooth" });
   }, []);
@@ -67,10 +92,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
       <div className="mb-3 flex items-baseline justify-between">
         <h2 className="text-lg font-semibold tracking-tight text-white">{title}</h2>
         {!!seeMoreHref && items?.length > 0 && (
-          <Link
-            to={seeMoreHref}
-            className="text-sm font-medium text-zinc-300 hover:text-white hover:underline"
-          >
+          <Link to={seeMoreHref} className="text-sm font-medium text-zinc-300 hover:text-white hover:underline">
             Voir plus
           </Link>
         )}
@@ -81,27 +103,25 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
         <button
           aria-label="Précédent"
           onClick={() => go(-1)}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-10
-                     rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center
-                     hover:bg-black/70 focus:outline-none"
+          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
         >
           ‹
         </button>
 
-        {/* Piste scrollable (swipe/drag sur les images) */}
+        {/* Piste */}
         <div
           ref={trackRef}
-          className="-mx-4 overflow-x-auto px-12 pb-2" // padding latéral pour les flèches
-          style={{ scrollSnapType: "x mandatory" }}
+          className={`-mx-4 overflow-x-auto px-12 pb-2 select-none ${drag.active ? "cursor-grabbing" : "cursor-grab"}`}
+          style={{ scrollSnapType: "x mandatory", touchAction: "pan-y" }}  // swipe horizontal custom, vertical natif
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={endDrag}
+          onPointerLeave={endDrag}
           onPointerCancel={endDrag}
           onWheel={onWheel}
+          onDragStart={preventImgDrag}
         >
-          <div
-            className={`flex gap-4 md:gap-5 lg:gap-6 ${drag.active ? "pointer-events-none" : ""}`}
-          >
+          <div className={`flex gap-4 md:gap-5 lg:gap-6 ${drag.active ? "pointer-events-none" : ""}`}>
             {loading
               ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
               : items.map((item) => {
@@ -119,9 +139,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
         <button
           aria-label="Suivant"
           onClick={() => go(1)}
-          className="absolute right-0 top-1/2 -translate-y-1/2 z-10
-                     rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center
-                     hover:bg-black/70 focus:outline-none"
+          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
         >
           ›
         </button>
