@@ -1,5 +1,5 @@
 // web/src/lib/api.js
-const API = import.meta.env.VITE_API_URL || "https://85.31.239.110:4000";
+const API = import.meta.env.VITE_API_URL || "http://85.31.239.110:4000";
 
 function getAccess() { return localStorage.getItem("access_token") || ""; }
 function setAccess(t) { if (t) localStorage.setItem("access_token", t); }
