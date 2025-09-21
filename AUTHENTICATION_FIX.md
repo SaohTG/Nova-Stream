@@ -4,7 +4,7 @@
 
 The original issue was:
 ```
-POST http://85.31.239.110:4000/auth/refresh 401 (Unauthorized)
+POST https://85.31.239.110:4000/auth/refresh 401 (Unauthorized)
 ```
 
 This was caused by **inconsistent cookie naming** between different parts of the authentication system.
