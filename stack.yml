@@ -1,12 +1,5 @@
 version: "3.9"
 
-# Stack prêt pour domaine lector.lorna.tv via Nginx Proxy Manager.
-# On laisse les ports publiés (5173/4000) : NPM peut aussi pointer sur l'IP publique pendant que tu testes.
-# Changements clés :
-# - web.VITE_API_BASE = /api  (le proxy NPM route /api -> API:4000)
-# - api.CORS_ORIGIN = https://lector.lorna.tv (tu peux garder l'IP de test en plus)
-# - vite.config.js généré avec allowedHosts=["lector.lorna.tv"] (server & preview)
-
 services:
   db:
     image: postgres:16-alpine
@@ -34,20 +27,25 @@ services:
       PORT: 4000
       API_PORT: 4000
       HOST: 0.0.0.0
-      # Autorise le front servi par lector.lorna.tv (et l'IP de test si tu veux garder)
+      # Front autorisé (domaine) + optionnel IP:5173 si tests directs
       CORS_ORIGIN: https://lector.lorna.tv,http://85.31.239.110:5173
-      COOKIE_SECURE: "false"
-      COOKIE_SAMESITE: lax
+      COOKIE_SECURE: "true"
+      COOKIE_SAMESITE: none
       TMDB_API_KEY: d8175301037c00f3c719478998396539
       NODE_ENV: production
       NPM_CONFIG_PRODUCTION: "false"
+      # >>> SECRETS INDISPENSABLES <<<
+      API_JWT_SECRET: Y7dD6Vh2mC4pQ8tR1sX9zK3wL5aN0fB2gU4hJ6iO8lT1qP3dV
+      API_REFRESH_SECRET: 9uU6sT4rQ2pO0nM7lK5jH3gF1dC9bA7Z5X3V1T
+      API_JWT_ACCESS_TTL: "900"
+      API_JWT_REFRESH_TTL: "1209600"
     command:
       - sh
       - -lc
       - |
         set -e
         apk add --no-cache unzip curl netcat-openbsd
-        until nc -z db 5432; do echo '⏳ waiting for db...'; sleep 2; done
+        until nc -z db 5432; do echo 'waiting for db...'; sleep 2; done
         rm -rf /tmp/Nova-Stream-main /tmp/src.zip
         curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
         unzip -o -q /tmp/src.zip -d /tmp
@@ -62,11 +60,7 @@ services:
     ports:
       - "4000:4000"
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "(curl -fsS http://localhost:4000/api/health || curl -fsS http://localhost:4000/health) >/dev/null || exit 1"
-        ]
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4000/health >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 20
@@ -78,7 +72,6 @@ services:
     image: node:20-alpine
     working_dir: /app
     environment:
-      # Le front parle à l’API via le proxy NPM en /api
       VITE_API_BASE: /api
       NODE_ENV: production
       NPM_CONFIG_PRODUCTION: "false"
@@ -94,9 +87,9 @@ services:
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/web/. /app
         # package.json minimal
-        printf '%s\n' '{ "name":"nova-stream-web","version":"0.1.0","private":true,"type":"module","scripts":{"dev":"vite","build":"vite build","preview":"vite preview"},"dependencies":{"axios":"^1.6.7","hls.js":"^1.5.7","react":"^18.2.0","react-dom":"^18.2.0","react-router-dom":"^6.26.2"},"devDependencies":{"@vitejs/plugin-react":"^4.2.0","autoprefixer":"^10.4.17","postcss":"^8.4.35","tailwindcss":"^3.4.6","vite":"^5.0.0"} }' > /app/package.json
-        # vite.config.js avec allowedHosts (server + preview)
-        printf '%s\n' 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig({ plugins:[react()], server:{ host:true, port:5173, allowedHosts:["lector.lorna.tv"] }, preview:{ host:true, port:5173, allowedHosts:["lector.lorna.tv"] } });' > /app/vite.config.js
+        printf '%s\n' '{ "name":"nova-stream-web","version":"0.1.0","private":true,"type":"module","scripts":{"dev":"vite","build":"vite build","preview":"vite preview"}, "dependencies":{"axios":"^1.6.7","hls.js":"^1.5.7","react":"^18.2.0","react-dom":"^18.2.0","react-router-dom":"^6.26.2"}, "devDependencies":{"@vitejs/plugin-react":"^4.2.0","autoprefixer":"^10.4.17","postcss":"^8.4.35","tailwindcss":"^3.4.6","vite":"^5.0.0"} }' > /app/package.json
+        # vite.config.js
+        printf '%s\n' 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig(({ mode })=>({ plugins:[react()], server:{ host:true, port:5173, allowedHosts:["lector.lorna.tv"] }, preview:{ host:true, port:5173, allowedHosts:["lector.lorna.tv"] } }));' > /app/vite.config.js
         npm install --include=dev --no-audit --no-fund
         npm run build
         npm run preview -- --host 0.0.0.0 --port 5173
