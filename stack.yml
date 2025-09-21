@@ -1,10 +1,11 @@
 version: "3.9"
 
-# ✅ Corrige l'état "unhealthy"
-# - Healthchecks via curl (wget n'était pas dispo)
-# - Délai de démarrage augmenté (start_period)
-# - Endpoint santé tente /api/health puis /health
-# - Force PORT & HOST
+# Stack prêt pour domaine lector.lorna.tv via Nginx Proxy Manager.
+# On laisse les ports publiés (5173/4000) : NPM peut aussi pointer sur l'IP publique pendant que tu testes.
+# Changements clés :
+# - web.VITE_API_BASE = /api  (le proxy NPM route /api -> API:4000)
+# - api.CORS_ORIGIN = https://lector.lorna.tv (tu peux garder l'IP de test en plus)
+# - vite.config.js généré avec allowedHosts=["lector.lorna.tv"] (server & preview)
 
 services:
   db:
@@ -33,7 +34,8 @@ services:
       PORT: 4000
       API_PORT: 4000
       HOST: 0.0.0.0
-      CORS_ORIGIN: http://85.31.239.110:5173
+      # Autorise le front servi par lector.lorna.tv (et l'IP de test si tu veux garder)
+      CORS_ORIGIN: https://lector.lorna.tv,http://85.31.239.110:5173
       COOKIE_SECURE: "false"
       COOKIE_SAMESITE: lax
       TMDB_API_KEY: d8175301037c00f3c719478998396539
@@ -76,7 +78,8 @@ services:
     image: node:20-alpine
     working_dir: /app
     environment:
-      VITE_API_BASE: http://85.31.239.110:4000
+      # Le front parle à l’API via le proxy NPM en /api
+      VITE_API_BASE: /api
       NODE_ENV: production
       NPM_CONFIG_PRODUCTION: "false"
     command:
@@ -90,8 +93,10 @@ services:
         unzip -o -q /tmp/src.zip -d /tmp
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/web/. /app
+        # package.json minimal
         printf '%s\n' '{ "name":"nova-stream-web","version":"0.1.0","private":true,"type":"module","scripts":{"dev":"vite","build":"vite build","preview":"vite preview"},"dependencies":{"axios":"^1.6.7","hls.js":"^1.5.7","react":"^18.2.0","react-dom":"^18.2.0","react-router-dom":"^6.26.2"},"devDependencies":{"@vitejs/plugin-react":"^4.2.0","autoprefixer":"^10.4.17","postcss":"^8.4.35","tailwindcss":"^3.4.6","vite":"^5.0.0"} }' > /app/package.json
-        printf '%s\n' 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig({ plugins:[react()], server:{host:true, port:5173} });' > /app/vite.config.js
+        # vite.config.js avec allowedHosts (server + preview)
+        printf '%s\n' 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig({ plugins:[react()], server:{ host:true, port:5173, allowedHosts:["lector.lorna.tv"] }, preview:{ host:true, port:5173, allowedHosts:["lector.lorna.tv"] } });' > /app/vite.config.js
         npm install --include=dev --no-audit --no-fund
         npm run build
         npm run preview -- --host 0.0.0.0 --port 5173
