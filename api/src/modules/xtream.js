@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { Pool } from "pg";
 import crypto from "crypto";
+import { ensureAuth } from "./auth.js";
 
 const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -62,18 +63,13 @@ function buildPlayerApi(baseUrl, username, password, action, extra = {}) {
 async function fetchWithTimeout(url, ms = 10000, headers = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const r = await fetch(url, { signal: ctrl.signal, headers });
-    return r;
-  } finally { clearTimeout(t); }
+  try { return await fetch(url, { signal: ctrl.signal, headers }); }
+  finally { clearTimeout(t); }
 }
 async function fetchJson(url) {
   const r = await fetchWithTimeout(url, 10000, { "User-Agent": "Mozilla/5.0 (NovaStream/1.0)" });
   const txt = await r.text();
-  if (!r.ok) {
-    const err = new Error(`XTREAM_HTTP_${r.status}`);
-    err.status = r.status; err.body = txt; throw err;
-  }
+  if (!r.ok) { const err = new Error(`XTREAM_HTTP_${r.status}`); err.status = r.status; err.body = txt; throw err; }
   try { return JSON.parse(txt); }
   catch { const err = new Error("XTREAM_BAD_JSON"); err.body = txt; throw err; }
 }
@@ -120,7 +116,7 @@ async function getCreds(userId) {
 const pickCatId = (req) =>
   (req.query.category_id ?? req.query.categoryId ?? req.body?.category_id ?? req.body?.categoryId ?? "0");
 
-/* -------- Image proxy + résolution -------- */
+/* -------- Image helpers -------- */
 function proxyUrl(rawUrl) {
   if (!rawUrl) return "";
   return `/xtream/image?url=${encodeURIComponent(rawUrl)}`;
@@ -130,7 +126,6 @@ function resolveIcon(raw, creds) {
   const absolute = absUrl(creds.baseUrl, raw);
   return proxyUrl(absolute);
 }
-// mappe une liste d’items pour garantir des clés d’image utilisables
 function mapListWithIcons(list = [], creds) {
   return (list || []).map(it => {
     const raw = it.stream_icon || it.icon || it.logo || it.poster || it.image || it.cover || it.cover_big;
@@ -138,21 +133,21 @@ function mapListWithIcons(list = [], creds) {
     return {
       ...it,
       stream_icon: resolved || it.stream_icon || "",
-      icon: resolved || it.icon || "",
-      logo: resolved || it.logo || "",
-      poster: resolved || it.poster || "",
-      image: resolved || it.image || "",
-      cover: resolved || it.cover || "",
-      cover_big: resolved || it.cover_big || "",
+      icon:        resolved || it.icon || "",
+      logo:        resolved || it.logo || "",
+      poster:      resolved || it.poster || "",
+      image:       resolved || it.image || "",
+      cover:       resolved || it.cover || "",
+      cover_big:   resolved || it.cover_big || "",
     };
   });
 }
 
-/* ================= Link/Test/Status ================= */
-router.post("/link", async (req, res, next) => {
+/* ================= Handlers ================= */
+async function hLink(req, res, next) {
   try {
     if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
-    const baseUrl = normalizeBaseUrl(req.body?.baseUrl);
+    const baseUrl = normalizeBaseUrl(req.body?.baseUrl || req.body?.serverUrl);
     const username = (req.body?.username || "").toString().trim();
     const password = (req.body?.password || "").toString().trim();
     if (!baseUrl || !username || !password) return res.status(422).json({ message: "Missing fields" });
@@ -174,71 +169,61 @@ router.post("/link", async (req, res, next) => {
     );
     res.json({ ok: true });
   } catch (e) { e.status = e.status || 500; next(e); }
-});
-
-router.get("/status", async (req, res, next) => {
-  try {
-    const c = await getCreds(req.user?.sub);
-    res.json({ linked: !!c, baseUrl: c?.baseUrl || null });
-  } catch (e) { e.status = e.status || 500; next(e); }
-});
-
-router.delete("/unlink", async (req, res, next) => {
+}
+async function hStatus(req, res, next) {
+  try { const c = await getCreds(req.user?.sub); res.json({ linked: !!c, baseUrl: c?.baseUrl || null }); }
+  catch (e) { e.status = e.status || 500; next(e); }
+}
+async function hUnlink(req, res, next) {
   try {
     await ensureTables();
     await pool.query(`DELETE FROM xtream_accounts WHERE user_id=$1`, [req.user?.sub]);
     await pool.query(`DELETE FROM user_xtream WHERE user_id=$1`, [req.user?.sub]);
     res.status(204).end();
   } catch (e) { e.status = e.status || 500; next(e); }
-});
+}
 
-/* ================= Catalogues (GET + POST compat) ================= */
-// Movies (VOD)
-router.get("/movie-categories", async (req, res, next) => {
+/* Catalogues */
+async function hMovieCategories(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"));
     res.json(data || []);
   } catch (e) { e.status = e.status || 500; next(e); }
-});
-router.get("/movies", async (req, res, next) => {
+}
+async function hMovies(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const category_id = pickCatId(req);
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }));
     res.json(mapListWithIcons(data, c));
   } catch (e) { e.status = e.status || 500; next(e); }
-});
-router.post("/movies", async (req, res, next) => router.get("/movies", req, res, next));
-router.get("/vod-info/:vod_id", async (req, res, next) => {
+}
+async function hVodInfo(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_info", { vod_id: req.params.vod_id }));
-    // normalise aussi les covers dans l’info détaillée
     const coverRaw = info?.movie_data?.cover_big || info?.movie_data?.movie_image;
     const cover = resolveIcon(coverRaw, c);
     res.json({ ...info, movie_data: { ...info?.movie_data, cover_big: cover, movie_image: cover } });
   } catch (e) { e.status = e.status || 500; next(e); }
-});
-
-// Series
-router.get("/series-categories", async (req, res, next) => {
+}
+async function hSeriesCategories(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"));
     res.json(data || []);
   } catch (e) { e.status = e.status || 500; next(e); }
-});
-router.get("/series", async (req, res, next) => {
+}
+async function hSeries(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const category_id = pickCatId(req);
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id }));
     res.json(mapListWithIcons(data, c));
   } catch (e) { e.status = e.status || 500; next(e); }
-});
-router.post("/series", async (req, res, next) => router.get("/series", req, res, next));
-router.get("/series-info/:series_id", async (req, res, next) => {
+}
+async function hSeriesInfo(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_info", { series_id: req.params.series_id }));
@@ -246,28 +231,44 @@ router.get("/series-info/:series_id", async (req, res, next) => {
     const poster = resolveIcon(posterRaw, c);
     res.json({ ...info, info: { ...info?.info, cover: poster, backdrop_path: poster } });
   } catch (e) { e.status = e.status || 500; next(e); }
-});
-
-// Live
-router.get("/live-categories", async (req, res, next) => {
+}
+async function hLiveCategories(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"));
     res.json(data || []);
   } catch (e) { e.status = e.status || 500; next(e); }
-});
-router.get("/live", async (req, res, next) => {
+}
+async function hLive(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const category_id = pickCatId(req);
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id }));
     res.json(mapListWithIcons(data, c));
   } catch (e) { e.status = e.status || 500; next(e); }
-});
-router.post("/live", async (req, res, next) => router.get("/live", req, res, next));
+}
 
-/* ================= Image proxy (UA + Referer, sans restriction d’hôte) ================= */
-router.get("/image", async (req, res, next) => {
+/* ================= Routes ================= */
+router.post("/link",   ensureAuth, hLink);
+router.get("/status",  ensureAuth, hStatus);
+router.delete("/unlink", ensureAuth, hUnlink);
+
+router.get ("/movie-categories",  ensureAuth, hMovieCategories);
+router.get ("/movies",            ensureAuth, hMovies);
+router.post("/movies",            ensureAuth, hMovies); // <-- handler réutilisé
+router.get ("/vod-info/:vod_id",  ensureAuth, hVodInfo);
+
+router.get ("/series-categories", ensureAuth, hSeriesCategories);
+router.get ("/series",            ensureAuth, hSeries);
+router.post("/series",            ensureAuth, hSeries); // <-- handler réutilisé
+router.get ("/series-info/:series_id", ensureAuth, hSeriesInfo);
+
+router.get ("/live-categories",   ensureAuth, hLiveCategories);
+router.get ("/live",              ensureAuth, hLive);
+router.post("/live",              ensureAuth, hLive); // <-- handler réutilisé
+
+/* ================= Image proxy ================= */
+router.get("/image", ensureAuth, async (req, res, next) => {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const url = req.query.url;
