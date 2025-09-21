@@ -39,18 +39,26 @@ function signTokens(payload) {
   const refreshToken = jwt.sign(payload, process.env.API_REFRESH_SECRET, { expiresIn: REFRESH_TTL });
   return { accessToken, refreshToken };
 }
+
 function setRefreshCookie(res, token) {
   const sameSite = ["lax","strict","none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
+  // IMPORTANT: chemin '/' pour que /auth/me reçoive le cookie
   res.cookie("rt", token, {
-    httpOnly: true, secure: COOKIE_SECURE, sameSite,
-    path: "/auth/refresh", maxAge: REFRESH_TTL * 1000,
+    httpOnly: true,
+    secure: COOKIE_SECURE,
+    sameSite,
+    path: "/",                // <-- au lieu de "/auth/refresh"
+    maxAge: REFRESH_TTL * 1000,
   });
 }
 function setAccessCookie(res, token) {
   const sameSite = ["lax","strict","none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
   res.cookie("at", token, {
-    httpOnly: true, secure: COOKIE_SECURE, sameSite,
-    path: "/", maxAge: ACCESS_TTL * 1000,
+    httpOnly: true,
+    secure: COOKIE_SECURE,
+    sameSite,
+    path: "/",
+    maxAge: ACCESS_TTL * 1000,
   });
 }
 
@@ -89,8 +97,6 @@ export function ensureAuth(req, res, next) {
   catch { return res.status(401).json({ message: "Invalid token" }); }
 }
 
-/** Tente d’abord Authorization/cookie 'at'. Si KO mais cookie 'rt' présent et valide,
- *  rafraîchit en arrière-plan, pose les nouveaux cookies et CONTINUE avec req.user. */
 function ensureAuthOrRefresh(req, res, next) {
   const h = req.headers.authorization || "";
   let token = null;
@@ -101,7 +107,8 @@ function ensureAuthOrRefresh(req, res, next) {
     try { req.user = jwt.verify(token, process.env.API_JWT_SECRET); return next(); }
     catch { /* on tentera refresh ci-dessous */ }
   }
-  const rt = req.cookies?.rt;
+  // accepte plusieurs noms possibles pour le refresh cookie
+  const rt = req.cookies?.rt || req.cookies?.refresh_token || req.cookies?.ns_refresh;
   if (!rt) return res.status(401).json({ message: "Unauthorized" });
 
   try {
@@ -132,7 +139,6 @@ router.post("/signup", ah(async (req, res) => {
 router.post("/login", ah(async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ message: "email/password required" });
-
   const user = await validateUser(email, password);
   if (!user) return res.status(401).json({ message: "Invalid credentials" });
 
@@ -143,7 +149,7 @@ router.post("/login", ah(async (req, res) => {
 }));
 
 router.post("/refresh", ah(async (req, res) => {
-  const token = req.cookies && req.cookies.rt;
+  const token = req.cookies?.rt || req.cookies?.refresh_token || req.cookies?.ns_refresh;
   if (!token) return res.status(401).json({ message: "No refresh cookie" });
 
   const payload = jwt.verify(token, process.env.API_REFRESH_SECRET);
@@ -153,7 +159,6 @@ router.post("/refresh", ah(async (req, res) => {
   res.json({ accessToken });
 }));
 
-// ⬇️ /me devient “auto-refresh si besoin” (fini les 401 bruyants au boot)
 router.get("/me", ensureAuthOrRefresh, (req, res) => {
   res.set("Cache-Control", "no-store");
   res.json(req.user);
