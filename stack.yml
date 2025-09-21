@@ -28,7 +28,7 @@ services:
       API_PORT: 4000
       HOST: 0.0.0.0
       # Front autorisé (domaine) + optionnel IP:5173 si tests directs
-      CORS_ORIGIN: https://lector.lorna.tv,http://85.31.239.110:5173
+      CORS_ORIGIN: https://lector.lorna.tv:5173,http://85.31.239.110:5173
       COOKIE_SECURE: "true"
       COOKIE_SAMESITE: none
       TMDB_API_KEY: d8175301037c00f3c719478998396539
