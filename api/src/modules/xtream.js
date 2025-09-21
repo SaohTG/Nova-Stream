@@ -74,6 +74,7 @@ async function fetchJson(url) {
   catch { const err = new Error("XTREAM_BAD_JSON"); err.body = txt; throw err; }
 }
 
+/* ================= Stockage creds ================= */
 async function ensureTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS xtream_accounts (
@@ -116,10 +117,11 @@ async function getCreds(userId) {
 const pickCatId = (req) =>
   (req.query.category_id ?? req.query.categoryId ?? req.body?.category_id ?? req.body?.categoryId ?? "0");
 
-/* -------- Image helpers -------- */
+/* -------- Images -------- */
 function proxyUrl(rawUrl) {
   if (!rawUrl) return "";
-  return `/xtream/image?url=${encodeURIComponent(rawUrl)}`;
+  // important: passer par /api pour le proxy NPM
+  return `/api/xtream/image?url=${encodeURIComponent(rawUrl)}`;
 }
 function resolveIcon(raw, creds) {
   if (!raw) return "";
