@@ -2,7 +2,7 @@
 import { Router } from "express";
 import { Pool } from "pg";
 import crypto from "crypto";
-import { ensureAuth } from "./auth.js";
+import { ensureAuthOrRefresh as ensureAuth } from "./auth.js";
 
 const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -249,23 +249,23 @@ async function hLive(req, res, next) {
 }
 
 /* ================= Routes ================= */
-router.post("/link",   ensureAuth, hLink);
-router.get("/status",  ensureAuth, hStatus);
+router.post("/link",     ensureAuth, hLink);
+router.get ("/status",   ensureAuth, hStatus);
 router.delete("/unlink", ensureAuth, hUnlink);
 
 router.get ("/movie-categories",  ensureAuth, hMovieCategories);
 router.get ("/movies",            ensureAuth, hMovies);
-router.post("/movies",            ensureAuth, hMovies); // <-- handler réutilisé
+router.post("/movies",            ensureAuth, hMovies);
 router.get ("/vod-info/:vod_id",  ensureAuth, hVodInfo);
 
 router.get ("/series-categories", ensureAuth, hSeriesCategories);
 router.get ("/series",            ensureAuth, hSeries);
-router.post("/series",            ensureAuth, hSeries); // <-- handler réutilisé
+router.post("/series",            ensureAuth, hSeries);
 router.get ("/series-info/:series_id", ensureAuth, hSeriesInfo);
 
 router.get ("/live-categories",   ensureAuth, hLiveCategories);
 router.get ("/live",              ensureAuth, hLive);
-router.post("/live",              ensureAuth, hLive); // <-- handler réutilisé
+router.post("/live",              ensureAuth, hLive);
 
 /* ================= Image proxy ================= */
 router.get("/image", ensureAuth, async (req, res, next) => {
