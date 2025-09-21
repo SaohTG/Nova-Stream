@@ -1,18 +1,8 @@
 version: "3.9"
 
-# ⚠️ IMPORTANT : remplacez la ligne ci-dessous par **le vrai nom du réseau** de votre Nginx Proxy Manager.
-# Exemples fréquents: "proxy-npm_default", "nginxproxymanager_default", "npm_default".
-# Si vous ne connaissez pas le nom : dans Portainer > Containers > proxy-npm-1 > Networks, notez le réseau attaché.
-# Puis mettez ce nom sur "name:" ci-dessous.
-networks:
-  npm:
-    external: true
-    name: proxy-npm_default   # ← CHANGEZ CE NOM SI NÉCESSAIRE
-  webnet:
-    driver: bridge
-
-volumes:
-  db_data_ns6: {}
+# ✅ Pas de réseau externe requis.
+# ➜ Dans Portainer, attache simplement le container NPM (proxy-npm-1) au réseau **webnet**
+#    (Containers → proxy-npm-1 → Duplicate/Edit → Networks → Add network 'webnet' → Deploy).
 
 services:
   db:
@@ -60,9 +50,7 @@ services:
         npm run build
         node dist/main.js
     depends_on: [db]
-    networks:
-      - webnet
-      - npm     # NPM (proxy-npm-1) verra le service "api:4000" sur ce réseau
+    networks: [webnet]
     restart: unless-stopped
 
   web:
@@ -117,7 +105,12 @@ services:
         npm run build
         npm run preview -- --host 0.0.0.0 --port 5173
     depends_on: [api]
-    networks:
-      - webnet
-      - npm     # NPM (proxy-npm-1) verra le service "web:5173" sur ce réseau
+    networks: [webnet]
     restart: unless-stopped
+
+volumes:
+  db_data_ns6: {}
+
+networks:
+  webnet:
+    driver: bridge
