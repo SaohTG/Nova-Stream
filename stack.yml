@@ -27,8 +27,8 @@ services:
       PORT: 4000
       API_PORT: 4000
       HOST: 0.0.0.0
-      # Front autorisé (domaine) + optionnel IP:5173 si tests directs
-      CORS_ORIGIN: https://lector.lorna.tv:5173,http://85.31.239.110:5173
+      # Front autorisé (domaine en https) + IP:5173 pour tests
+      CORS_ORIGIN: https://lector.lorna.tv,http://85.31.239.110:5173
       COOKIE_SECURE: "true"
       COOKIE_SAMESITE: none
       TMDB_API_KEY: d8175301037c00f3c719478998396539
@@ -39,6 +39,7 @@ services:
       API_REFRESH_SECRET: 9uU6sT4rQ2pO0nM7lK5jH3gF1dC9bA7Z5X3V1T
       API_JWT_ACCESS_TTL: "900"
       API_JWT_REFRESH_TTL: "1209600"
+      API_ENCRYPTION_KEY: "a1b2c3d4e5f60718293a4bc5de6f70819a2b3c4d5e6f7a801f2e3d4c9b8a7c6d"
     command:
       - sh
       - -lc
@@ -86,7 +87,7 @@ services:
         unzip -o -q /tmp/src.zip -d /tmp
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/web/. /app
-        # package.json minimal
+        # package.json
         printf '%s\n' '{ "name":"nova-stream-web","version":"0.1.0","private":true,"type":"module","scripts":{"dev":"vite","build":"vite build","preview":"vite preview"}, "dependencies":{"axios":"^1.6.7","hls.js":"^1.5.7","react":"^18.2.0","react-dom":"^18.2.0","react-router-dom":"^6.26.2"}, "devDependencies":{"@vitejs/plugin-react":"^4.2.0","autoprefixer":"^10.4.17","postcss":"^8.4.35","tailwindcss":"^3.4.6","vite":"^5.0.0"} }' > /app/package.json
         # vite.config.js
         printf '%s\n' 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig(({ mode })=>({ plugins:[react()], server:{ host:true, port:5173, allowedHosts:["lector.lorna.tv"] }, preview:{ host:true, port:5173, allowedHosts:["lector.lorna.tv"] } }));' > /app/vite.config.js
