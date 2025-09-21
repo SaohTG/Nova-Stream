@@ -1,5 +1,5 @@
 // web/src/lib/api.js
-const API = import.meta.env.VITE_API_URL || "http://85.31.239.110:4000";
+const API_BASE = (import.meta.env.VITE_API_BASE || "/api").replace(/\/$/, "");
 
 function getAccess() { return localStorage.getItem("access_token") || ""; }
 function setAccess(t) { if (t) localStorage.setItem("access_token", t); }
@@ -9,7 +9,7 @@ function withAuth(h = {}) {
 }
 
 export async function refresh() {
-  const r = await fetch(`${API}/auth/refresh`, { method: "POST", credentials: "include" });
+  const r = await fetch(`${API_BASE}/auth/refresh`, { method: "POST", credentials: "include" });
   const txt = await r.text();
   if (!r.ok) throw new Error("REFRESH_FAIL");
   const { accessToken } = JSON.parse(txt || "{}");
@@ -24,13 +24,12 @@ export async function ensureAccess() {
 
 async function requestJson(method, path, body, options = {}, retried = false) {
   const headers = withAuth({ "Content-Type": "application/json", ...(options.headers || {}) });
-  const r = await fetch(`${API}${path}`, {
+  const r = await fetch(`${API_BASE}${path}`, {
     method, headers, credentials: "include",
     body: body != null ? JSON.stringify(body) : undefined, ...options,
   });
   const txt = await r.text();
 
-  // Si /auth/me renvoie 401, l’API retentera déjà côté serveur via cookie rt.
   if (!r.ok) {
     if (r.status === 401 && !retried) {
       await refresh();
@@ -61,7 +60,6 @@ export async function signup(email, password) {
 
 /* Session helpers */
 export async function me() {
-  // petit filet: pré-ensure si pas d’AT local (premier boot)
   if (!getAccess()) await ensureAccess();
   return getJson("/auth/me");
 }
