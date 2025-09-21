@@ -73,6 +73,14 @@ async function fetchJson(url) {
   try { return JSON.parse(txt); }
   catch { const err = new Error("XTREAM_BAD_JSON"); err.body = txt; throw err; }
 }
+// timeouts custom pour grosses réponses
+async function fetchJsonT(url, ms) {
+  const r = await fetchWithTimeout(url, ms, { "User-Agent": "Mozilla/5.0 (NovaStream/1.0)" });
+  const txt = await r.text();
+  if (!r.ok) { const err = new Error(`XTREAM_HTTP_${r.status}`); err.status = 502; err.body = txt; throw err; }
+  try { return JSON.parse(txt); }
+  catch { const err = new Error("XTREAM_BAD_JSON"); err.status = 502; err.body = txt; throw err; }
+}
 
 /* ================= Stockage creds ================= */
 async function ensureTables() {
@@ -120,7 +128,6 @@ const pickCatId = (req) =>
 /* -------- Images -------- */
 function proxyUrl(rawUrl) {
   if (!rawUrl) return "";
-  // important: passer par /api pour le proxy NPM
   return `/api/xtream/image?url=${encodeURIComponent(rawUrl)}`;
 }
 function resolveIcon(raw, creds) {
@@ -197,7 +204,8 @@ async function hMovies(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const category_id = pickCatId(req);
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }));
+    const url = buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id });
+    const data = await fetchJsonT(url, 30000);   // 30s pour grosses listes
     res.json(mapListWithIcons(data, c));
   } catch (e) { e.status = e.status || 500; next(e); }
 }
@@ -221,7 +229,8 @@ async function hSeries(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const category_id = pickCatId(req);
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id }));
+    const url = buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id });
+    const data = await fetchJsonT(url, 30000);   // 30s
     res.json(mapListWithIcons(data, c));
   } catch (e) { e.status = e.status || 500; next(e); }
 }
@@ -245,7 +254,8 @@ async function hLive(req, res, next) {
   try {
     const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
     const category_id = pickCatId(req);
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id }));
+    const url = buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id });
+    const data = await fetchJsonT(url, 15000);   // 15s
     res.json(mapListWithIcons(data, c));
   } catch (e) { e.status = e.status || 500; next(e); }
 }
