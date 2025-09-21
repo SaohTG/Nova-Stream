@@ -1,8 +1,7 @@
 version: "3.9"
 
-# ✅ Pas de réseau externe requis.
-# ➜ Dans Portainer, attache simplement le container NPM (proxy-npm-1) au réseau **webnet**
-#    (Containers → proxy-npm-1 → Duplicate/Edit → Networks → Add network 'webnet' → Deploy).
+# Fix "vite: not found" ➜ on installe aussi les devDependencies
+# (NPM_CONFIG_PRODUCTION=false ou --include=dev)
 
 services:
   db:
@@ -34,6 +33,7 @@ services:
       COOKIE_SAMESITE: lax
       TMDB_API_KEY: d8175301037c00f3c719478998396539
       NODE_ENV: production
+      NPM_CONFIG_PRODUCTION: "false"   # ← installe aussi les devDeps (tsc, nest, etc.)
     command:
       - sh
       - -lc
@@ -46,7 +46,7 @@ services:
         unzip -o -q /tmp/src.zip -d /tmp
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/api/. /app
-        npm install --no-audit --no-fund
+        npm install --include=dev --no-audit --no-fund
         npm run build
         node dist/main.js
     depends_on: [db]
@@ -59,6 +59,7 @@ services:
     environment:
       VITE_API_BASE: /api
       NODE_ENV: production
+      NPM_CONFIG_PRODUCTION: "false"   # ← installe aussi vite (devDependency)
     command:
       - sh
       - -lc
@@ -101,7 +102,7 @@ services:
           '  plugins: [react()], ' \
           '  server: { host: true, port: 5173 }' \
           '});' > /app/vite.config.js
-        npm install --no-audit --no-fund
+        npm install --include=dev --no-audit --no-fund
         npm run build
         npm run preview -- --host 0.0.0.0 --port 5173
     depends_on: [api]
