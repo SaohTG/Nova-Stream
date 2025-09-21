@@ -1,6 +1,39 @@
 version: "3.9"
 
 services:
+  # === HTTPS reverse-proxy (Let's Encrypt auto) ===
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # ⬅️ remplace par TON domaine qui pointe vers 85.31.239.110
+      SITE_DOMAIN: lorna.tv
+      CADDYFILE: |
+        {$SITE_DOMAIN} {
+          encode zstd gzip
+
+          # API sous /api  → service "api" (port interne 4000)
+          handle_path /api/* {
+            reverse_proxy api:4000
+          }
+
+          # tout le reste → service "web" (port interne 5173 ou nginx:80)
+          handle {
+            reverse_proxy web:5173
+          }
+        }
+    entrypoint: ["/bin/sh","-c","printf '%s\n' \"$CADDYFILE\" > /etc/caddy/Caddyfile && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile"]
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - api
+      - web
+    networks: [webnet]
+    restart: unless-stopped
+
   db:
     image: postgres:16-alpine
     restart: unless-stopped
@@ -11,7 +44,7 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
     volumes:
       - db_data_ns6:/var/lib/postgresql/data
-    # (pas de healthcheck volontairement ici)
+    networks: [webnet]
 
   api:
     image: node:20-alpine
@@ -23,9 +56,12 @@ services:
       API_JWT_REFRESH_TTL: 1209600
       API_JWT_SECRET: Y7dD6Vh2mC4pQ8tR1sX9zK3wL5aN0fB2gU4hJ6iO8lT1qP3dV
       API_REFRESH_SECRET: mZ2xL7nH3qK9tC8vS4pD0rG6yB1wF5aE7uJ9hQ3oN2lM4kR8
-      # ⚠️ Assure-toi que cette clé fait EXACTEMENT 64 hex
+      # 64 hex exactement
       API_ENCRYPTION_KEY: a1b2c3d4e5f60718293a4bc5de6f70819a2b3c4d5e6f7a801f2e3d4c9b8a7c6d
-      CORS_ORIGIN: http://85.31.239.110:5173
+      # même domaine en HTTPS → cookies first-party
+      CORS_ORIGIN: https://${SITE_DOMAIN}
+      COOKIE_SECURE: "true"
+      COOKIE_SAMESITE: lax
       TMDB_API_KEY: d8175301037c00f3c719478998396539
       NODE_ENV: production
     command:
@@ -34,9 +70,7 @@ services:
       - |
         set -e
         apk add --no-cache unzip curl netcat-openbsd
-        # attendre la DB
         until nc -z db 5432; do echo '⏳ waiting for db...'; sleep 2; done
-        # récupérer le code et builder
         rm -rf /tmp/Nova-Stream-main /tmp/src.zip
         curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
         unzip -o -q /tmp/src.zip -d /tmp
@@ -45,38 +79,30 @@ services:
         npm install --no-audit --no-fund
         npm run build
         node dist/main.js
-    depends_on:
-      - db
-    ports:
-      - "4000:4000"
+    depends_on: [db]
+    # plus besoin d'exposer 4000 publiquement (Caddy proxy)
+    # ports:
+    #   - "4000:4000"
+    networks: [webnet]
     restart: unless-stopped
 
   web:
     image: node:20-alpine
     working_dir: /app
     environment:
-      # URL joignable par le navigateur en prod
-      VITE_API_BASE: http://85.31.239.110:4000
+      # front appelle l'API via le proxy Caddy
+      VITE_API_BASE: /api
     command:
       - sh
       - -lc
       - |
         set -e
-        echo "==> Install base tools"
         apk add --no-cache unzip curl
-
-        echo "==> Fetch repo zip"
         rm -rf /tmp/Nova-Stream-main /tmp/src.zip
         curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
-
-        echo "==> Unzip"
         unzip -o -q /tmp/src.zip -d /tmp
-
-        echo "==> Prepare /app"
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/web/. /app
-
-        echo "==> Write valid package.json"
         printf '%s\n' '{' \
           '  "name": "nova-stream-web",' \
           '  "version": "0.1.0",' \
@@ -102,28 +128,27 @@ services:
           '    "vite": "^5.0.0"' \
           '  }' \
           '}' > /app/package.json
-
-        echo "==> Write vite.config.js"
         printf '%s\n' 'import { defineConfig } from "vite";' \
           'import react from "@vitejs/plugin-react";' \
           'export default defineConfig({' \
           '  plugins: [react()], ' \
           '  server: { host: true, port: 5173 }' \
           '});' > /app/vite.config.js
-
-        echo "==> npm install"
         npm install --no-audit --no-fund
-
-        echo "==> npm run build"
         npm run build
-
-        echo "==> start preview"
         npm run preview -- --host 0.0.0.0 --port 5173
-    depends_on:
-      - api
-    ports:
-      - "5173:5173"
+    depends_on: [api]
+    # plus besoin d'exposer 5173 publiquement (Caddy proxy)
+    # ports:
+    #   - "5173:5173"
+    networks: [webnet]
     restart: unless-stopped
 
 volumes:
   db_data_ns6: {}
+  caddy-data: {}
+  caddy-config: {}
+
+networks:
+  webnet:
+    driver: bridge
