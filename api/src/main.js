@@ -10,20 +10,26 @@ import authRouter, { ensureAuth } from "./modules/auth.js";
 import userRouter from "./modules/user.js";
 import xtreamRouter from "./modules/xtream.js";
 import tmdbRouter from "./modules/tmdb.js";
+import mediaRouter from "./modules/media.js"; // <-- ajouté
 
 const app = express();
 app.set("trust proxy", 1);
 
 // CORS
 const ORIGINS = (process.env.CORS_ORIGIN || "http://localhost:5173")
-  .split(",").map(s => s.trim()).filter(Boolean);
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
-app.use(cors({
-  origin: (origin, cb) => (!origin || ORIGINS.includes(origin)) ? cb(null, true) : cb(null, false),
-  credentials: true,
-  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
-  allowedHeaders: ["Content-Type","Authorization"],
-}));
+app.use(
+  cors({
+    origin: (origin, cb) =>
+      !origin || ORIGINS.includes(origin) ? cb(null, true) : cb(null, false),
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
 app.use(cookieParser());
 app.use(express.json({ limit: "1mb" }));
@@ -33,9 +39,12 @@ app.use(morgan("dev"));
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.use("/auth", authRouter);
-app.use("/user", ensureAuth, userRouter);     // /user/link-xtream ici
+app.use("/user", ensureAuth, userRouter); // /user/link-xtream ici
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
+
+// ---- ajouté (route media sous /api/media) ----
+app.use("/api/media", ensureAuth, mediaRouter);
 
 app.get("/debug/whoami", ensureAuth, (req, res) => res.json({ user: req.user }));
 
