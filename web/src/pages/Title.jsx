@@ -64,18 +64,18 @@ export default function Title() {
             <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>
           )}
 
-          {/* Bouton bande-annonce pour les films */}
+          {/* Bouton / message bande-annonce pour les films */}
           {isMovie && (
-            <div className="mt-6 flex gap-3">
+            <div className="mt-6 flex items-center gap-3">
               <button
-                className="btn"
+                className="btn disabled:opacity-50 disabled:cursor-not-allowed"
                 onClick={() => hasTrailer && setShowTrailer(true)}
                 disabled={!hasTrailer}
                 title={hasTrailer ? "Voir la bande-annonce" : "Bande-annonce indisponible"}
               >
                 ▶ Bande-annonce
               </button>
-              {hasTrailer && (
+              {hasTrailer ? (
                 <a
                   className="btn"
                   href={data.trailer.url}
@@ -85,6 +85,8 @@ export default function Title() {
                 >
                   Ouvrir sur YouTube
                 </a>
+              ) : (
+                <span className="text-sm text-zinc-400">Pas de bande-annonce disponible</span>
               )}
             </div>
           )}
