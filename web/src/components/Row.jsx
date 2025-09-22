@@ -1,13 +1,13 @@
 // web/src/components/Row.jsx
-import { useRef, useState, useCallback, useEffect } from "react";
 import { Link } from "react-router-dom";
+import { useEffect, useRef, useState, useCallback } from "react";
 import PosterCard from "./PosterCard.jsx";
 
 function SkeletonCard({ kind = "vod" }) {
   const itemWidthClass = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
   const ratioClass = kind === "live" ? "aspect-video" : "aspect-[2/3]";
   return (
-    <div className={`${itemWidthClass} shrink-0 snap-start`}>
+    <div className={`${itemWidthClass} shrink-0`}>
       <div className={`relative ${ratioClass} w-full overflow-hidden rounded-xl bg-zinc-800 skel`} />
     </div>
   );
@@ -18,8 +18,8 @@ export default function Row({
   items = [],
   kind = "vod",
   loading = false,
-  seeMoreHref,
-  showRank = false,        // <-- active l’overlay de rang (ex: tendances)
+  seeMoreHref = null,
+  showRank = false, // pour TopRow: affiche 1..N en overlay
 }) {
   const itemWidthClass = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
 
@@ -28,16 +28,57 @@ export default function Row({
   const startXRef = useRef(0);
   const startScrollRef = useRef(0);
   const lastXRef = useRef(0);
-  const velRef = useRef(0);
   const movedRef = useRef(0);
+  const velRef = useRef(0);
   const [dragging, setDragging] = useState(false);
 
+  const [canLeft, setCanLeft] = useState(false);
+  const [canRight, setCanRight] = useState(false);
+
+  const stopInertia = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+  };
+
+  const updateArrows = useCallback(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    const sl = el.scrollLeft;
+    const max = el.scrollWidth - el.clientWidth;
+    setCanLeft(sl > 0);
+    setCanRight(sl < max - 1);
+  }, []);
+
+  // init + on resize + when items change
+  useEffect(() => {
+    updateArrows();
+    const onResize = () => updateArrows();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [items, updateArrows]);
+
+  // throttle scroll
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        updateArrows();
+        ticking = false;
+      });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [updateArrows]);
+
+  // drag/swipe
   useEffect(() => {
     document.body.style.userSelect = dragging ? "none" : "";
     return () => { document.body.style.userSelect = ""; };
   }, [dragging]);
-
-  const stopInertia = () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
 
   const startDrag = (x) => {
     const el = trackRef.current; if (!el) return;
@@ -87,7 +128,6 @@ export default function Row({
   const onTouchMove  = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
   const onTouchEnd   = useCallback(() => endDrag(), [dragging]);
 
-  // Roulette: horizontal uniquement quand sur la rangée
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
     e.preventDefault();
@@ -108,25 +148,34 @@ export default function Row({
     el.scrollBy({ left: amount, behavior: "smooth" });
   }, []);
 
+  const showLeftBtn  = canLeft && !loading && items.length > 0;
+  const showRightBtn = canRight && !loading && items.length > 0;
+
   return (
     <section className="mb-10">
       <div className="mb-3 flex items-baseline justify-between">
         <h2 className="text-lg font-semibold tracking-tight text-white">{title}</h2>
         {!!seeMoreHref && items?.length > 0 && (
-          <Link to={seeMoreHref} className="text-sm font-medium text-zinc-300 hover:text-white hover:underline">
+          <Link
+            to={seeMoreHref}
+            className="text-sm font-medium text-zinc-300 hover:text-white hover:underline"
+          >
             Voir plus
           </Link>
         )}
       </div>
 
       <div className="relative">
-        <button
-          aria-label="Précédent"
-          onClick={() => go(-1)}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
-        >
-          ‹
-        </button>
+        {/* Flèche gauche visible seulement si contenu à gauche */}
+        {showLeftBtn && (
+          <button
+            aria-label="Précédent"
+            onClick={() => go(-1)}
+            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
+          >
+            ‹
+          </button>
+        )}
 
         <div
           ref={trackRef}
@@ -148,36 +197,40 @@ export default function Row({
             {loading
               ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
               : items.map((item, idx) => {
-                  const key = `${kind}-${item.stream_id || item.series_id || item.id || item.name || idx}`;
-                  const rank = item.__rank ?? null;
+                  const key = `${kind}-${item.stream_id || item.series_id || item.name || idx}`;
+                  const rank = (showRank ? (item.__rank ?? idx + 1) : null);
                   return (
-                    <div className={`${itemWidthClass} shrink-0 snap-start relative`} key={key}>
-                      {showRank && rank != null && (
+                    <div className={`${itemWidthClass} shrink-0 snap-start relative overflow-visible`} key={key}>
+                      <div className="relative z-10">
+                        <PosterCard item={item} kind={kind} showTitle={false} />
+                      </div>
+                      {rank != null && (
                         <div
-                          className="absolute -left-2 top-1/2 -translate-y-1/2 text-white/15
-                                     font-extrabold leading-none pointer-events-none select-none
-                                     text-[64px] md:text-[96px] lg:text-[128px] z-0"
+                          className="absolute -left-3 -bottom-2 z-20
+                                     text-white/20 font-extrabold leading-none pointer-events-none select-none
+                                     [text-shadow:0_0_20px_rgba(0,0,0,0.6)]
+                                     text-[88px] md:text-[120px] lg:text-[160px]"
                           aria-hidden
                         >
                           {rank}
                         </div>
                       )}
-                      <div className="relative z-10">
-                        <PosterCard item={item} kind={kind} showTitle={false} />
-                      </div>
                     </div>
                   );
                 })}
           </div>
         </div>
 
-        <button
-          aria-label="Suivant"
-          onClick={() => go(1)}
-          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
-        >
-          ›
-        </button>
+        {/* Flèche droite visible seulement si contenu à droite */}
+        {showRightBtn && (
+          <button
+            aria-label="Suivant"
+            onClick={() => go(1)}
+            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
+          >
+            ›
+          </button>
+        )}
       </div>
     </section>
   );
