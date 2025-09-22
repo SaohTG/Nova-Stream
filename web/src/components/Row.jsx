@@ -19,11 +19,14 @@ export default function Row({
   kind = "vod",
   loading = false,
   seeMoreHref = null,
-  showRank = false, // pour TopRow: affiche 1..N en overlay
+  showRank = false,
 }) {
   const itemWidthClass = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
 
   const trackRef = useRef(null);
+  const leftRef = useRef(null);
+  const rightRef = useRef(null);
+
   const rafRef = useRef(0);
   const startXRef = useRef(0);
   const startScrollRef = useRef(0);
@@ -35,44 +38,60 @@ export default function Row({
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
 
-  const stopInertia = () => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = 0;
-  };
+  // IO sentinels => affichage conditionnel des flèches
+  useEffect(() => {
+    const root = trackRef.current;
+    const L = leftRef.current;
+    const R = rightRef.current;
+    if (!root || !L || !R) return;
 
-  const updateArrows = useCallback(() => {
-    const el = trackRef.current;
-    if (!el) return;
-    const sl = el.scrollLeft;
+    // reset si pas d’items
+    if (!items.length || loading) {
+      setCanLeft(false);
+      setCanRight(false);
+    }
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.target === L) setCanLeft(!e.isIntersecting);
+          if (e.target === R) setCanRight(!e.isIntersecting);
+        }
+      },
+      { root, threshold: 0.99 }
+    );
+
+    io.observe(L);
+    io.observe(R);
+
+    // recheck après layout
+    const t = setTimeout(() => {
+      // petit nudge pour déclencher un recalc si besoin
+      root.scrollBy({ left: 0, behavior: "auto" });
+    }, 0);
+
+    return () => { clearTimeout(t); io.disconnect(); };
+  }, [items, loading]);
+
+  // fallback: met à jour aussi sur scroll/resize
+  const recalc = useCallback(() => {
+    const el = trackRef.current; if (!el) return;
     const max = el.scrollWidth - el.clientWidth;
-    setCanLeft(sl > 0);
-    setCanRight(sl < max - 1);
+    setCanLeft(el.scrollLeft > 0);
+    setCanRight(el.scrollLeft < max - 1);
   }, []);
-
-  // init + on resize + when items change
   useEffect(() => {
-    updateArrows();
-    const onResize = () => updateArrows();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, [items, updateArrows]);
-
-  // throttle scroll
-  useEffect(() => {
-    const el = trackRef.current;
-    if (!el) return;
+    const el = trackRef.current; if (!el) return;
     let ticking = false;
     const onScroll = () => {
       if (ticking) return;
       ticking = true;
-      requestAnimationFrame(() => {
-        updateArrows();
-        ticking = false;
-      });
+      requestAnimationFrame(() => { recalc(); ticking = false; });
     };
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, [updateArrows]);
+    window.addEventListener("resize", recalc);
+    return () => { el.removeEventListener("scroll", onScroll); window.removeEventListener("resize", recalc); };
+  }, [recalc, items]);
 
   // drag/swipe
   useEffect(() => {
@@ -80,6 +99,7 @@ export default function Row({
     return () => { document.body.style.userSelect = ""; };
   }, [dragging]);
 
+  const stopInertia = () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
   const startDrag = (x) => {
     const el = trackRef.current; if (!el) return;
     stopInertia();
@@ -114,15 +134,9 @@ export default function Row({
     rafRef.current = requestAnimationFrame(step);
   };
 
-  const onPointerDown = useCallback((e) => {
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    startDrag(e.clientX);
-  }, []);
+  const onPointerDown = useCallback((e) => { e.currentTarget.setPointerCapture?.(e.pointerId); startDrag(e.clientX); }, []);
   const onPointerMove = useCallback((e) => moveDrag(e.clientX), [dragging]);
-  const onPointerUp = useCallback((e) => {
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-    endDrag();
-  }, [dragging]);
+  const onPointerUp = useCallback((e) => { e.currentTarget.releasePointerCapture?.(e.pointerId); endDrag(); }, [dragging]);
 
   const onTouchStart = useCallback((e) => startDrag(e.touches[0].clientX), []);
   const onTouchMove  = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
@@ -130,8 +144,7 @@ export default function Row({
 
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault(); e.stopPropagation();
     const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
     el.scrollBy({ left: dx, behavior: "auto" });
   }, []);
@@ -156,17 +169,13 @@ export default function Row({
       <div className="mb-3 flex items-baseline justify-between">
         <h2 className="text-lg font-semibold tracking-tight text-white">{title}</h2>
         {!!seeMoreHref && items?.length > 0 && (
-          <Link
-            to={seeMoreHref}
-            className="text-sm font-medium text-zinc-300 hover:text-white hover:underline"
-          >
+          <Link to={seeMoreHref} className="text-sm font-medium text-zinc-300 hover:text-white hover:underline">
             Voir plus
           </Link>
         )}
       </div>
 
       <div className="relative">
-        {/* Flèche gauche visible seulement si contenu à gauche */}
         {showLeftBtn && (
           <button
             aria-label="Précédent"
@@ -193,12 +202,13 @@ export default function Row({
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
         >
-          <div className={`flex gap-4 md:gap-5 lg:gap-6 ${dragging ? "pointer-events-none" : ""}`}>
-            {loading
-              ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
+          <div className={`flex gap-4 md:gap-5 lg:gap-6 items-stretch ${dragging ? "pointer-events-none" : ""}`}>
+            {/* sentinelle gauche */}
+            <div ref={leftRef} className="w-px h-px shrink-0" aria-hidden />
+            {(loading ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
               : items.map((item, idx) => {
                   const key = `${kind}-${item.stream_id || item.series_id || item.name || idx}`;
-                  const rank = (showRank ? (item.__rank ?? idx + 1) : null);
+                  const rank = showRank ? (item.__rank ?? idx + 1) : null;
                   return (
                     <div className={`${itemWidthClass} shrink-0 snap-start relative overflow-visible`} key={key}>
                       <div className="relative z-10">
@@ -206,10 +216,7 @@ export default function Row({
                       </div>
                       {rank != null && (
                         <div
-                          className="absolute -left-3 -bottom-2 z-20
-                                     text-white/20 font-extrabold leading-none pointer-events-none select-none
-                                     [text-shadow:0_0_20px_rgba(0,0,0,0.6)]
-                                     text-[88px] md:text-[120px] lg:text-[160px]"
+                          className="absolute -left-3 -bottom-2 z-20 text-white/20 font-extrabold leading-none pointer-events-none select-none [text-shadow:0_0_20px_rgba(0,0,0,0.6)] text-[88px] md:text-[120px] lg:text-[160px]"
                           aria-hidden
                         >
                           {rank}
@@ -217,11 +224,13 @@ export default function Row({
                       )}
                     </div>
                   );
-                })}
+                })
+            )}
+            {/* sentinelle droite */}
+            <div ref={rightRef} className="w-px h-px shrink-0" aria-hidden />
           </div>
         </div>
 
-        {/* Flèche droite visible seulement si contenu à droite */}
         {showRightBtn && (
           <button
             aria-label="Suivant"
