@@ -3,14 +3,12 @@ import { Link } from "react-router-dom";
 
 export default function PosterCard({
   item,
-  kind = "vod",              // "vod" | "series" | "live"
+  kind = "vod",          // "vod" for films, "series" for series, "live" for TV
   showTitle = true,
-  linkToDetail = true,        // met à false si tu le wrap déjà ailleurs
 }) {
   const isSeries = kind === "series" || !!item?.series_id;
-  const id = item?.series_id || item?.stream_id || item?.id;
   const detKind = isSeries ? "series" : "movie";
-  const to = linkToDetail && id && (kind === "vod" || kind === "series") ? `/title/${detKind}/${id}` : null;
+  const detId = item?.series_id || item?.stream_id; // requis pour la page détail
 
   const title =
     item?.name ||
@@ -50,9 +48,12 @@ export default function PosterCard({
     </>
   );
 
-  return to ? (
+  // Lien actif uniquement pour films/séries avec un id Xtream disponible
+  const clickable = (kind === "vod" || kind === "series") && !!detId;
+
+  return clickable ? (
     <Link
-      to={to}
+      to={`/title/${detKind}/${detId}`}
       className="block focus:outline-none focus:ring-2 focus:ring-white/40 rounded-xl"
       onDragStart={(e) => e.preventDefault()}
     >
