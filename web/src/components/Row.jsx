@@ -19,7 +19,7 @@ export default function Row({
   kind = "vod",
   loading = false,
   seeMoreHref = null,
-  showRank = false,
+  showRank = false, // true pour “Tendances”
 }) {
   const itemWidthClass = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
 
@@ -38,18 +38,12 @@ export default function Row({
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
 
-  // IO sentinels => affichage conditionnel des flèches
+  /* flèches visibles selon scroll */
   useEffect(() => {
     const root = trackRef.current;
     const L = leftRef.current;
     const R = rightRef.current;
     if (!root || !L || !R) return;
-
-    // reset si pas d’items
-    if (!items.length || loading) {
-      setCanLeft(false);
-      setCanRight(false);
-    }
 
     const io = new IntersectionObserver(
       (entries) => {
@@ -60,48 +54,59 @@ export default function Row({
       },
       { root, threshold: 0.99 }
     );
-
     io.observe(L);
     io.observe(R);
 
-    // recheck après layout
-    const t = setTimeout(() => {
-      // petit nudge pour déclencher un recalc si besoin
-      root.scrollBy({ left: 0, behavior: "auto" });
-    }, 0);
-
-    return () => { clearTimeout(t); io.disconnect(); };
+    const t = setTimeout(() => root.scrollBy({ left: 0, behavior: "auto" }), 0);
+    return () => {
+      clearTimeout(t);
+      io.disconnect();
+    };
   }, [items, loading]);
 
-  // fallback: met à jour aussi sur scroll/resize
+  /* fallback recalcul */
   const recalc = useCallback(() => {
-    const el = trackRef.current; if (!el) return;
+    const el = trackRef.current;
+    if (!el) return;
     const max = el.scrollWidth - el.clientWidth;
     setCanLeft(el.scrollLeft > 0);
     setCanRight(el.scrollLeft < max - 1);
   }, []);
   useEffect(() => {
-    const el = trackRef.current; if (!el) return;
+    const el = trackRef.current;
+    if (!el) return;
     let ticking = false;
     const onScroll = () => {
       if (ticking) return;
       ticking = true;
-      requestAnimationFrame(() => { recalc(); ticking = false; });
+      requestAnimationFrame(() => {
+        recalc();
+        ticking = false;
+      });
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", recalc);
-    return () => { el.removeEventListener("scroll", onScroll); window.removeEventListener("resize", recalc); };
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", recalc);
+    };
   }, [recalc, items]);
 
-  // drag/swipe
+  /* drag/swipe */
   useEffect(() => {
     document.body.style.userSelect = dragging ? "none" : "";
-    return () => { document.body.style.userSelect = ""; };
+    return () => {
+      document.body.style.userSelect = "";
+    };
   }, [dragging]);
 
-  const stopInertia = () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
+  const stopInertia = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+  };
   const startDrag = (x) => {
-    const el = trackRef.current; if (!el) return;
+    const el = trackRef.current;
+    if (!el) return;
     stopInertia();
     setDragging(true);
     startXRef.current = x;
@@ -112,7 +117,8 @@ export default function Row({
   };
   const moveDrag = (x) => {
     if (!dragging) return;
-    const el = trackRef.current; if (!el) return;
+    const el = trackRef.current;
+    if (!el) return;
     const dx = x - lastXRef.current;
     el.scrollLeft = startScrollRef.current - (x - startXRef.current);
     velRef.current = dx;
@@ -122,7 +128,8 @@ export default function Row({
   const endDrag = () => {
     if (!dragging) return;
     setDragging(false);
-    const el = trackRef.current; if (!el) return;
+    const el = trackRef.current;
+    if (!el) return;
     let v = velRef.current;
     const friction = 0.92;
     const step = () => {
@@ -134,34 +141,46 @@ export default function Row({
     rafRef.current = requestAnimationFrame(step);
   };
 
-  const onPointerDown = useCallback((e) => { e.currentTarget.setPointerCapture?.(e.pointerId); startDrag(e.clientX); }, []);
+  const onPointerDown = useCallback((e) => {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    startDrag(e.clientX);
+  }, []);
   const onPointerMove = useCallback((e) => moveDrag(e.clientX), [dragging]);
-  const onPointerUp = useCallback((e) => { e.currentTarget.releasePointerCapture?.(e.pointerId); endDrag(); }, [dragging]);
+  const onPointerUp = useCallback((e) => {
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    endDrag();
+  }, [dragging]);
 
   const onTouchStart = useCallback((e) => startDrag(e.touches[0].clientX), []);
-  const onTouchMove  = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
-  const onTouchEnd   = useCallback(() => endDrag(), [dragging]);
+  const onTouchMove = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
+  const onTouchEnd = useCallback(() => endDrag(), [dragging]);
 
   const onWheel = useCallback((e) => {
-    const el = trackRef.current; if (!el) return;
-    e.preventDefault(); e.stopPropagation();
+    const el = trackRef.current;
+    if (!el) return;
+    e.preventDefault();
+    e.stopPropagation();
     const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
     el.scrollBy({ left: dx, behavior: "auto" });
   }, []);
 
   const onClickCapture = useCallback((e) => {
-    if (movedRef.current > 5) { e.preventDefault(); e.stopPropagation(); }
+    if (movedRef.current > 5) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
     movedRef.current = 0;
   }, []);
 
   const go = useCallback((dir) => {
-    const el = trackRef.current; if (!el) return;
+    const el = trackRef.current;
+    if (!el) return;
     stopInertia();
     const amount = Math.round(el.clientWidth * 0.9) * (dir > 0 ? 1 : -1);
     el.scrollBy({ left: amount, behavior: "smooth" });
   }, []);
 
-  const showLeftBtn  = canLeft && !loading && items.length > 0;
+  const showLeftBtn = canLeft && !loading && items.length > 0;
   const showRightBtn = canRight && !loading && items.length > 0;
 
   return (
@@ -188,7 +207,9 @@ export default function Row({
 
         <div
           ref={trackRef}
-          className={`-mx-4 overflow-x-auto overflow-y-hidden px-12 pb-2 select-none ns-scroll ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+          className={`-mx-4 overflow-x-auto overflow-y-hidden px-12 pb-2 select-none ns-scroll ${
+            dragging ? "cursor-grabbing" : "cursor-grab"
+          }`}
           style={{ scrollSnapType: "x mandatory", touchAction: "pan-y pinch-zoom", overscrollBehavior: "contain" }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -205,14 +226,21 @@ export default function Row({
           <div className={`flex gap-4 md:gap-5 lg:gap-6 items-stretch ${dragging ? "pointer-events-none" : ""}`}>
             {/* sentinelle gauche */}
             <div ref={leftRef} className="w-px h-px shrink-0" aria-hidden />
-            {(loading ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
+            {(loading
+              ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
               : items.map((item, idx) => {
                   const key = `${kind}-${item.stream_id || item.series_id || item.name || idx}`;
-                  const rank = showRank ? (item.__rank ?? idx + 1) : null;
+                  const rank = showRank ? item.__rank ?? idx + 1 : null;
+                  const isDetailable = (kind === "vod" || kind === "series") && (item.stream_id || item.series_id);
+                  const detKind = item.series_id ? "series" : "movie";
+                  const detId = item.series_id || item.stream_id;
+
+                  const card = <PosterCard item={item} kind={kind} showTitle={false} />;
+
                   return (
                     <div className={`${itemWidthClass} shrink-0 snap-start relative overflow-visible`} key={key}>
                       <div className="relative z-10">
-                        <PosterCard item={item} kind={kind} showTitle={false} />
+                        {isDetailable ? <Link to={`/title/${detKind}/${detId}`}>{card}</Link> : card}
                       </div>
                       {rank != null && (
                         <div
@@ -224,8 +252,7 @@ export default function Row({
                       )}
                     </div>
                   );
-                })
-            )}
+                }))}
             {/* sentinelle droite */}
             <div ref={rightRef} className="w-px h-px shrink-0" aria-hidden />
           </div>
