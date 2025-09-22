@@ -13,7 +13,14 @@ function SkeletonCard({ kind = "vod" }) {
   );
 }
 
-export default function Row({ title, items = [], kind = "vod", loading = false, seeMoreHref }) {
+export default function Row({
+  title,
+  items = [],
+  kind = "vod",
+  loading = false,
+  seeMoreHref,
+  showRank = false,        // <-- active l’overlay de rang (ex: tendances)
+}) {
   const itemWidthClass = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
 
   const trackRef = useRef(null);
@@ -23,7 +30,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   const lastXRef = useRef(0);
   const velRef = useRef(0);
   const movedRef = useRef(0);
-
   const [dragging, setDragging] = useState(false);
 
   useEffect(() => {
@@ -43,7 +49,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     velRef.current = 0;
     movedRef.current = 0;
   };
-
   const moveDrag = (x) => {
     if (!dragging) return;
     const el = trackRef.current; if (!el) return;
@@ -53,7 +58,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     lastXRef.current = x;
     movedRef.current += Math.abs(dx);
   };
-
   const endDrag = () => {
     if (!dragging) return;
     setDragging(false);
@@ -69,7 +73,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     rafRef.current = requestAnimationFrame(step);
   };
 
-  // Pointer events
   const onPointerDown = useCallback((e) => {
     e.currentTarget.setPointerCapture?.(e.pointerId);
     startDrag(e.clientX);
@@ -80,12 +83,11 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     endDrag();
   }, [dragging]);
 
-  // Touch fallback
   const onTouchStart = useCallback((e) => startDrag(e.touches[0].clientX), []);
   const onTouchMove  = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
   const onTouchEnd   = useCallback(() => endDrag(), [dragging]);
 
-  // Wheel → horizontal only while survol; bloque la page
+  // Roulette: horizontal uniquement quand sur la rangée
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
     e.preventDefault();
@@ -94,7 +96,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     el.scrollBy({ left: dx, behavior: "auto" });
   }, []);
 
-  // Bloque clic si drag
   const onClickCapture = useCallback((e) => {
     if (movedRef.current > 5) { e.preventDefault(); e.stopPropagation(); }
     movedRef.current = 0;
@@ -146,11 +147,24 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
           <div className={`flex gap-4 md:gap-5 lg:gap-6 ${dragging ? "pointer-events-none" : ""}`}>
             {loading
               ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
-              : items.map((item) => {
-                  const key = `${kind}-${item.stream_id || item.series_id || item.name}`;
+              : items.map((item, idx) => {
+                  const key = `${kind}-${item.stream_id || item.series_id || item.id || item.name || idx}`;
+                  const rank = item.__rank ?? null;
                   return (
-                    <div className={`${itemWidthClass} shrink-0 snap-start`} key={key}>
-                      <PosterCard item={item} kind={kind} showTitle={false} />
+                    <div className={`${itemWidthClass} shrink-0 snap-start relative`} key={key}>
+                      {showRank && rank != null && (
+                        <div
+                          className="absolute -left-2 top-1/2 -translate-y-1/2 text-white/15
+                                     font-extrabold leading-none pointer-events-none select-none
+                                     text-[64px] md:text-[96px] lg:text-[128px] z-0"
+                          aria-hidden
+                        >
+                          {rank}
+                        </div>
+                      )}
+                      <div className="relative z-10">
+                        <PosterCard item={item} kind={kind} showTitle={false} />
+                      </div>
                     </div>
                   );
                 })}
