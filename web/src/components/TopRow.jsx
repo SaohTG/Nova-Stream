@@ -15,7 +15,6 @@ export default function TopRow() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // fetch TMDB tendances (top 15)
   useEffect(() => {
     const ac = new AbortController();
     (async () => {
@@ -32,7 +31,6 @@ export default function TopRow() {
     return () => ac.abort();
   }, []);
 
-  // swipe + inertie + flèches conditionnelles
   const trackRef = useRef(null);
   const leftRef = useRef(null);
   const rightRef = useRef(null);
@@ -41,19 +39,17 @@ export default function TopRow() {
   const startXRef = useRef(0);
   const startScrollRef = useRef(0);
   const lastXRef = useRef(0);
-  const velRef = useRef(0);
   const movedRef = useRef(0);
-  const [dragging, setDragging] = useState(false);
+  const velRef = useRef(0);
+  const ignoreRef = useRef(false);
 
+  const [dragging, setDragging] = useState(false);
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
 
   useEffect(() => {
-    const root = trackRef.current;
-    const L = leftRef.current;
-    const R = rightRef.current;
+    const root = trackRef.current, L = leftRef.current, R = rightRef.current;
     if (!root || !L || !R) return;
-
     const io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
@@ -63,34 +59,24 @@ export default function TopRow() {
       },
       { root, threshold: 0.99 }
     );
-    io.observe(L);
-    io.observe(R);
-
-    const t = setTimeout(() => root.scrollBy({ left: 0, behavior: "auto" }), 0);
-    return () => {
-      clearTimeout(t);
-      io.disconnect();
-    };
+    io.observe(L); io.observe(R);
+    const t = setTimeout(() => root.scrollBy({ left: 0 }), 0);
+    return () => { clearTimeout(t); io.disconnect(); };
   }, [items, loading]);
 
   const recalc = useCallback(() => {
-    const el = trackRef.current;
-    if (!el) return;
+    const el = trackRef.current; if (!el) return;
     const max = el.scrollWidth - el.clientWidth;
     setCanLeft(el.scrollLeft > 0);
     setCanRight(el.scrollLeft < max - 1);
   }, []);
   useEffect(() => {
-    const el = trackRef.current;
-    if (!el) return;
+    const el = trackRef.current; if (!el) return;
     let ticking = false;
     const onScroll = () => {
       if (ticking) return;
       ticking = true;
-      requestAnimationFrame(() => {
-        recalc();
-        ticking = false;
-      });
+      requestAnimationFrame(() => { recalc(); ticking = false; });
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", recalc);
@@ -102,15 +88,10 @@ export default function TopRow() {
 
   useEffect(() => {
     document.body.style.userSelect = dragging ? "none" : "";
-    return () => {
-      document.body.style.userSelect = "";
-    };
+    return () => { document.body.style.userSelect = ""; };
   }, [dragging]);
 
-  const stopInertia = () => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = 0;
-  };
+  const stopInertia = () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
   const startDrag = (x) => {
     const el = trackRef.current; if (!el) return;
     stopInertia();
@@ -146,18 +127,37 @@ export default function TopRow() {
   };
 
   const onPointerDown = useCallback((e) => {
+    ignoreRef.current = !!e.target.closest("a,button");
+    if (ignoreRef.current) return;
+    if (e.pointerType === "mouse" && e.button !== 0) return;
     e.currentTarget.setPointerCapture?.(e.pointerId);
     startDrag(e.clientX);
   }, []);
-  const onPointerMove = useCallback((e) => moveDrag(e.clientX), [dragging]);
+  const onPointerMove = useCallback((e) => {
+    if (ignoreRef.current) return;
+    moveDrag(e.clientX);
+  }, [dragging]);
   const onPointerUp = useCallback((e) => {
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-    endDrag();
+    if (!ignoreRef.current) {
+      e.currentTarget.releasePointerCapture?.(e.pointerId);
+      endDrag();
+    }
+    ignoreRef.current = false;
   }, [dragging]);
 
-  const onTouchStart = useCallback((e) => startDrag(e.touches[0].clientX), []);
-  const onTouchMove  = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
-  const onTouchEnd   = useCallback(() => endDrag(), [dragging]);
+  const onTouchStart = useCallback((e) => {
+    ignoreRef.current = !!e.target.closest("a,button");
+    if (ignoreRef.current) return;
+    startDrag(e.touches[0].clientX);
+  }, []);
+  const onTouchMove  = useCallback((e) => {
+    if (ignoreRef.current) return;
+    moveDrag(e.touches[0].clientX);
+  }, [dragging]);
+  const onTouchEnd   = useCallback(() => {
+    if (!ignoreRef.current) endDrag();
+    ignoreRef.current = false;
+  }, [dragging]);
 
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
@@ -168,7 +168,8 @@ export default function TopRow() {
   }, []);
 
   const onClickCapture = useCallback((e) => {
-    if (movedRef.current > 5) { e.preventDefault(); e.stopPropagation(); }
+    if (ignoreRef.current) { ignoreRef.current = false; return; }
+    if (movedRef.current > 12) { e.preventDefault(); e.stopPropagation(); }
     movedRef.current = 0;
   }, []);
 
@@ -216,7 +217,6 @@ export default function TopRow() {
           onDragStart={(e) => e.preventDefault()}
         >
           <div className={`flex gap-4 md:gap-5 lg:gap-6 ${dragging ? "pointer-events-none" : ""}`}>
-            {/* sentinelle gauche */}
             <div ref={leftRef} className="w-px h-px shrink-0" aria-hidden />
             {loading
               ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} />)
@@ -229,10 +229,7 @@ export default function TopRow() {
                         <PosterCard item={item} kind="vod" showTitle={false} />
                       </div>
                       <div
-                        className="absolute -left-3 -bottom-2 z-20
-                                   text-white/20 font-extrabold leading-none pointer-events-none select-none
-                                   [text-shadow:0_0_20px_rgba(0,0,0,0.6)]
-                                   text-[88px] md:text-[120px] lg:text-[160px]"
+                        className="absolute -left-3 -bottom-2 z-20 text-white/20 font-extrabold leading-none pointer-events-none select-none [text-shadow:0_0_20px_rgba(0,0,0,0.6)] text-[88px] md:text-[120px] lg:text-[160px]"
                         aria-hidden
                       >
                         {rank}
@@ -240,7 +237,6 @@ export default function TopRow() {
                     </div>
                   );
                 })}
-            {/* sentinelle droite */}
             <div ref={rightRef} className="w-px h-px shrink-0" aria-hidden />
           </div>
         </div>
