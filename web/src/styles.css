@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Thème et utilitaires existants */
+/* Thème et utilitaires */
 :root{ color-scheme: dark; }
 .skel{ @apply animate-pulse bg-neutral-800 rounded-xl; }
 .btn{ @apply px-4 py-2 rounded-xl bg-white/10 hover:bg-white/20 transition; }
@@ -11,12 +11,9 @@
 .nav{ @apply sticky top-0 z-50 backdrop-blur supports-[backdrop-filter]:bg-black/30 bg-black/60 border-b border-white/5; }
 .input{ @apply bg-white/10 rounded-xl px-4 py-2 w-full outline-none focus:ring-2 focus:ring-white/30; }
 
-/* ===== Carrousel: cacher totalement la scrollbar ===== */
-.ns-scroll { scrollbar-width: none; -ms-overflow-style: none; }
-.ns-scroll::-webkit-scrollbar { display: none; }
+/* Carrousel: cacher la scrollbar et isoler la roulette */
+.ns-scroll{ scrollbar-width:none; -ms-overflow-style:none; overscroll-behavior:contain; }
+.ns-scroll::-webkit-scrollbar{ display:none; }
 
-/* ===== Posters: pas de sélection ni de drag ===== */
-img { -webkit-user-drag: none; user-select: none; }
-
-/* Optionnel: lissage pointer-events pendant le drag (si besoin hors Tailwind) */
-/* .dragging .ns-track { pointer-events: none; } */
+/* Posters: pas de sélection ni de glisser-déposer */
+img{ -webkit-user-drag:none; user-select:none; }
