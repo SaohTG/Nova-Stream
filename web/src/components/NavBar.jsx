@@ -3,23 +3,18 @@ import { NavLink, useNavigate, Link } from "react-router-dom";
 import SearchBar from "./SearchBar.jsx";
 
 const cls = ({ isActive }) =>
-  [
-    "px-3 py-2 rounded-lg transition",
-    isActive ? "bg-zinc-800 text-white" : "text-zinc-300 hover:text-white",
-  ].join(" ");
+  ["px-3 py-2 rounded-lg transition", isActive ? "bg-zinc-800 text-white" : "text-zinc-300 hover:text-white"].join(" ");
 
 const API_BASE = (import.meta.env.VITE_API_BASE || "/api").replace(/\/+$/, "");
 
 export default function NavBar() {
   const nav = useNavigate();
-
   async function logout() {
     try {
       localStorage.removeItem("access_token");
-      await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" }).catch(() => {});
-    } finally {
-      nav("/login", { replace: true });
-    }
+      await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
+    } catch {}
+    nav("/login", { replace: true });
   }
 
   return (
