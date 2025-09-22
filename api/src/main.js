@@ -10,8 +10,6 @@ import authRouter, { ensureAuth } from "./modules/auth.js";
 import userRouter from "./modules/user.js";
 import xtreamRouter from "./modules/xtream.js";
 import tmdbRouter from "./modules/tmdb.js";
-import mediaRouter from "./modules/media.js";
-app.use("/api/media", ensureAuth, mediaRouter);
 
 const app = express();
 app.set("trust proxy", 1);
