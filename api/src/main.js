@@ -7,7 +7,6 @@ import morgan from "morgan";
 
 import authRouter, { ensureAuth } from "./modules/auth.js";
 import xtreamRouter from "./modules/xtream.js";
-import tmdbRouter from "./modules/tmdb.js";
 
 const app = express();
 
@@ -18,7 +17,7 @@ app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 app.use(morgan("tiny"));
 
-/* ---------- CORS (cookies + credentials) ---------- */
+/* ---------- CORS ---------- */
 const ORIGINS = String(process.env.CORS_ORIGIN || "")
   .split(",")
   .map((s) => s.trim())
@@ -29,7 +28,7 @@ const corsOptions = {
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   origin(origin, cb) {
-    if (!origin) return cb(null, true); // curl / server-side
+    if (!origin) return cb(null, true);
     if (ORIGINS.length === 0) return cb(null, true);
     if (ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error("CORS_NOT_ALLOWED"), false);
@@ -45,7 +44,19 @@ app.get("/api/health", (_req, res) => res.json({ ok: true }));
 /* ---------- routes ---------- */
 app.use("/api/auth", authRouter);
 app.use("/api/xtream", ensureAuth, xtreamRouter);
-app.use("/api/tmdb", ensureAuth, tmdbRouter);
+
+/* ---------- optional TMDB router ---------- */
+(async () => {
+  try {
+    const mod = await import("./modules/tmdb.js");
+    if (mod?.default) {
+      app.use("/api/tmdb", ensureAuth, mod.default);
+      console.log("[API] /api/tmdb enabled");
+    }
+  } catch (e) {
+    console.warn("[API] /api/tmdb disabled:", e.message || e);
+  }
+})();
 
 /* ---------- 404 ---------- */
 app.use((req, res) => {
@@ -55,14 +66,11 @@ app.use((req, res) => {
 /* ---------- error handler ---------- */
 app.use((err, req, res, _next) => {
   const status = Number(err.status || err.code || 500);
-  const payload = {
-    message: err.message || "Internal Error",
-  };
+  const payload = { message: err.message || "Internal Error" };
   if (process.env.NODE_ENV !== "production") {
     payload.stack = err.stack;
     payload.details = err.body || err.data;
   }
-  // log minimal
   console.error("[ERR]", status, req.method, req.originalUrl, "-", err.message);
   res.status(status).json(payload);
 });
