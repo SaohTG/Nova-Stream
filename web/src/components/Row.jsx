@@ -18,58 +18,77 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
 
   const trackRef = useRef(null);
   const rafRef = useRef(0);
+  const startXRef = useRef(0);
+  const startScrollRef = useRef(0);
   const lastXRef = useRef(0);
-  const lastDxRef = useRef(0);
-  const [drag, setDrag] = useState({ active: false });
+  const velRef = useRef(0);
+  const movedRef = useRef(0);
 
-  // évite la sélection pendant le drag
+  const [dragging, setDragging] = useState(false);
+
   useEffect(() => {
-    if (drag.active) document.body.style.userSelect = "none";
-    else document.body.style.userSelect = "";
+    document.body.style.userSelect = dragging ? "none" : "";
     return () => { document.body.style.userSelect = ""; };
-  }, [drag.active]);
+  }, [dragging]);
 
-  const stopInertia = () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
+  const stopInertia = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+  };
 
-  const onPointerDown = useCallback((e) => {
+  const startDrag = (x) => {
     const el = trackRef.current; if (!el) return;
-    el.setPointerCapture?.(e.pointerId);
     stopInertia();
-    lastXRef.current = e.clientX;
-    lastDxRef.current = 0;
-    setDrag({ active: true });
-  }, []);
-
-  const onPointerMove = useCallback((e) => {
-    if (!drag.active) return;
-    const el = trackRef.current; if (!el) return;
-    const x = e.clientX;
-    const dx = x - lastXRef.current;
-    el.scrollLeft -= dx;                // défilement direct
-    lastDxRef.current = dx;             // vitesse instantanée
+    setDragging(true);
+    startXRef.current = x;
     lastXRef.current = x;
-  }, [drag.active]);
+    startScrollRef.current = el.scrollLeft;
+    velRef.current = 0;
+    movedRef.current = 0;
+  };
 
-  const startInertia = useCallback(() => {
+  const moveDrag = (x) => {
+    if (!dragging) return;
     const el = trackRef.current; if (!el) return;
-    let v = lastDxRef.current;          // px/frame approximatif
+    const dx = x - lastXRef.current;
+    el.scrollLeft = startScrollRef.current - (x - startXRef.current);
+    velRef.current = dx;
+    lastXRef.current = x;
+    movedRef.current += Math.abs(dx);
+  };
+
+  const endDrag = () => {
+    if (!dragging) return;
+    setDragging(false);
+    const el = trackRef.current; if (!el) return;
+    let v = velRef.current;
     const friction = 0.92;
     const step = () => {
       v *= friction;
-      if (Math.abs(v) < 0.4) return;    // fin
+      if (Math.abs(v) < 0.4) return;
       el.scrollLeft -= v;
       rafRef.current = requestAnimationFrame(step);
     };
     rafRef.current = requestAnimationFrame(step);
+  };
+
+  // Pointer events
+  const onPointerDown = useCallback((e) => {
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    startDrag(e.clientX);
   }, []);
+  const onPointerMove = useCallback((e) => moveDrag(e.clientX), [dragging]);
+  const onPointerUp = useCallback((e) => {
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    endDrag();
+  }, [dragging]);
 
-  const endDrag = useCallback((e) => {
-    if (!drag.active) return;
-    trackRef.current?.releasePointerCapture?.(e.pointerId);
-    setDrag({ active: false });
-    startInertia();
-  }, [drag.active, startInertia]);
+  // Touch fallback (iOS anciens)
+  const onTouchStart = useCallback((e) => startDrag(e.touches[0].clientX), []);
+  const onTouchMove = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
+  const onTouchEnd = useCallback(() => endDrag(), [dragging]);
 
+  // Convert scroll vertical souris → horizontal
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
     if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
@@ -78,7 +97,14 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     }
   }, []);
 
-  const preventImgDrag = useCallback((e) => { e.preventDefault(); }, []);
+  // Bloque clic pendant drag
+  const onClickCapture = useCallback((e) => {
+    if (movedRef.current > 5) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    movedRef.current = 0;
+  }, []);
 
   const go = useCallback((dir) => {
     const el = trackRef.current; if (!el) return;
@@ -99,7 +125,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
       </div>
 
       <div className="relative">
-        {/* Flèche gauche */}
         <button
           aria-label="Précédent"
           onClick={() => go(-1)}
@@ -108,20 +133,23 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
           ‹
         </button>
 
-        {/* Piste */}
         <div
           ref={trackRef}
-          className={`-mx-4 overflow-x-auto px-12 pb-2 select-none ${drag.active ? "cursor-grabbing" : "cursor-grab"}`}
-          style={{ scrollSnapType: "x mandatory", touchAction: "pan-y" }}  // swipe horizontal custom, vertical natif
+          className={`-mx-4 overflow-x-auto px-12 pb-2 select-none ns-scroll ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+          style={{ scrollSnapType: "x mandatory", touchAction: "pan-y pinch-zoom" }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
-          onPointerUp={endDrag}
-          onPointerLeave={endDrag}
-          onPointerCancel={endDrag}
+          onPointerUp={onPointerUp}
+          onPointerLeave={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onTouchStart={onTouchStart}
+          onTouchMove={onTouchMove}
+          onTouchEnd={onTouchEnd}
           onWheel={onWheel}
-          onDragStart={preventImgDrag}
+          onClickCapture={onClickCapture}
+          onDragStart={(e) => e.preventDefault()}
         >
-          <div className={`flex gap-4 md:gap-5 lg:gap-6 ${drag.active ? "pointer-events-none" : ""}`}>
+          <div className={`flex gap-4 md:gap-5 lg:gap-6 ${dragging ? "pointer-events-none" : ""}`}>
             {loading
               ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
               : items.map((item) => {
@@ -135,7 +163,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
           </div>
         </div>
 
-        {/* Flèche droite */}
         <button
           aria-label="Suivant"
           onClick={() => go(1)}
@@ -147,3 +174,9 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     </section>
   );
 }
+
+/* Rappel CSS (à mettre une fois, ex: src/index.css)
+.ns-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+.ns-scroll::-webkit-scrollbar { display: none; }
+img { -webkit-user-drag: none; user-select: none; }
+*/
