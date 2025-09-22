@@ -4,7 +4,7 @@ import { useParams, useNavigate } from "react-router-dom";
 import { getJson } from "../lib/api";
 
 export default function TitleDetail() {
-  const { kind, id } = useParams(); // kind: "movie" | "series"
+  const { kind, id } = useParams(); // "movie" | "series"
   const nav = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -41,35 +41,56 @@ export default function TitleDetail() {
     );
   }
 
+  const isMovie = kind === "movie";
+  const hasTrailer = Boolean(data?.trailer?.embed_url);
+
   return (
-    <div className="mx-auto max-w-5xl px-4 py-6">
-      <div className="grid grid-cols-1 md:grid-cols-[200px,1fr] gap-6 items-start">
+    <div className="mx-auto w-full max-w-6xl px-4 py-6">
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
         <img
           src={data.poster_url || data.backdrop_url || ""}
           alt={data.title || ""}
-          className="w-[200px] rounded-xl object-cover"
+          className="w-[220px] rounded-xl object-cover"
           draggable={false}
         />
         <div>
           <h1 className="text-2xl font-bold">{data.title}</h1>
-          {data.vote_average != null && (
-            <div className="mt-1 text-sm text-zinc-300">Note TMDB: {Number(data.vote_average).toFixed(1)}/10</div>
-          )}
-          {data.overview && <p className="mt-4 text-zinc-200 leading-relaxed">{data.overview}</p>}
 
-          {data.trailer?.embed_url && (
-            <button className="mt-6 btn" onClick={() => setShowTrailer(true)}>
-              Voir la bande-annonce
+          {data.vote_average != null && (
+            <div className="mt-1 text-sm text-zinc-300">
+              Note TMDB&nbsp;: {Number(data.vote_average).toFixed(1)}/10
+            </div>
+          )}
+
+          {data.overview && (
+            <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>
+          )}
+
+          {isMovie && (
+            <button
+              className="mt-6 btn"
+              onClick={() => hasTrailer && setShowTrailer(true)}
+              disabled={!hasTrailer}
+              title={hasTrailer ? "Voir la bande-annonce" : "Bande-annonce indisponible"}
+            >
+              ▶ Bande-annonce
             </button>
           )}
         </div>
       </div>
 
-      {showTrailer && data.trailer?.embed_url && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4" onClick={() => setShowTrailer(false)}>
-          <div className="w-full max-w-3xl aspect-video rounded-xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+      {/* Modale trailer */}
+      {showTrailer && hasTrailer && (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4"
+          onClick={() => setShowTrailer(false)}
+        >
+          <div
+            className="w-full max-w-4xl aspect-video overflow-hidden rounded-xl shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
             <iframe
-              src={data.trailer.embed_url}
+              src={`${data.trailer.embed_url}${data.trailer.embed_url.includes("?") ? "&" : "?"}autoplay=1&rel=0&modestbranding=1`}
               title={data.trailer?.name || "Trailer"}
               allow="autoplay; encrypted-media; picture-in-picture"
               allowFullScreen
