@@ -1,70 +1,77 @@
 // api/src/main.js
-import "dotenv/config";
 import express from "express";
-import cookieParser from "cookie-parser";
 import cors from "cors";
+import compression from "compression";
+import cookieParser from "cookie-parser";
 import morgan from "morgan";
 
-import { initDatabase } from "./db/init.js";
 import authRouter, { ensureAuth } from "./modules/auth.js";
-import userRouter from "./modules/user.js";
 import xtreamRouter from "./modules/xtream.js";
 import tmdbRouter from "./modules/tmdb.js";
 
 const app = express();
+
+/* ---------- base middlewares ---------- */
 app.set("trust proxy", 1);
-
-// CORS
-const ORIGINS = (process.env.CORS_ORIGIN || "http://localhost:5173")
-  .split(",").map(s => s.trim()).filter(Boolean);
-
-app.use(cors({
-  origin: (origin, cb) => (!origin || ORIGINS.includes(origin)) ? cb(null, true) : cb(null, false),
-  credentials: true,
-  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
-  allowedHeaders: ["Content-Type","Authorization"],
-}));
-
-app.use(cookieParser());
+app.use(compression());
 app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true, limit: "1mb" })); // ⬅️ support form-urlencoded
-app.use(morgan("dev"));
+app.use(cookieParser());
+app.use(morgan("tiny"));
 
+/* ---------- CORS (cookies + credentials) ---------- */
+const ORIGINS = String(process.env.CORS_ORIGIN || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const corsOptions = {
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // curl / server-side
+    if (ORIGINS.length === 0) return cb(null, true);
+    if (ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error("CORS_NOT_ALLOWED"), false);
+  },
+};
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
+/* ---------- health ---------- */
 app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
-app.use("/auth", authRouter);
-app.use("/user", ensureAuth, userRouter);     // /user/link-xtream ici
-app.use("/xtream", ensureAuth, xtreamRouter);
-app.use("/tmdb", ensureAuth, tmdbRouter);
+/* ---------- routes ---------- */
+app.use("/api/auth", authRouter);
+app.use("/api/xtream", ensureAuth, xtreamRouter);
+app.use("/api/tmdb", ensureAuth, tmdbRouter);
 
-app.get("/debug/whoami", ensureAuth, (req, res) => res.json({ user: req.user }));
-
-app.use((req, res, next) => {
-  if (res.headersSent) return next();
-  res.status(404).json({ error: "Not Found", path: req.path });
+/* ---------- 404 ---------- */
+app.use((req, res) => {
+  res.status(404).json({ message: "Not Found", path: req.originalUrl });
 });
 
-// eslint-disable-next-line no-unused-vars
+/* ---------- error handler ---------- */
 app.use((err, req, res, _next) => {
-  const status = err.status || err.statusCode || 500;
-  const message = err.message || "Internal Server Error";
+  const status = Number(err.status || err.code || 500);
+  const payload = {
+    message: err.message || "Internal Error",
+  };
   if (process.env.NODE_ENV !== "production") {
-    console.error("[API ERROR]", status, message, err.stack || err);
+    payload.stack = err.stack;
+    payload.details = err.body || err.data;
   }
-  if (!res.headersSent) res.status(status).json({ error: message, detail: err.detail });
+  // log minimal
+  console.error("[ERR]", status, req.method, req.originalUrl, "-", err.message);
+  res.status(status).json(payload);
 });
 
-const port = Number(process.env.API_PORT || 4000);
-process.on("unhandledRejection", (e) => console.error("[UNHANDLED_REJECTION]", e));
-process.on("uncaughtException", (e) => console.error("[UNCAUGHT_EXCEPTION]", e));
+/* ---------- listen ---------- */
+const PORT = Number(process.env.PORT || process.env.API_PORT || 4000);
+const HOST = process.env.HOST || "0.0.0.0";
+app.listen(PORT, HOST, () => {
+  console.log(`[API] listening on http://${HOST}:${PORT}`);
+});
 
-async function startServer() {
-  try {
-    await initDatabase();
-    app.listen(port, () => console.log(`API on :${port}`));
-  } catch (error) {
-    console.error("Failed to start server:", error);
-    process.exit(1);
-  }
-}
-startServer();
+export default app;
