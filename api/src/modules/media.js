@@ -8,10 +8,9 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
 const TMDB_KEY = process.env.TMDB_API_KEY;
-if (!TMDB_KEY) console.warn("[MEDIA] TMDB_API_KEY manquant");
 const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600); // 7 jours
 
-/* ========== Crypto pour xtream_accounts (même schéma que xtream.js) ========== */
+/* ================= Crypto (même schéma que xtream.js) ================= */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY doit faire 64 hex chars");
@@ -30,7 +29,7 @@ function dec(blob) {
   return pt.toString("utf8");
 }
 
-/* ========== DB ========== */
+/* ================= DB cache ================= */
 async function ensureTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS media_cache (
@@ -67,7 +66,7 @@ async function putCache(kind, xtreamId, tmdbId, title, data) {
   );
 }
 
-/* ========== Xtream creds + calls ========== */
+/* ================= Xtream helpers ================= */
 async function getCreds(userId) {
   const q = `
     SELECT base_url, username_enc, password_enc FROM xtream_accounts WHERE user_id=$1
@@ -95,7 +94,7 @@ function buildPlayerApi(baseUrl, username, password, action, extra = {}) {
   for (const [k, v] of Object.entries(extra)) if (v != null) u.searchParams.set(k, String(v));
   return u.toString();
 }
-async function fetchWithTimeout(url, ms = 10000, headers = {}) {
+async function fetchWithTimeout(url, ms = 12000, headers = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
@@ -110,12 +109,12 @@ async function fetchJson(url) {
   try { return JSON.parse(txt); } catch { const e = new Error("BAD_JSON"); e.body = txt; throw e; }
 }
 
-/* ========== Normalisation & matching ========== */
+/* ================= Matching helpers ================= */
 function stripTitle(raw = "") {
   let s = String(raw);
   s = s.replace(/[._]/g, " ");
   s = s.replace(/\[[^\]]*\]|\([^\)]*\)/g, " ");
-  s = s.replace(/\b(19|20)\d{2}\b/g, " "); // années isolées
+  s = s.replace(/\b(19|20)\d{2}\b/g, " ");
   s = s.replace(/\bS\d{1,2}E\d{1,2}\b/gi, " ");
   s = s.replace(/\b(2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|hdr|webrip|b[dr]rip|dvdrip|cam|ts|multi|truefrench|french|vostfr|vf|vo)\b/gi, " ");
   s = s.replace(/\s+/g, " ").trim();
@@ -128,7 +127,7 @@ function yearFromStrings(...cands) {
   }
   return undefined;
 }
-function similarity(a, b) { // simple token overlap ratio
+function similarity(a, b) {
   const A = new Set(stripTitle(a).toLowerCase().split(" ").filter(Boolean));
   const B = new Set(stripTitle(b).toLowerCase().split(" ").filter(Boolean));
   if (!A.size || !B.size) return 0;
@@ -136,9 +135,17 @@ function similarity(a, b) { // simple token overlap ratio
   for (const t of A) if (B.has(t)) inter++;
   return inter / Math.max(A.size, B.size);
 }
+function yearPenalty(yearCand, dateStr) {
+  if (!yearCand || !dateStr) return 0;
+  const y = Number(String(dateStr).slice(0, 4));
+  if (!y) return 0;
+  const d = Math.abs(yearCand - y);
+  return Math.min(d * 0.03, 0.3);
+}
 
-/* ========== TMDB helpers ========== */
+/* ================= TMDB ================= */
 const TMDB_BASE = "https://api.themoviedb.org/3";
+
 async function tmdbSearchMovie(q, year) {
   const u = new URL(`${TMDB_BASE}/search/movie`);
   u.searchParams.set("api_key", TMDB_KEY);
@@ -157,15 +164,91 @@ async function tmdbSearchTV(q, year) {
   if (year) u.searchParams.set("first_air_date_year", String(year));
   return fetchJson(u.toString());
 }
+async function tmdbSearchMulti(q) {
+  const u = new URL(`${TMDB_BASE}/search/multi`);
+  u.searchParams.set("api_key", TMDB_KEY);
+  u.searchParams.set("query", q);
+  u.searchParams.set("include_adult", "true");
+  u.searchParams.set("language", "fr-FR");
+  return fetchJson(u.toString());
+}
 async function tmdbDetails(kind, id) {
   const u = new URL(`${TMDB_BASE}/${kind === "movie" ? "movie" : "tv"}/${id}`);
   u.searchParams.set("api_key", TMDB_KEY);
   u.searchParams.set("language", "fr-FR");
-  u.searchParams.set("append_to_response", "external_ids,credits");
+  u.searchParams.set("append_to_response", "external_ids,credits,videos");
+  // inclure FR + EN + vidéos sans langue définie
+  u.searchParams.set("include_video_language", "fr,en,null");
   return fetchJson(u.toString());
 }
+function pickBestTrailer(videos = []) {
+  const list = (videos || []).filter(v => v.site === "YouTube");
+  if (!list.length) return null;
+  // priorité: Trailer officiel FR, sinon EN, sinon n’importe quel Trailer, sinon Teaser
+  const score = (v) => {
+    let s = 0;
+    if (v.type === "Trailer") s += 3;
+    if (v.type === "Teaser") s += 2;
+    if (v.official) s += 2;
+    const lang = (v.iso_639_1 || "").toLowerCase();
+    if (lang === "fr") s += 2;
+    if (lang === "en") s += 1;
+    return s;
+  };
+  const best = [...list].sort((a, b) => score(b) - score(a))[0];
+  return best ? { key: best.key, name: best.name, url: `https://www.youtube.com/watch?v=${best.key}` } : null;
+}
+const ytEmbed = (key) => (key ? `https://www.youtube.com/embed/${key}?rel=0&modestbranding=1` : null);
 
-/* ========== Resolve depuis Xtream + TMDB ========== */
+/* ================= Resolvers ================= */
+function img(path, size = "w500") {
+  if (!path) return null;
+  return `https://image.tmdb.org/t/p/${size}${path}`;
+}
+
+function formatMoviePayload(xtreamId, det) {
+  const trailer = pickBestTrailer(det?.videos?.results || []);
+  return {
+    kind: "movie",
+    xtream_id: String(xtreamId),
+    tmdb_id: det.id,
+    title: det.title || det.original_title || null,
+    original_title: det.original_title || null,
+    overview: det.overview || null,
+    vote_average: det.vote_average ?? null,
+    vote_count: det.vote_count ?? null,
+    release_date: det.release_date || null,
+    runtime: det.runtime ?? null,
+    poster_url: img(det.poster_path, "w500"),
+    backdrop_url: img(det.backdrop_path, "w1280"),
+    trailer: trailer ? { ...trailer, embed_url: ytEmbed(trailer.key) } : null,
+    genres: (det.genres || []).map((g) => g.name),
+    data: det,
+  };
+}
+
+function formatSeriesPayload(xtreamId, det) {
+  const trailer = pickBestTrailer(det?.videos?.results || []);
+  return {
+    kind: "series",
+    xtream_id: String(xtreamId),
+    tmdb_id: det.id,
+    title: det.name || det.original_name || null,
+    original_title: det.original_name || null,
+    overview: det.overview || null,
+    vote_average: det.vote_average ?? null,
+    vote_count: det.vote_count ?? null,
+    first_air_date: det.first_air_date || null,
+    number_of_seasons: det.number_of_seasons ?? null,
+    number_of_episodes: det.number_of_episodes ?? null,
+    poster_url: img(det.poster_path, "w500"),
+    backdrop_url: img(det.backdrop_path, "w1280"),
+    trailer: trailer ? { ...trailer, embed_url: ytEmbed(trailer.key) } : null,
+    genres: (det.genres || []).map((g) => g.name),
+    data: det,
+  };
+}
+
 async function resolveMovie(reqUser, vodId) {
   const cached = await getCache("movie", vodId);
   if (cached) return cached.data;
@@ -173,15 +256,12 @@ async function resolveMovie(reqUser, vodId) {
   const creds = await getCreds(reqUser);
   if (!creds) throw Object.assign(new Error("No Xtream creds"), { status: 404 });
 
-  // 1) infos Xtream
   const info = await fetchJson(
     buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_info", { vod_id: vodId })
   );
 
-  // tmdb direct si dispo
   let tmdbId = Number(info?.info?.tmdb_id || info?.movie_data?.tmdb_id || 0) || null;
 
-  // 2) sinon matching par titre
   let titleCand =
     info?.movie_data?.name ||
     info?.info?.name ||
@@ -216,16 +296,16 @@ async function resolveMovie(reqUser, vodId) {
       vote_average: null,
       poster_url: null,
       backdrop_url: null,
+      trailer: null,
       source: { xtream_only: true, info },
     };
     await putCache("movie", vodId, null, titleCand || null, payload);
     return payload;
   }
 
-  // 3) détails TMDB
   const det = await tmdbDetails("movie", tmdbId);
   const payload = formatMoviePayload(vodId, det);
-  await putCache("movie", vodId, tmdbId, det.title || det.original_title || null, payload);
+  await putCache("movie", vodId, tmdbId, payload.title, payload);
   return payload;
 }
 
@@ -236,12 +316,12 @@ async function resolveSeries(reqUser, seriesId) {
   const creds = await getCreds(reqUser);
   if (!creds) throw Object.assign(new Error("No Xtream creds"), { status: 404 });
 
-  // 1) infos Xtream
   const info = await fetchJson(
     buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series_info", { series_id: seriesId })
   );
 
   let tmdbId = Number(info?.info?.tmdb_id || 0) || null;
+
   let titleCand =
     info?.info?.name ||
     info?.info?.o_name ||
@@ -255,6 +335,8 @@ async function resolveSeries(reqUser, seriesId) {
   if (!tmdbId && TMDB_KEY && titleCand) {
     const queries = [titleCand, stripTitle(titleCand)];
     let best = null;
+
+    // 1) TV direct
     for (const q of queries) {
       const sr = await tmdbSearchTV(q, yearCand);
       for (const r of (sr?.results || []).slice(0, 10)) {
@@ -262,6 +344,19 @@ async function resolveSeries(reqUser, seriesId) {
         if (!best || score > best.score) best = { score, r };
       }
     }
+
+    // 2) fallback: multi -> tv only
+    if (!best || best.score <= 0.2) {
+      for (const q of queries) {
+        const sr = await tmdbSearchMulti(q);
+        const tvOnly = (sr?.results || []).filter((r) => r.media_type === "tv");
+        for (const r of tvOnly.slice(0, 10)) {
+          const score = similarity(q, r.name || r.original_name || "") - yearPenalty(yearCand, r.first_air_date);
+          if (!best || score > best.score) best = { score, r };
+        }
+      }
+    }
+
     if (best && best.score > 0.2) tmdbId = best.r.id;
   }
 
@@ -274,72 +369,20 @@ async function resolveSeries(reqUser, seriesId) {
       vote_average: null,
       poster_url: null,
       backdrop_url: null,
+      trailer: null,
       source: { xtream_only: true, info },
-    };
+  };
     await putCache("series", seriesId, null, titleCand || null, payload);
     return payload;
   }
 
   const det = await tmdbDetails("tv", tmdbId);
   const payload = formatSeriesPayload(seriesId, det);
-  await putCache("series", seriesId, tmdbId, det.name || det.original_name || null, payload);
+  await putCache("series", seriesId, tmdbId, payload.title, payload);
   return payload;
 }
 
-function yearPenalty(yearCand, dateStr) {
-  if (!yearCand || !dateStr) return 0;
-  const y = Number(String(dateStr).slice(0, 4));
-  if (!y) return 0;
-  const d = Math.abs(yearCand - y);
-  return Math.min(d * 0.03, 0.3); // pénalise jusqu’à 0.3
-}
-
-/* ========== Format sortie ========== */
-function img(path, size = "w500") {
-  if (!path) return null;
-  const base = "https://image.tmdb.org/t/p/";
-  return `${base}${size}${path}`;
-}
-function formatMoviePayload(xtreamId, det) {
-  return {
-    kind: "movie",
-    xtream_id: String(xtreamId),
-    tmdb_id: det.id,
-    title: det.title || det.original_title || null,
-    original_title: det.original_title || null,
-    overview: det.overview || null,
-    vote_average: det.vote_average ?? null,
-    vote_count: det.vote_count ?? null,
-    release_date: det.release_date || null,
-    runtime: det.runtime ?? null,
-    poster_url: img(det.poster_path, "w500"),
-    backdrop_url: img(det.backdrop_path, "w1280"),
-    genres: (det.genres || []).map((g) => g.name),
-    data: det,
-  };
-}
-function formatSeriesPayload(xtreamId, det) {
-  return {
-    kind: "series",
-    xtream_id: String(xtreamId),
-    tmdb_id: det.id,
-    title: det.name || det.original_name || null,
-    original_title: det.original_name || null,
-    overview: det.overview || null,
-    vote_average: det.vote_average ?? null,
-    vote_count: det.vote_count ?? null,
-    first_air_date: det.first_air_date || null,
-    number_of_seasons: det.number_of_seasons ?? null,
-    number_of_episodes: det.number_of_episodes ?? null,
-    poster_url: img(det.poster_path, "w500"),
-    backdrop_url: img(det.backdrop_path, "w1280"),
-    genres: (det.genres || []).map((g) => g.name),
-    data: det,
-  };
-}
-
-/* ========== Routes ========== */
-// NOTE: monté dans main.js sous /api/media avec ensureAuth
+/* ================= Routes ================= */
 router.get("/movie/:id", async (req, res, next) => {
   try {
     const out = await resolveMovie(req.user?.sub, req.params.id);
