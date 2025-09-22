@@ -1,5 +1,4 @@
 // web/src/components/Row.jsx
-import { Link } from "react-router-dom";
 import { useEffect, useRef, useState, useCallback } from "react";
 import PosterCard from "./PosterCard.jsx";
 
@@ -33,18 +32,17 @@ export default function Row({
   const lastXRef = useRef(0);
   const movedRef = useRef(0);
   const velRef = useRef(0);
-  const [dragging, setDragging] = useState(false);
 
+  const [dragging, setDragging] = useState(false);
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
 
-  /* flèches visibles selon scroll */
+  // flèches selon scroll via sentinelles
   useEffect(() => {
     const root = trackRef.current;
     const L = leftRef.current;
     const R = rightRef.current;
     if (!root || !L || !R) return;
-
     const io = new IntersectionObserver(
       (entries) => {
         for (const e of entries) {
@@ -56,7 +54,6 @@ export default function Row({
     );
     io.observe(L);
     io.observe(R);
-
     const t = setTimeout(() => root.scrollBy({ left: 0, behavior: "auto" }), 0);
     return () => {
       clearTimeout(t);
@@ -64,7 +61,7 @@ export default function Row({
     };
   }, [items, loading]);
 
-  /* fallback recalcul */
+  // recalcul fallback
   const recalc = useCallback(() => {
     const el = trackRef.current;
     if (!el) return;
@@ -92,7 +89,7 @@ export default function Row({
     };
   }, [recalc, items]);
 
-  /* drag/swipe */
+  // drag/swipe
   useEffect(() => {
     document.body.style.userSelect = dragging ? "none" : "";
     return () => {
@@ -188,9 +185,9 @@ export default function Row({
       <div className="mb-3 flex items-baseline justify-between">
         <h2 className="text-lg font-semibold tracking-tight text-white">{title}</h2>
         {!!seeMoreHref && items?.length > 0 && (
-          <Link to={seeMoreHref} className="text-sm font-medium text-zinc-300 hover:text-white hover:underline">
+          <a href={seeMoreHref} className="text-sm font-medium text-zinc-300 hover:text-white hover:underline">
             Voir plus
-          </Link>
+          </a>
         )}
       </div>
 
@@ -231,16 +228,10 @@ export default function Row({
               : items.map((item, idx) => {
                   const key = `${kind}-${item.stream_id || item.series_id || item.name || idx}`;
                   const rank = showRank ? item.__rank ?? idx + 1 : null;
-                  const isDetailable = (kind === "vod" || kind === "series") && (item.stream_id || item.series_id);
-                  const detKind = item.series_id ? "series" : "movie";
-                  const detId = item.series_id || item.stream_id;
-
-                  const card = <PosterCard item={item} kind={kind} showTitle={false} />;
-
                   return (
                     <div className={`${itemWidthClass} shrink-0 snap-start relative overflow-visible`} key={key}>
                       <div className="relative z-10">
-                        {isDetailable ? <Link to={`/title/${detKind}/${detId}`}>{card}</Link> : card}
+                        <PosterCard item={item} kind={kind} showTitle={false} />
                       </div>
                       {rank != null && (
                         <div
