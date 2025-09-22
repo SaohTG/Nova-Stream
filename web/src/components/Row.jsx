@@ -8,7 +8,7 @@ function SkeletonCard({ kind = "vod" }) {
   const ratioClass = kind === "live" ? "aspect-video" : "aspect-[2/3]";
   return (
     <div className={`${itemWidthClass} shrink-0 snap-start`}>
-      <div className={`relative ${ratioClass} w-full overflow-hidden rounded-xl bg-zinc-800 skeleton`} />
+      <div className={`relative ${ratioClass} w-full overflow-hidden rounded-xl bg-zinc-800 skel`} />
     </div>
   );
 }
@@ -31,10 +31,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     return () => { document.body.style.userSelect = ""; };
   }, [dragging]);
 
-  const stopInertia = () => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current);
-    rafRef.current = 0;
-  };
+  const stopInertia = () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
 
   const startDrag = (x) => {
     const el = trackRef.current; if (!el) return;
@@ -83,26 +80,23 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     endDrag();
   }, [dragging]);
 
-  // Touch fallback (iOS anciens)
+  // Touch fallback
   const onTouchStart = useCallback((e) => startDrag(e.touches[0].clientX), []);
-  const onTouchMove = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
-  const onTouchEnd = useCallback(() => endDrag(), [dragging]);
+  const onTouchMove  = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
+  const onTouchEnd   = useCallback(() => endDrag(), [dragging]);
 
-  // Convert scroll vertical souris → horizontal
+  // Wheel → horizontal only while survol; bloque la page
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
-    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-      e.preventDefault();
-      el.scrollBy({ left: e.deltaY, behavior: "auto" });
-    }
+    e.preventDefault();
+    e.stopPropagation();
+    const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    el.scrollBy({ left: dx, behavior: "auto" });
   }, []);
 
-  // Bloque clic pendant drag
+  // Bloque clic si drag
   const onClickCapture = useCallback((e) => {
-    if (movedRef.current > 5) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+    if (movedRef.current > 5) { e.preventDefault(); e.stopPropagation(); }
     movedRef.current = 0;
   }, []);
 
@@ -135,8 +129,8 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
 
         <div
           ref={trackRef}
-          className={`-mx-4 overflow-x-auto px-12 pb-2 select-none ns-scroll ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
-          style={{ scrollSnapType: "x mandatory", touchAction: "pan-y pinch-zoom" }}
+          className={`-mx-4 overflow-x-auto overflow-y-hidden px-12 pb-2 select-none ns-scroll ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+          style={{ scrollSnapType: "x mandatory", touchAction: "pan-y pinch-zoom", overscrollBehavior: "contain" }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -145,7 +139,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
           onTouchStart={onTouchStart}
           onTouchMove={onTouchMove}
           onTouchEnd={onTouchEnd}
-          onWheel={onWheel}
+          onWheelCapture={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
         >
@@ -174,9 +168,3 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     </section>
   );
 }
-
-/* Rappel CSS (à mettre une fois, ex: src/index.css)
-.ns-scroll { scrollbar-width: none; -ms-overflow-style: none; }
-.ns-scroll::-webkit-scrollbar { display: none; }
-img { -webkit-user-drag: none; user-select: none; }
-*/
