@@ -32,8 +32,11 @@ export default function TopRow() {
     return () => ac.abort();
   }, []);
 
-  // swipe + inertie + flèches
+  // swipe + inertie + flèches conditionnelles
   const trackRef = useRef(null);
+  const leftRef = useRef(null);
+  const rightRef = useRef(null);
+
   const rafRef = useRef(0);
   const startXRef = useRef(0);
   const startScrollRef = useRef(0);
@@ -42,12 +45,72 @@ export default function TopRow() {
   const movedRef = useRef(0);
   const [dragging, setDragging] = useState(false);
 
+  const [canLeft, setCanLeft] = useState(false);
+  const [canRight, setCanRight] = useState(false);
+
+  useEffect(() => {
+    const root = trackRef.current;
+    const L = leftRef.current;
+    const R = rightRef.current;
+    if (!root || !L || !R) return;
+
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.target === L) setCanLeft(!e.isIntersecting);
+          if (e.target === R) setCanRight(!e.isIntersecting);
+        }
+      },
+      { root, threshold: 0.99 }
+    );
+    io.observe(L);
+    io.observe(R);
+
+    const t = setTimeout(() => root.scrollBy({ left: 0, behavior: "auto" }), 0);
+    return () => {
+      clearTimeout(t);
+      io.disconnect();
+    };
+  }, [items, loading]);
+
+  const recalc = useCallback(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    const max = el.scrollWidth - el.clientWidth;
+    setCanLeft(el.scrollLeft > 0);
+    setCanRight(el.scrollLeft < max - 1);
+  }, []);
+  useEffect(() => {
+    const el = trackRef.current;
+    if (!el) return;
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        recalc();
+        ticking = false;
+      });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", recalc);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", recalc);
+    };
+  }, [recalc, items]);
+
   useEffect(() => {
     document.body.style.userSelect = dragging ? "none" : "";
-    return () => { document.body.style.userSelect = ""; };
+    return () => {
+      document.body.style.userSelect = "";
+    };
   }, [dragging]);
 
-  const stopInertia = () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
+  const stopInertia = () => {
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+  };
   const startDrag = (x) => {
     const el = trackRef.current; if (!el) return;
     stopInertia();
@@ -116,6 +179,9 @@ export default function TopRow() {
     el.scrollBy({ left: amount, behavior: "smooth" });
   }, []);
 
+  const showLeftBtn = canLeft && !loading && items.length > 0;
+  const showRightBtn = canRight && !loading && items.length > 0;
+
   return (
     <section className="mb-10">
       <div className="mb-3 flex items-baseline justify-between">
@@ -123,13 +189,15 @@ export default function TopRow() {
       </div>
 
       <div className="relative">
-        <button
-          aria-label="Précédent"
-          onClick={() => go(-1)}
-          className="absolute left-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
-        >
-          ‹
-        </button>
+        {showLeftBtn && (
+          <button
+            aria-label="Précédent"
+            onClick={() => go(-1)}
+            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
+          >
+            ‹
+          </button>
+        )}
 
         <div
           ref={trackRef}
@@ -148,6 +216,8 @@ export default function TopRow() {
           onDragStart={(e) => e.preventDefault()}
         >
           <div className={`flex gap-4 md:gap-5 lg:gap-6 ${dragging ? "pointer-events-none" : ""}`}>
+            {/* sentinelle gauche */}
+            <div ref={leftRef} className="w-px h-px shrink-0" aria-hidden />
             {loading
               ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} />)
               : items.map((item, idx) => {
@@ -170,16 +240,20 @@ export default function TopRow() {
                     </div>
                   );
                 })}
+            {/* sentinelle droite */}
+            <div ref={rightRef} className="w-px h-px shrink-0" aria-hidden />
           </div>
         </div>
 
-        <button
-          aria-label="Suivant"
-          onClick={() => go(1)}
-          className="absolute right-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
-        >
-          ›
-        </button>
+        {showRightBtn && (
+          <button
+            aria-label="Suivant"
+            onClick={() => go(1)}
+            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
+          >
+            ›
+          </button>
+        )}
       </div>
     </section>
   );
