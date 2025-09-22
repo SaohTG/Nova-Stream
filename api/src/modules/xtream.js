@@ -2,16 +2,17 @@
 import { Router } from "express";
 import { Pool } from "pg";
 import crypto from "crypto";
-import { ensureAuthOrRefresh as ensureAuth } from "./auth.js";
 
 const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
-/* ================= AES-256-GCM ================= */
+/* ============== AES-256-GCM ============= */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
-  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY must be 64 hex chars");
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+    throw new Error("API_ENCRYPTION_KEY must be 64 hex chars");
+  }
   return Buffer.from(hex, "hex");
 }
 function enc(plain) {
@@ -35,9 +36,12 @@ function dec(blob) {
   return pt.toString("utf8");
 }
 
-/* ================= Utils ================= */
+/* ============== Utils ============= */
+const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
 function normalizeBaseUrl(u) {
   let s = (u || "").toString().trim();
+  if (!s) return "";
   if (!/^https?:\/\//i.test(s)) s = `http://${s}`;
   while (s.endsWith("/")) s = s.slice(0, -1);
   return s;
@@ -63,26 +67,23 @@ function buildPlayerApi(baseUrl, username, password, action, extra = {}) {
 async function fetchWithTimeout(url, ms = 10000, headers = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
-  try { return await fetch(url, { signal: ctrl.signal, headers }); }
-  finally { clearTimeout(t); }
+  try {
+    const r = await fetch(url, { signal: ctrl.signal, headers });
+    return r;
+  } finally { clearTimeout(t); }
 }
 async function fetchJson(url) {
-  const r = await fetchWithTimeout(url, 10000, { "User-Agent": "Mozilla/5.0 (NovaStream/1.0)" });
+  const r = await fetchWithTimeout(url, 12000, { "User-Agent": "Mozilla/5.0 (NovaStream/1.0)" });
   const txt = await r.text();
-  if (!r.ok) { const err = new Error(`XTREAM_HTTP_${r.status}`); err.status = r.status; err.body = txt; throw err; }
+  if (!r.ok) {
+    const err = new Error(`XTREAM_HTTP_${r.status}`);
+    err.status = r.status; err.body = txt; throw err;
+  }
   try { return JSON.parse(txt); }
   catch { const err = new Error("XTREAM_BAD_JSON"); err.body = txt; throw err; }
 }
-// timeouts custom pour grosses réponses
-async function fetchJsonT(url, ms) {
-  const r = await fetchWithTimeout(url, ms, { "User-Agent": "Mozilla/5.0 (NovaStream/1.0)" });
-  const txt = await r.text();
-  if (!r.ok) { const err = new Error(`XTREAM_HTTP_${r.status}`); err.status = 502; err.body = txt; throw err; }
-  try { return JSON.parse(txt); }
-  catch { const err = new Error("XTREAM_BAD_JSON"); err.status = 502; err.body = txt; throw err; }
-}
 
-/* ================= Stockage creds ================= */
+/* ============== DB ============= */
 async function ensureTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS xtream_accounts (
@@ -94,6 +95,7 @@ async function ensureTables() {
       updated_at timestamptz DEFAULT now()
     );
   `);
+  // compat ancien nom
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_xtream (
       user_id uuid PRIMARY KEY,
@@ -122,12 +124,11 @@ async function getCreds(userId) {
     password: dec(row.password_enc),
   };
 }
-const pickCatId = (req) =>
-  (req.query.category_id ?? req.query.categoryId ?? req.body?.category_id ?? req.body?.categoryId ?? "0");
 
-/* -------- Images -------- */
+/* ============== Images helpers ============= */
 function proxyUrl(rawUrl) {
   if (!rawUrl) return "";
+  // IMPORTANT: inclure /api pour le reverse proxy NPM
   return `/api/xtream/image?url=${encodeURIComponent(rawUrl)}`;
 }
 function resolveIcon(raw, creds) {
@@ -136,169 +137,207 @@ function resolveIcon(raw, creds) {
   return proxyUrl(absolute);
 }
 function mapListWithIcons(list = [], creds) {
-  return (list || []).map(it => {
-    const raw = it.stream_icon || it.icon || it.logo || it.poster || it.image || it.cover || it.cover_big;
+  return (list || []).map((it) => {
+    const raw =
+      it.stream_icon || it.icon || it.logo || it.poster || it.image || it.cover || it.cover_big;
     const resolved = resolveIcon(raw, creds);
     return {
       ...it,
       stream_icon: resolved || it.stream_icon || "",
-      icon:        resolved || it.icon || "",
-      logo:        resolved || it.logo || "",
-      poster:      resolved || it.poster || "",
-      image:       resolved || it.image || "",
-      cover:       resolved || it.cover || "",
-      cover_big:   resolved || it.cover_big || "",
+      icon: resolved || it.icon || "",
+      logo: resolved || it.logo || "",
+      poster: resolved || it.poster || "",
+      image: resolved || it.image || "",
+      cover: resolved || it.cover || "",
+      cover_big: resolved || it.cover_big || "",
     };
   });
 }
+const pickCatId = (req) =>
+  (req.query.category_id ?? req.query.categoryId ?? req.body?.category_id ?? req.body?.categoryId ?? "0");
 
-/* ================= Handlers ================= */
-async function hLink(req, res, next) {
+const pickLimit = (req, fallback = 50, max = 200) => {
+  const n = Number(req.query.limit ?? req.body?.limit ?? fallback);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.round(n), max);
+};
+
+/* ============== Link / Status ============= */
+router.post("/link", ah(async (req, res) => {
+  if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
+
+  const baseUrl = normalizeBaseUrl(req.body?.baseUrl || req.body?.serverUrl);
+  const username = (req.body?.username || "").toString().trim();
+  const password = (req.body?.password || "").toString().trim();
+  if (!baseUrl || !username || !password) {
+    return res.status(422).json({ message: "Missing fields" });
+  }
+
   try {
-    if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
-    const baseUrl = normalizeBaseUrl(req.body?.baseUrl || req.body?.serverUrl);
-    const username = (req.body?.username || "").toString().trim();
-    const password = (req.body?.password || "").toString().trim();
-    if (!baseUrl || !username || !password) return res.status(422).json({ message: "Missing fields" });
-
     const test = await fetchJson(buildPlayerApi(baseUrl, username, password));
     const ok = test?.user_info?.auth === 1 || test?.user_info?.status === "Active";
     if (!ok) return res.status(400).json({ message: "Xtream test failed" });
+  } catch (e) {
+    const code = e.status === 401 ? 400 : 503;
+    return res.status(code).json({ message: e.message || "Xtream unreachable" });
+  }
 
-    await ensureTables();
-    await pool.query(
-      `INSERT INTO xtream_accounts (user_id, base_url, username_enc, password_enc)
-       VALUES ($1,$2,$3,$4)
-       ON CONFLICT (user_id) DO UPDATE
-         SET base_url=EXCLUDED.base_url,
-             username_enc=EXCLUDED.username_enc,
-             password_enc=EXCLUDED.password_enc,
-             updated_at=now()`,
-      [req.user.sub, baseUrl, enc(username), enc(password)]
-    );
-    res.json({ ok: true });
-  } catch (e) { e.status = e.status || 500; next(e); }
-}
-async function hStatus(req, res, next) {
-  try { const c = await getCreds(req.user?.sub); res.json({ linked: !!c, baseUrl: c?.baseUrl || null }); }
-  catch (e) { e.status = e.status || 500; next(e); }
-}
-async function hUnlink(req, res, next) {
-  try {
-    await ensureTables();
-    await pool.query(`DELETE FROM xtream_accounts WHERE user_id=$1`, [req.user?.sub]);
-    await pool.query(`DELETE FROM user_xtream WHERE user_id=$1`, [req.user?.sub]);
-    res.status(204).end();
-  } catch (e) { e.status = e.status || 500; next(e); }
-}
+  await ensureTables();
+  await pool.query(
+    `INSERT INTO xtream_accounts (user_id, base_url, username_enc, password_enc)
+     VALUES ($1,$2,$3,$4)
+     ON CONFLICT (user_id) DO UPDATE
+       SET base_url=EXCLUDED.base_url,
+           username_enc=EXCLUDED.username_enc,
+           password_enc=EXCLUDED.password_enc,
+           updated_at=now()`,
+    [req.user.sub, baseUrl, enc(username), enc(password)]
+  );
+  res.json({ ok: true });
+}));
 
-/* Catalogues */
-async function hMovieCategories(req, res, next) {
-  try {
-    const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"));
-    res.json(data || []);
-  } catch (e) { e.status = e.status || 500; next(e); }
-}
-async function hMovies(req, res, next) {
-  try {
-    const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-    const category_id = pickCatId(req);
-    const url = buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id });
-    const data = await fetchJsonT(url, 30000);   // 30s pour grosses listes
-    res.json(mapListWithIcons(data, c));
-  } catch (e) { e.status = e.status || 500; next(e); }
-}
-async function hVodInfo(req, res, next) {
-  try {
-    const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-    const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_info", { vod_id: req.params.vod_id }));
-    const coverRaw = info?.movie_data?.cover_big || info?.movie_data?.movie_image;
-    const cover = resolveIcon(coverRaw, c);
-    res.json({ ...info, movie_data: { ...info?.movie_data, cover_big: cover, movie_image: cover } });
-  } catch (e) { e.status = e.status || 500; next(e); }
-}
-async function hSeriesCategories(req, res, next) {
-  try {
-    const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"));
-    res.json(data || []);
-  } catch (e) { e.status = e.status || 500; next(e); }
-}
-async function hSeries(req, res, next) {
-  try {
-    const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-    const category_id = pickCatId(req);
-    const url = buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id });
-    const data = await fetchJsonT(url, 30000);   // 30s
-    res.json(mapListWithIcons(data, c));
-  } catch (e) { e.status = e.status || 500; next(e); }
-}
-async function hSeriesInfo(req, res, next) {
-  try {
-    const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-    const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_info", { series_id: req.params.series_id }));
-    const posterRaw = info?.info?.cover || info?.info?.backdrop_path;
-    const poster = resolveIcon(posterRaw, c);
-    res.json({ ...info, info: { ...info?.info, cover: poster, backdrop_path: poster } });
-  } catch (e) { e.status = e.status || 500; next(e); }
-}
-async function hLiveCategories(req, res, next) {
-  try {
-    const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"));
-    res.json(data || []);
-  } catch (e) { e.status = e.status || 500; next(e); }
-}
-async function hLive(req, res, next) {
-  try {
-    const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-    const category_id = pickCatId(req);
-    const url = buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id });
-    const data = await fetchJsonT(url, 15000);   // 15s
-    res.json(mapListWithIcons(data, c));
-  } catch (e) { e.status = e.status || 500; next(e); }
-}
+router.get("/status", ah(async (req, res) => {
+  const c = await getCreds(req.user?.sub);
+  res.json({ linked: !!c, baseUrl: c?.baseUrl || null });
+}));
 
-/* ================= Routes ================= */
-router.post("/link",     ensureAuth, hLink);
-router.get ("/status",   ensureAuth, hStatus);
-router.delete("/unlink", ensureAuth, hUnlink);
+router.delete("/unlink", ah(async (req, res) => {
+  await ensureTables();
+  await pool.query(`DELETE FROM xtream_accounts WHERE user_id=$1`, [req.user?.sub]);
+  await pool.query(`DELETE FROM user_xtream WHERE user_id=$1`, [req.user?.sub]);
+  res.status(204).end();
+}));
 
-router.get ("/movie-categories",  ensureAuth, hMovieCategories);
-router.get ("/movies",            ensureAuth, hMovies);
-router.post("/movies",            ensureAuth, hMovies);
-router.get ("/vod-info/:vod_id",  ensureAuth, hVodInfo);
-
-router.get ("/series-categories", ensureAuth, hSeriesCategories);
-router.get ("/series",            ensureAuth, hSeries);
-router.post("/series",            ensureAuth, hSeries);
-router.get ("/series-info/:series_id", ensureAuth, hSeriesInfo);
-
-router.get ("/live-categories",   ensureAuth, hLiveCategories);
-router.get ("/live",              ensureAuth, hLive);
-router.post("/live",              ensureAuth, hLive);
-
-/* ================= Image proxy ================= */
-router.get("/image", ensureAuth, async (req, res, next) => {
-  try {
-    const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-    const url = req.query.url;
-    if (!url || !/^https?:\/\//i.test(String(url))) return res.status(400).json({ message: "url required" });
-
-    const r = await fetchWithTimeout(String(url), 10000, {
-      "User-Agent": "Mozilla/5.0 (NovaStream/1.0)",
-      "Referer": c.baseUrl,
-      "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-    });
-    if (!r.ok) return res.status(r.status).end();
-
-    const ct = r.headers.get("content-type") || "image/jpeg";
-    res.setHeader("Content-Type", ct);
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    const buf = Buffer.from(await r.arrayBuffer());
-    res.end(buf);
-  } catch (e) { e.status = e.status || 500; next(e); }
+/* ============== Catalogues ============= */
+/* ---- Movies (VOD) ---- */
+const handleMovieCategories = ah(async (req, res) => {
+  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"));
+  res.json(data || []);
 });
+router.get("/movie-categories", handleMovieCategories);
+
+const handleMovies = ah(async (req, res) => {
+  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const category_id = pickCatId(req);
+  const limit = pickLimit(req, 50);
+  const data = await fetchJson(
+    buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id })
+  );
+  res.json(mapListWithIcons((data || []).slice(0, limit), c));
+});
+router.get("/movies", handleMovies);
+router.post("/movies", handleMovies);
+
+router.get("/vod-info/:vod_id", ah(async (req, res) => {
+  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const info = await fetchJson(
+    buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_info", { vod_id: req.params.vod_id })
+  );
+  const coverRaw = info?.movie_data?.cover_big || info?.movie_data?.movie_image;
+  const cover = resolveIcon(coverRaw, c);
+  res.json({ ...info, movie_data: { ...info?.movie_data, cover_big: cover, movie_image: cover } });
+}));
+
+/* ---- Series ---- */
+const handleSeriesCategories = ah(async (req, res) => {
+  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"));
+  res.json(data || []);
+});
+router.get("/series-categories", handleSeriesCategories);
+
+const handleSeries = ah(async (req, res) => {
+  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const category_id = pickCatId(req);
+  const limit = pickLimit(req, 50);
+  const data = await fetchJson(
+    buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id })
+  );
+  res.json(mapListWithIcons((data || []).slice(0, limit), c));
+});
+router.get("/series", handleSeries);
+router.post("/series", handleSeries);
+
+router.get("/series-info/:series_id", ah(async (req, res) => {
+  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const info = await fetchJson(
+    buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_info", { series_id: req.params.series_id })
+  );
+  const posterRaw = info?.info?.cover || info?.info?.backdrop_path;
+  const poster = resolveIcon(posterRaw, c);
+  res.json({ ...info, info: { ...info?.info, cover: poster, backdrop_path: poster } });
+}));
+
+/* ---- Live ---- */
+const handleLiveCategories = ah(async (req, res) => {
+  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"));
+  res.json(data || []);
+});
+router.get("/live-categories", handleLiveCategories);
+
+const handleLive = ah(async (req, res) => {
+  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const category_id = pickCatId(req);
+  const limit = pickLimit(req, 50);
+  const data = await fetchJson(
+    buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id })
+  );
+  res.json(mapListWithIcons((data || []).slice(0, limit), c));
+});
+router.get("/live", handleLive);
+router.post("/live", handleLive);
+
+/* ============== Search multi-types ============= */
+router.get("/search", ah(async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  if (!q) return res.json({ movies: [], series: [], live: [] });
+  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+
+  const [vodAll, seriesAll, liveAll] = await Promise.all([
+    fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams")),
+    fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series")),
+    fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams")),
+  ]);
+
+  const ql = q.toLowerCase();
+  const match = (it) =>
+    ((it.name || it.title || it.stream_display_name || "").toString().toLowerCase()).includes(ql);
+
+  const movies = mapListWithIcons((vodAll || []).filter(match).slice(0, 50), c);
+  const series = mapListWithIcons((seriesAll || []).filter(match).slice(0, 50), c);
+  const live   = mapListWithIcons((liveAll || []).filter(match).slice(0, 50), c);
+
+  res.json({ movies, series, live });
+}));
+
+/* ============== Image proxy ============= */
+router.get("/image", ah(async (req, res) => {
+  // on garde la protection par session pour éviter un proxy ouvert
+  if (!req.user?.sub) return res.status(401).json({ message: "Unauthorized" });
+  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+
+  const url = req.query.url;
+  if (!url || !/^https?:\/\//i.test(String(url))) {
+    return res.status(400).json({ message: "url required" });
+  }
+
+  const r = await fetchWithTimeout(String(url), 12000, {
+    "User-Agent": "Mozilla/5.0 (NovaStream/1.0)",
+    "Referer": c.baseUrl,
+    "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+  }).catch(() => null);
+
+  if (!r || !r.ok) {
+    return res.status(503).end();
+  }
+
+  const ct = r.headers.get("content-type") || "image/jpeg";
+  res.setHeader("Content-Type", ct);
+  res.setHeader("Cache-Control", "public, max-age=86400");
+  const buf = Buffer.from(await r.arrayBuffer());
+  res.end(buf);
+}));
 
 export default router;
