@@ -177,14 +177,12 @@ async function tmdbDetails(kind, id) {
   u.searchParams.set("api_key", TMDB_KEY);
   u.searchParams.set("language", "fr-FR");
   u.searchParams.set("append_to_response", "external_ids,credits,videos");
-  // inclure FR + EN + vidéos sans langue définie
   u.searchParams.set("include_video_language", "fr,en,null");
   return fetchJson(u.toString());
 }
 function pickBestTrailer(videos = []) {
-  const list = (videos || []).filter(v => v.site === "YouTube");
+  const list = (videos || []).filter((v) => v.site === "YouTube");
   if (!list.length) return null;
-  // priorité: Trailer officiel FR, sinon EN, sinon n’importe quel Trailer, sinon Teaser
   const score = (v) => {
     let s = 0;
     if (v.type === "Trailer") s += 3;
@@ -200,12 +198,11 @@ function pickBestTrailer(videos = []) {
 }
 const ytEmbed = (key) => (key ? `https://www.youtube.com/embed/${key}?rel=0&modestbranding=1` : null);
 
-/* ================= Resolvers ================= */
+/* ================= Format ================= */
 function img(path, size = "w500") {
   if (!path) return null;
   return `https://image.tmdb.org/t/p/${size}${path}`;
 }
-
 function formatMoviePayload(xtreamId, det) {
   const trailer = pickBestTrailer(det?.videos?.results || []);
   return {
@@ -226,7 +223,6 @@ function formatMoviePayload(xtreamId, det) {
     data: det,
   };
 }
-
 function formatSeriesPayload(xtreamId, det) {
   const trailer = pickBestTrailer(det?.videos?.results || []);
   return {
@@ -238,7 +234,7 @@ function formatSeriesPayload(xtreamId, det) {
     overview: det.overview || null,
     vote_average: det.vote_average ?? null,
     vote_count: det.vote_count ?? null,
-    first_air_date: det.first_air_date || null,
+    first_air_date: det.first_air_date || det.release_date || null,
     number_of_seasons: det.number_of_seasons ?? null,
     number_of_episodes: det.number_of_episodes ?? null,
     poster_url: img(det.poster_path, "w500"),
@@ -249,10 +245,12 @@ function formatSeriesPayload(xtreamId, det) {
   };
 }
 
-async function resolveMovie(reqUser, vodId) {
-  const cached = await getCache("movie", vodId);
-  if (cached) return cached.data;
-
+/* ================= Resolvers ================= */
+async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
+  if (!refresh) {
+    const cached = await getCache("movie", vodId);
+    if (cached && cached.data) return cached.data;
+  }
   const creds = await getCreds(reqUser);
   if (!creds) throw Object.assign(new Error("No Xtream creds"), { status: 404 });
 
@@ -309,9 +307,16 @@ async function resolveMovie(reqUser, vodId) {
   return payload;
 }
 
-async function resolveSeries(reqUser, seriesId) {
-  const cached = await getCache("series", seriesId);
-  if (cached) return cached.data;
+async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
+  if (!refresh) {
+    const cached = await getCache("series", seriesId);
+    // si le cache est “vide” (xtream_only) on tente une upgrade
+    if (cached && cached.data && !(cached.data.tmdb_id) && !(cached.data.vote_average) && !(cached.data.overview)) {
+      // continue pour tenter TMDB
+    } else if (cached && cached.data) {
+      return cached.data;
+    }
+  }
 
   const creds = await getCreds(reqUser);
   if (!creds) throw Object.assign(new Error("No Xtream creds"), { status: 404 });
@@ -322,21 +327,37 @@ async function resolveSeries(reqUser, seriesId) {
 
   let tmdbId = Number(info?.info?.tmdb_id || 0) || null;
 
+  // titre Xtream: couvrir plus de variantes
+  const anyEpisodeTitle = (() => {
+    const epObj = info?.episodes || {};
+    const seasons = Object.keys(epObj);
+    if (seasons.length) {
+      const firstSeason = epObj[seasons[0]];
+      const firstEp = Array.isArray(firstSeason) ? firstSeason[0] : null;
+      return firstEp?.title || firstEp?.name || "";
+    }
+    return "";
+  })();
+
   let titleCand =
     info?.info?.name ||
+    info?.info?.series_name ||
     info?.info?.o_name ||
     info?.info?.title ||
-    info?.episodes?.[0]?.[0]?.title ||
+    anyEpisodeTitle ||
     "";
+
   const yearCand =
     Number(info?.info?.releasedate?.slice?.(0, 4)) ||
-    yearFromStrings(info?.info?.releasedate, titleCand);
+    Number(info?.info?.releaseDate?.slice?.(0, 4)) ||
+    Number(info?.info?.first_air_date?.slice?.(0, 4)) ||
+    yearFromStrings(info?.info?.releasedate, info?.info?.releaseDate, info?.info?.first_air_date, titleCand);
 
   if (!tmdbId && TMDB_KEY && titleCand) {
     const queries = [titleCand, stripTitle(titleCand)];
     let best = null;
 
-    // 1) TV direct
+    // TV direct
     for (const q of queries) {
       const sr = await tmdbSearchTV(q, yearCand);
       for (const r of (sr?.results || []).slice(0, 10)) {
@@ -345,7 +366,7 @@ async function resolveSeries(reqUser, seriesId) {
       }
     }
 
-    // 2) fallback: multi -> tv only
+    // fallback multi
     if (!best || best.score <= 0.2) {
       for (const q of queries) {
         const sr = await tmdbSearchMulti(q);
@@ -371,7 +392,7 @@ async function resolveSeries(reqUser, seriesId) {
       backdrop_url: null,
       trailer: null,
       source: { xtream_only: true, info },
-  };
+    };
     await putCache("series", seriesId, null, titleCand || null, payload);
     return payload;
   }
@@ -383,15 +404,16 @@ async function resolveSeries(reqUser, seriesId) {
 }
 
 /* ================= Routes ================= */
+// support ?refresh=1 pour forcer une MAJ
 router.get("/movie/:id", async (req, res, next) => {
   try {
-    const out = await resolveMovie(req.user?.sub, req.params.id);
+    const out = await resolveMovie(req.user?.sub, req.params.id, { refresh: req.query.refresh === "1" });
     res.json(out);
   } catch (e) { e.status = e.status || 500; next(e); }
 });
 router.get("/series/:id", async (req, res, next) => {
   try {
-    const out = await resolveSeries(req.user?.sub, req.params.id);
+    const out = await resolveSeries(req.user?.sub, req.params.id, { refresh: req.query.refresh === "1" });
     res.json(out);
   } catch (e) { e.status = e.status || 500; next(e); }
 });
