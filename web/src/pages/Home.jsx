@@ -1,7 +1,6 @@
 // web/src/pages/Home.jsx
 import { useEffect, useState } from "react";
 import Row from "../components/Row.jsx";
-import TopRow from "../components/TopRow.jsx";
 import { getJson, postJson } from "../lib/api";
 
 const HOME_MOVIE_ROWS = 6;   // nombre de catégories films à afficher
@@ -31,7 +30,6 @@ export default function Home() {
     let alive = true;
     (async () => {
       try {
-        // Doit renvoyer les tendances TMDB mappées vers les affiches Xtream (images Xtream uniquement)
         const data = await getJson("/tmdb/trending-week-mapped");
         const top = Array.isArray(data)
           ? data.slice(0, 15).map((it, i) => ({ ...it, __rank: i + 1 }))
@@ -40,15 +38,12 @@ export default function Home() {
         setTrending(top);
       } catch {
         if (!alive) return;
-        // Aucun fallback → si TMDB KO, pas de tendances
         setTrending([]);
       } finally {
         if (alive) setLoadingTrend(false);
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, []);
 
   // --- Load Movies rows by categories ---
@@ -85,9 +80,7 @@ export default function Home() {
         if (alive) setLoadingMovies(false);
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, []);
 
   // --- Load Series rows by categories ---
@@ -124,9 +117,7 @@ export default function Home() {
         if (alive) setLoadingSeries(false);
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, []);
 
   // --- Load Live rows by categories ---
@@ -147,7 +138,6 @@ export default function Home() {
               id: Number(cat.category_id),
               title: cat.category_name || "Autre",
               items: Array.isArray(items) ? items : [],
-              // seeMoreHref: `/live?cat=${cat.category_id}` // si tu veux activer un "voir plus" pour live
             };
           })
         );
@@ -161,15 +151,18 @@ export default function Home() {
         if (alive) setLoadingLive(false);
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, []);
 
   return (
     <div className="space-y-10">
-      {/* Top 15 – Tendances de la semaine (TMDB only, numéros en overlay) */}
-      <TopRow title="Tendances de la semaine" items={trending} kind="vod" loading={loadingTrend} />
+      {/* Tendances de la semaine (utilise Row => swipe + flèches) */}
+      <Row
+        title="Tendances de la semaine"
+        items={trending}
+        kind="vod"
+        loading={loadingTrend}
+      />
 
       {/* Films par catégories */}
       {movieRows.map((row, i) => (
