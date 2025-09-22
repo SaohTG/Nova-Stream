@@ -1,3 +1,4 @@
+// web/src/components/SearchBar.jsx
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
 
@@ -8,15 +9,14 @@ export default function SearchBar() {
   const [q, setQ] = useState("");
 
   useEffect(() => {
-    // si on est déjà sur /search, synchroniser l’input
     if (loc.pathname.startsWith("/search")) setQ(sp.get("q") || "");
   }, [loc.pathname, sp]);
 
   const onSubmit = (e) => {
     e.preventDefault();
-    const query = q.trim();
-    if (!query) return;
-    navigate(`/search?q=${encodeURIComponent(query)}`);
+    const s = q.trim();
+    if (!s) return;
+    navigate(`/search?q=${encodeURIComponent(s)}`);
   };
 
   return (
