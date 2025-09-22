@@ -40,8 +40,12 @@ function RequireAuth() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      try { await getJson("/auth/me"); if (alive) setState({ checking: false, authed: true }); }
-      catch { if (alive) setState({ checking: false, authed: false }); }
+      try {
+        await getJson("/auth/me");
+        if (alive) setState({ checking: false, authed: true });
+      } catch {
+        if (alive) setState({ checking: false, authed: false });
+      }
     })();
     return () => { alive = false; };
   }, [loc.pathname]);
@@ -92,11 +96,11 @@ export default function App() {
         {/* Protégé */}
         <Route element={<RequireAuth />}>
           <Route element={<Shell />}>
-            {/* Auth mais Xtream facultatif */}
+            {/* Auth OK mais Xtream facultatif */}
             <Route path="/onboarding/xtream" element={<OnboardingXtream />} />
             <Route path="/settings" element={<Settings />} />
 
-            {/* Contenus: Xtream requis */}
+            {/* Contenus : Xtream requis */}
             <Route element={<RequireXtream />}>
               <Route index element={<Home />} />
               <Route path="/movies" element={<Movies />} />
@@ -104,7 +108,7 @@ export default function App() {
               <Route path="/live" element={<Live />} />
               <Route path="/search" element={<SearchPage />} />
               <Route path="/movies/category/:id" element={<MovieCategory />} />
-              <Route path="/series/category/:id" element={<SeriesCategory />} /> 
+              <Route path="/series/category/:id" element={<SeriesCategory />} />
               <Route path="/title/:kind/:id" element={<Title />} />
             </Route>
           </Route>
