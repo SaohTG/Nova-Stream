@@ -3,23 +3,39 @@ import { Router } from "express";
 import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { Pool } from "pg";
+import { randomUUID } from "crypto";
 
 const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
-const ACCESS_TTL  = Number(process.env.API_JWT_ACCESS_TTL ?? 900);        // 15 min
-const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL ?? 1209600);   // 14 j
+const ACCESS_TTL  = Number(process.env.API_JWT_ACCESS_TTL ?? 900);
+const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL ?? 1209600);
 const COOKIE_SECURE   = String(process.env.COOKIE_SECURE) === "true";
 const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || "lax").toLowerCase();
 
 const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
+/* ============== bootstrap table ============== */
+async function ensureUsers() {
+  // crée la table si absente (pas de dépendance aux extensions)
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS users (
+      id uuid PRIMARY KEY,
+      email text UNIQUE NOT NULL,
+      password text,
+      created_at timestamptz DEFAULT now(),
+      updated_at timestamptz DEFAULT now()
+    );
+  `);
+}
+
+/* ============== password column autodetect ============== */
 let PASSWORD_COL;
 async function getPasswordColumn() {
   if (PASSWORD_COL) return PASSWORD_COL;
-  // Priorise password_hash pour éviter les 401 si deux colonnes existent
-  const candidates = ["password_hash","password","hashed_password","pass"];
+  await ensureUsers();
+  const candidates = ["password","password_hash","hashed_password","pass"];
   const { rows } = await pool.query(
     `SELECT column_name FROM information_schema.columns
      WHERE table_name='users' AND column_name = ANY($1::text[])`, [candidates]
@@ -35,34 +51,19 @@ async function getPasswordColumn() {
   return PASSWORD_COL;
 }
 
+/* ============== JWT helpers ============== */
 function signTokens(payload) {
-  if (!process.env.API_JWT_SECRET || !process.env.API_REFRESH_SECRET) {
-    throw new Error("MISSING_JWT_SECRETS");
-  }
   const accessToken  = jwt.sign(payload, process.env.API_JWT_SECRET,     { expiresIn: ACCESS_TTL });
   const refreshToken = jwt.sign(payload, process.env.API_REFRESH_SECRET, { expiresIn: REFRESH_TTL });
   return { accessToken, refreshToken };
 }
-
 function setRefreshCookie(res, token) {
   const sameSite = ["lax","strict","none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
-  res.cookie("rt", token, {
-    httpOnly: true,
-    secure: COOKIE_SECURE,
-    sameSite,
-    path: "/",
-    maxAge: REFRESH_TTL * 1000,
-  });
+  res.cookie("rt", token, { httpOnly:true, secure:COOKIE_SECURE, sameSite, path:"/", maxAge: REFRESH_TTL*1000 });
 }
 function setAccessCookie(res, token) {
   const sameSite = ["lax","strict","none"].includes(COOKIE_SAMESITE) ? COOKIE_SAMESITE : "lax";
-  res.cookie("at", token, {
-    httpOnly: true,
-    secure: COOKIE_SECURE,
-    sameSite,
-    path: "/",
-    maxAge: ACCESS_TTL * 1000,
-  });
+  res.cookie("at", token, { httpOnly:true, secure:COOKIE_SECURE, sameSite, path:"/", maxAge: ACCESS_TTL*1000 });
 }
 
 /* ============== DB helpers ============== */
@@ -75,10 +76,19 @@ async function getUserByEmail(email) {
 }
 async function createUser(email, passwordPlain) {
   const col = await getPasswordColumn();
+  const id = randomUUID();                    // <- génère l'id ici
   const hash = await bcrypt.hash(passwordPlain, 10);
   const { rows } = await pool.query(
-    `INSERT INTO users (email, "${col}") VALUES ($1,$2) RETURNING id, email`, [email, hash]
+    `INSERT INTO users (id, email, "${col}") VALUES ($1,$2,$3)
+     ON CONFLICT (email) DO NOTHING
+     RETURNING id, email`,
+    [id, email, hash]
   );
+  if (!rows.length) {
+    // email déjà utilisé
+    const existing = await getUserByEmail(email);
+    if (existing) throw Object.assign(new Error("Email already used"), { status:409 });
+  }
   return rows[0];
 }
 async function validateUser(email, passwordPlain) {
@@ -95,25 +105,20 @@ export function ensureAuth(req, res, next) {
   if (h.startsWith("Bearer ")) token = h.split(" ")[1];
   if (!token && req.cookies?.at) token = req.cookies.at;
   if (!token) return res.status(401).json({ message: "No token" });
-
   try { req.user = jwt.verify(token, process.env.API_JWT_SECRET); return next(); }
   catch { return res.status(401).json({ message: "Invalid token" }); }
 }
-
-export function ensureAuthOrRefresh(req, res, next) {
+function ensureAuthOrRefresh(req, res, next) {
   const h = req.headers.authorization || "";
   let token = null;
   if (h.startsWith("Bearer ")) token = h.split(" ")[1];
   if (!token && req.cookies?.at) token = req.cookies.at;
-
   if (token) {
     try { req.user = jwt.verify(token, process.env.API_JWT_SECRET); return next(); }
-    catch { /* on tentera refresh ci-dessous */ }
+    catch { /* try refresh */ }
   }
-  // accepte plusieurs noms possibles pour le refresh cookie
   const rt = req.cookies?.rt || req.cookies?.refresh_token || req.cookies?.ns_refresh;
   if (!rt) return res.status(401).json({ message: "Unauthorized" });
-
   try {
     const payload = jwt.verify(rt, process.env.API_REFRESH_SECRET);
     const { accessToken, refreshToken } = signTokens({ sub: payload.sub, email: payload.email });
@@ -130,6 +135,7 @@ export function ensureAuthOrRefresh(req, res, next) {
 router.post("/signup", ah(async (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) return res.status(400).json({ message: "email/password required" });
+  await ensureUsers();
   if (await getUserByEmail(email)) return res.status(409).json({ message: "Email already used" });
 
   const user = await createUser(email, password);
@@ -154,7 +160,6 @@ router.post("/login", ah(async (req, res) => {
 router.post("/refresh", ah(async (req, res) => {
   const token = req.cookies?.rt || req.cookies?.refresh_token || req.cookies?.ns_refresh;
   if (!token) return res.status(401).json({ message: "No refresh cookie" });
-
   const payload = jwt.verify(token, process.env.API_REFRESH_SECRET);
   const { accessToken, refreshToken } = signTokens({ sub: payload.sub, email: payload.email });
   setRefreshCookie(res, refreshToken);
