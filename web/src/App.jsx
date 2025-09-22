@@ -20,6 +20,7 @@ import OnboardingXtream from "./pages/OnboardingXtream.jsx";
 import MovieCategory from "./pages/MovieCategory.jsx";
 import SeriesCategory from "./pages/SeriesCategory.jsx";
 import SearchPage from "./pages/Search.jsx";
+import Title from "./pages/Title.jsx";
 
 import Login from "./pages/Login.jsx";
 import Signup from "./pages/Signup.jsx";
@@ -103,7 +104,8 @@ export default function App() {
               <Route path="/live" element={<Live />} />
               <Route path="/search" element={<SearchPage />} />
               <Route path="/movies/category/:id" element={<MovieCategory />} />
-              <Route path="/series/category/:id" element={<SeriesCategory />} />
+              <Route path="/series/category/:id" element={<SeriesCategory />} /> 
+              <Route path="/title/:kind/:id" element={<Title />} />
             </Route>
           </Route>
         </Route>
