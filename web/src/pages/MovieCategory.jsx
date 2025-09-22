@@ -1,84 +1,56 @@
 // web/src/pages/MovieCategory.jsx
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { postJson } from "../lib/api";
 import PosterCard from "../components/PosterCard.jsx";
 
-const CHUNK = 60;
-
 export default function MovieCategory() {
   const { id } = useParams();
   const [sp] = useSearchParams();
-  const catName = useMemo(() => sp.get("name") || "Catégorie", [sp]);
+  const name = sp.get("name") || "Catégorie";
 
-  const [limit, setLimit] = useState(CHUNK);
-  const [items, setItems] = useState(null);
-  const [err, setErr] = useState(null);
-  const [busy, setBusy] = useState(false);
-
-  const load = async (l) => {
-    setBusy(true);
-    try {
-      const list = await postJson("/xtream/movies", {
-        category_id: Number(id),
-        limit: l,
-      });
-      setItems(Array.isArray(list) ? list : []);
-      setErr(null);
-    } catch (e) {
-      setErr(e?.message || "Erreur de chargement");
-    } finally {
-      setBusy(false);
-    }
-  };
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    setItems(null);
-    setLimit(CHUNK);
-    load(CHUNK);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let alive = true;
+    (async () => {
+      try {
+        const data = await postJson("/xtream/movies", {
+          category_id: Number(id),
+          limit: 200,
+        });
+        if (!alive) return;
+        setItems(Array.isArray(data) ? data : []);
+      } catch {
+        if (!alive) return;
+        setItems([]);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
   }, [id]);
 
-  const onMore = () => {
-    const next = limit + CHUNK;
-    setLimit(next);
-    load(next);
-  };
-
   return (
-    <div className="space-y-6">
-      <div className="flex items-end justify-between">
-        <h1 className="text-2xl font-bold text-white">{catName}</h1>
-        <div className="text-sm text-zinc-400">{items?.length || 0} éléments</div>
-      </div>
-
-      {err && <div className="rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
-
-      {!items ? (
-        <div className="text-zinc-400">Chargement…</div>
-      ) : items.length === 0 ? (
-        <div className="text-zinc-400">Aucun film dans cette catégorie.</div>
+    <div className="py-6">
+      <h1 className="mb-4 text-2xl font-bold">{name}</h1>
+      {loading ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-7 gap-4">
+          {Array.from({ length: 20 }).map((_, i) => (
+            <div key={i} className="skel aspect-[2/3] w-full" />
+          ))}
+        </div>
+      ) : items.length ? (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 lg:grid-cols-7 gap-4">
+          {items.map((it, i) => (
+            <PosterCard key={it.stream_id || it.name || i} item={it} kind="vod" showTitle />
+          ))}
+        </div>
       ) : (
-        <>
-          {/* Grille avec items de largeur identique aux carrousels (w-40 md:w-44 xl:w-48) */}
-          <div className="grid grid-cols-2 justify-items-center gap-x-5 gap-y-8 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 2xl:grid-cols-10">
-            {items.map((it) => (
-              <div key={`m-${it.stream_id || it.name}`} className="w-40 md:w-44 xl:w-48">
-                <PosterCard item={it} kind="vod" showTitle={false} />
-              </div>
-            ))}
-          </div>
-
-          <div className="flex justify-center pt-2">
-            <button
-              className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-200 ring-1 ring-white/10 hover:bg-zinc-700 disabled:opacity-60"
-              onClick={onMore}
-              disabled={busy}
-            >
-              {busy ? "Chargement…" : "Charger plus"}
-            </button>
-          </div>
-        </>
+        <div className="text-zinc-400">Aucun contenu.</div>
       )}
     </div>
   );
