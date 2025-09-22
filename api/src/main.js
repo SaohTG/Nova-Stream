@@ -10,7 +10,7 @@ import authRouter, { ensureAuth } from "./modules/auth.js";
 import userRouter from "./modules/user.js";
 import xtreamRouter from "./modules/xtream.js";
 import tmdbRouter from "./modules/tmdb.js";
-import mediaRouter from "./modules/media.js"; // <-- ajouté
+import mediaRouter from "./modules/media.js";
 
 const app = express();
 app.set("trust proxy", 1);
@@ -33,18 +33,18 @@ app.use(
 
 app.use(cookieParser());
 app.use(express.json({ limit: "1mb" }));
-app.use(express.urlencoded({ extended: true, limit: "1mb" })); // ⬅️ support form-urlencoded
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(morgan("dev"));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.use("/auth", authRouter);
-app.use("/user", ensureAuth, userRouter); // /user/link-xtream ici
+app.use("/user", ensureAuth, userRouter);
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
 
-// ---- ajouté (route media sous /api/media) ----
-app.use("/api/media", ensureAuth, mediaRouter);
+// Supporte les deux chemins selon config proxy (avec ou sans /api)
+app.use(["/media", "/api/media"], ensureAuth, mediaRouter);
 
 app.get("/debug/whoami", ensureAuth, (req, res) => res.json({ user: req.user }));
 
