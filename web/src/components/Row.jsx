@@ -19,6 +19,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   const trackRef = useRef(null);
   const rafRef = useRef(0);
 
+  // souris
   const startX = useRef(0);
   const startScroll = useRef(0);
   const lastX = useRef(0);
@@ -27,6 +28,11 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   const pressed = useRef(false);
   const hasDragged = useRef(false);
   const blockClickUntil = useRef(0);
+
+  // tactile
+  const tStartX = useRef(0);
+  const tStartY = useRef(0);
+  const axis = useRef(null); // 'x' | 'y' | null
 
   const [dragging, setDragging] = useState(false);
   const [canLeft, setCanLeft] = useState(false);
@@ -54,6 +60,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     return () => { document.body.style.userSelect = ""; };
   }, [dragging]);
 
+  // drag souris
   const begin = (x) => {
     const el = trackRef.current; if (!el) return;
     stopInertia();
@@ -109,6 +116,71 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   }, []);
   const onPointerUp   = useCallback(() => end(), []);
 
+  // Tactile natif + axis lock via listeners natifs (passive:false pour preventDefault)
+  useEffect(() => {
+    const el = trackRef.current; if (!el) return;
+
+    const ts = (e) => {
+      const t = e.touches[0];
+      tStartX.current = t.clientX;
+      tStartY.current = t.clientY;
+      startScroll.current = el.scrollLeft;
+      axis.current = null;
+      stopInertia();
+      hasDragged.current = false;
+      moved.current = 0;
+    };
+
+    const tm = (e) => {
+      const t = e.touches[0];
+      const dx = t.clientX - tStartX.current;
+      const dy = t.clientY - tStartY.current;
+
+      if (axis.current == null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
+        axis.current = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+      }
+
+      if (axis.current === "x") {
+        // Bloque le scroll vertical de la page seulement quand l'utilisateur a choisi l'horizontal
+        if (e.cancelable) e.preventDefault();
+        el.scrollLeft = startScroll.current - dx;
+        moved.current += Math.abs(dx);
+        if (!hasDragged.current && moved.current > 6) {
+          hasDragged.current = true;
+          setDragging(true);
+        }
+        measure();
+      }
+      // Si axis = 'y' => ne rien faire, laisser la page défiler
+    };
+
+    const te = () => {
+      axis.current = null;
+      setDragging(false);
+      // Pas d’inertie en tactile pour rester natif
+    };
+
+    el.addEventListener("touchstart", ts, { passive: true });
+    el.addEventListener("touchmove", tm, { passive: false });
+    el.addEventListener("touchend", te, { passive: true });
+    el.addEventListener("touchcancel", te, { passive: true });
+
+    return () => {
+      el.removeEventListener("touchstart", ts);
+      el.removeEventListener("touchmove", tm);
+      el.removeEventListener("touchend", te);
+      el.removeEventListener("touchcancel", te);
+    };
+  }, [measure]);
+
+  // Molette: aucune action sur le carrousel. On redirige le deltaY vers la page.
+  const onWheel = useCallback((e) => {
+    if (e.deltaY !== 0 && e.cancelable) {
+      e.preventDefault();
+      window.scrollBy({ top: e.deltaY, behavior: "auto" });
+    }
+  }, []);
+
   const onClickCapture = useCallback((e) => {
     if (hasDragged.current || performance.now() < blockClickUntil.current) {
       e.preventDefault(); e.stopPropagation();
@@ -155,6 +227,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
           onPointerUp={onPointerUp}
           onPointerLeave={onPointerUp}
           onPointerCancel={onPointerUp}
+          onWheel={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
           role="region"
