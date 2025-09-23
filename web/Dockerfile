@@ -1,11 +1,10 @@
 FROM node:20-alpine
 WORKDIR /app
 
-# Dépendances (on force la présence de shaka-player et on vérifie)
+# Installe les deps (lock ou non) puis force shaka-player
 COPY package.json package-lock.json* ./
-RUN npm pkg set dependencies.shaka-player="^4.9.6" \
- && (npm ci || npm i) \
- && node -e "console.log('shaka at:', require.resolve('shaka-player'))"
+RUN (npm ci || npm i) \
+ && npm i shaka-player@^4.9.6 --no-audit --no-fund
 
 # Code + build
 COPY . .
