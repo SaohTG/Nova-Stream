@@ -110,17 +110,18 @@ async function fetchJson(url) {
 }
 
 /* ================= Matching helpers ================= */
+function dropLeadingTags(raw = "") {
+  // supprime tous les blocs en tête: |...|, [...], (...)
+  return String(raw).replace(/^(?:\s*(?:\|[^|]*\||\[[^\]]*\]|\([^\)]*\)))+\s*/i, "");
+}
 function stripTitle(raw = "") {
-  let s = String(raw);
-  // retire tags langue/pays au début et séparateurs
-  s = s.replace(/^\s*\|?[A-Z]{2}\|\s*/g, " ");      // |FR|, |EN|
-  s = s.replace(/^\s*\[(?:VF|VOSTFR|FR|TRUEFRENCH)\]\s*/gi, " ");
+  let s = dropLeadingTags(raw);
   s = s.replace(/[|._]/g, " ");
   s = s.replace(/\s-\s/g, " ");
   s = s.replace(/\[[^\]]*\]|\([^\)]*\)/g, " ");
   s = s.replace(/\b(19|20)\d{2}\b/g, " ");
   s = s.replace(/\bS\d{1,2}E\d{1,2}\b/gi, " ");
-  s = s.replace(/\b(2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|hdr|webrip|b[dr]rip|dvdrip|cam|ts|multi|truefrench|french|vostfr|vf|vo)\b/gi, " ");
+  s = s.replace(/\b(2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|hdr|webrip|b[dr]rip|dvdrip|cam|ts|multi|truefrench|french|vostfr|vost|vf|vo)\b/gi, " ");
   s = s.replace(/\s+/g, " ").trim();
   return s;
 }
@@ -315,7 +316,7 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
   if (!refresh) {
     const cached = await getCache("series", seriesId);
     if (cached && cached.data && !(cached.data.tmdb_id) && !(cached.data.vote_average) && !(cached.data.overview)) {
-      // continuer pour tenter TMDB
+      // essayer upgrade
     } else if (cached && cached.data) {
       return cached.data;
     }
@@ -330,7 +331,7 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
 
   let tmdbId = Number(info?.info?.tmdb_id || 0) || null;
 
-  // Variantes de titre Xtream
+  // Titre brut et variantes
   const anyEpisodeTitle = (() => {
     const epObj = info?.episodes || {};
     const seasons = Object.keys(epObj);
@@ -350,29 +351,27 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
     anyEpisodeTitle ||
     "";
 
-  // Année candidate
   const yearCand =
     Number(info?.info?.releasedate?.slice?.(0, 4)) ||
     Number(info?.info?.releaseDate?.slice?.(0, 4)) ||
     Number(info?.info?.first_air_date?.slice?.(0, 4)) ||
     yearFromStrings(info?.info?.releasedate, info?.info?.releaseDate, info?.info?.first_air_date, rawTitle);
 
-  // Prépare plusieurs requêtes de recherche robustes
-  const noLang = rawTitle.replace(/^\s*\|?[A-Z]{2}\|\s*/g, " ").trim(); // retire |FR|
-  const lastSeg = rawTitle.split(" - ").pop().trim();
+  const base = dropLeadingTags(rawTitle).trim();
+  const lastSeg = base.split(" - ").pop().trim();
+
   const queries = Array.from(new Set([
     rawTitle,
-    noLang,
+    base,
     lastSeg,
     stripTitle(rawTitle),
-    stripTitle(noLang),
+    stripTitle(base),
     stripTitle(lastSeg),
   ])).filter(Boolean);
 
   if (!tmdbId && TMDB_KEY && queries.length) {
     let best = null;
 
-    // TV direct
     for (const q of queries) {
       const sr = await tmdbSearchTV(q, yearCand);
       for (const r of (sr?.results || []).slice(0, 10)) {
@@ -381,7 +380,6 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
       }
     }
 
-    // fallback multi
     if (!best || best.score <= 0.1) {
       for (const q of queries) {
         const sr = await tmdbSearchMulti(q);
