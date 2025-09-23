@@ -1,6 +1,4 @@
 // web/src/lib/mylist.js
-import { useSyncExternalStore } from "react";
-
 const KEY = "ns_mylist_v1";
 const EVT = "ns_mylist_changed";
 
@@ -15,19 +13,11 @@ function writeMap(m) {
 function k(kind, id) { return `${String(kind)}:${String(id)}`.toLowerCase(); }
 
 export function hasInMyList(kind, id) {
-  const map = readMap();
-  return Boolean(map[k(kind, id)]);
+  return Boolean(readMap()[k(kind, id)]);
 }
 export function addToMyList(kind, id, payload = {}) {
   const map = readMap();
-  map[k(kind, id)] = {
-    kind,
-    id: String(id),
-    title: payload.title || "",
-    img: payload.img || "",
-    raw: payload.raw || null,
-    updatedAt: Date.now(),
-  };
+  map[k(kind, id)] = { kind, id: String(id), title: payload.title || "", img: payload.img || "", raw: payload.raw || null, updatedAt: Date.now() };
   writeMap(map);
 }
 export function removeFromMyList(kind, id) {
@@ -40,26 +30,27 @@ export function toggleMyList(kind, id, payload = {}) {
   else addToMyList(kind, id, payload);
 }
 
-function subscribe(cb) {
-  const h = () => cb();
-  window.addEventListener("storage", h);
-  window.addEventListener(EVT, h);
-  return () => {
-    window.removeEventListener("storage", h);
-    window.removeEventListener(EVT, h);
-  };
-}
-function getSnapshotMap() { return readMap(); }
+// ---- Hooks compatibles React 16/17/18 ----
+import { useEffect, useState } from "react";
 
-export function useMyListMap() {
-  return useSyncExternalStore(subscribe, getSnapshotMap, getSnapshotMap);
-}
 export function useMyList() {
-  const map = useMyListMap();
-  return Object.values(map).sort((a, b) => b.updatedAt - a.updatedAt);
+  const [list, setList] = useState(() => Object.values(readMap()).sort((a,b)=>b.updatedAt-a.updatedAt));
+  useEffect(() => {
+    const h = () => setList(Object.values(readMap()).sort((a,b)=>b.updatedAt-a.updatedAt));
+    window.addEventListener("storage", h);
+    window.addEventListener(EVT, h);
+    return () => { window.removeEventListener("storage", h); window.removeEventListener(EVT, h); };
+  }, []);
+  return list;
 }
+
 export function useMyListStatus(kind, id) {
-  const map = useMyListMap();
-  const saved = Boolean(map[k(kind, id)]);
+  const [saved, setSaved] = useState(() => hasInMyList(kind, id));
+  useEffect(() => {
+    const h = () => setSaved(hasInMyList(kind, id));
+    window.addEventListener("storage", h);
+    window.addEventListener(EVT, h);
+    return () => { window.removeEventListener("storage", h); window.removeEventListener(EVT, h); };
+  }, [kind, id]);
   return saved;
 }
