@@ -89,13 +89,11 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     pressed.current = false;
     const el = trackRef.current; if (!el) { setDragging(false); return; }
 
-    // Débloque les clics tout de suite, mais protège pendant 150ms si drag réel.
     const dragged = hasDragged.current;
     setDragging(false);
     axis.current = null;
     if (dragged) blockClickUntil.current = performance.now() + 150;
 
-    // Inertie sans désactiver les clics
     if (!dragged) return;
     let v = vel.current;
     const friction = 0.92;
@@ -114,7 +112,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   }, []);
   const onPointerMove = useCallback((e) => {
     if (!pressed.current) return;
-    dragHoriz(e.clientX); // souris: on force horizontal
+    dragHoriz(e.clientX);
   }, []);
   const onPointerUp = useCallback(() => end(), []);
 
@@ -131,19 +129,26 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
       axis.current = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
     }
     if (axis.current === "x") {
-      e.preventDefault(); // bloque scroll page pendant le swipe horizontal
+      e.preventDefault(); // bloque le scroll page pendant swipe horizontal
       dragHoriz(t.clientX);
     }
   }, []);
   const onTouchEnd   = useCallback(() => end(), []);
 
-  // Molette: bloque quand sur le carrousel (la page défile ailleurs)
+  // Molette: horizontal => carrousel; vertical => laisser la page défiler
   const onWheel = useCallback((e) => {
-    e.preventDefault();
-    e.stopPropagation();
+    const el = trackRef.current; if (!el) return;
+    const ax = Math.abs(e.deltaX);
+    const ay = Math.abs(e.deltaY);
+    if (e.shiftKey || ax > ay) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dx = ax ? e.deltaX : (e.deltaY > 0 ? 120 : -120);
+      el.scrollBy({ left: dx, behavior: "auto" });
+    }
   }, []);
 
-  // Bloque le clic si un drag a eu lieu ou tout de suite après
+  // Bloque le clic seulement si vrai drag ou juste après
   const onClickCapture = useCallback((e) => {
     if (hasDragged.current || performance.now() < blockClickUntil.current) {
       e.preventDefault();
@@ -190,7 +195,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
           onTouchStart={onTouchStart}
           onTouchMove={onTouchMove}
           onTouchEnd={onTouchEnd}
-          onWheelCapture={onWheel}
+          onWheel={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
         >
