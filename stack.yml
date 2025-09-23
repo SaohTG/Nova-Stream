@@ -30,7 +30,6 @@ services:
       API_PORT: 4000
       HOST: 0.0.0.0
       TZ: Europe/Brussels
-      # CORS: même origine (app.lorna.tv) + options de test
       CORS_ORIGIN: https://app.lorna.tv,https://lector.lorna.tv,http://85.31.239.110:5173
       COOKIE_SECURE: "true"
       COOKIE_SAMESITE: none
@@ -42,7 +41,6 @@ services:
       API_JWT_ACCESS_TTL: "900"
       API_JWT_REFRESH_TTL: "1209600"
       API_ENCRYPTION_KEY: "a1b2c3d4e5f60718293a4bc5de6f70819a2b3c4d5e6f7a801f2e3d4c9b8a7c6d"
-      # si votre serveur Xtream est en HTTPS auto-signé:
       XTREAM_INSECURE_TLS: "1"
     command:
       - sh
@@ -65,11 +63,16 @@ services:
     ports:
       - "4000:4000"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:4000/health || curl -fsS http://127.0.0.1:4000/api/health || exit 1"]
+      # Check pure Node (pas besoin de curl/wget)
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"const f=async(u)=>{try{const r=await fetch(u);return r.ok;}catch{return false}};(async()=>{process.exit(await f('http://127.0.0.1:4000/health')||await f('http://127.0.0.1:4000/api/health')?0:1)})();\""
+        ]
       interval: 10s
       timeout: 5s
-      retries: 60
-      start_period: 120s
+      retries: 120
+      start_period: 600s
     networks: [webnet]
     restart: unless-stopped
 
@@ -92,9 +95,7 @@ services:
         rm -rf /app; mkdir -p /app
         cp -r /tmp/Nova-Stream-main/web/. /app
         cd /app
-        # package minimal pour build
         printf '%s\n' '{ "name":"nova-stream-web","private":true,"type":"module","scripts":{"build":"vite build"}, "dependencies":{"axios":"^1.6.7","hls.js":"^1.5.7","react":"^18.2.0","react-dom":"^18.2.0","react-router-dom":"^6.26.2"}, "devDependencies":{"@vitejs/plugin-react":"^4.2.0","autoprefixer":"^10.4.17","postcss":"^8.4.35","tailwindcss":"^3.4.6","vite":"^5.0.0"} }' > package.json
-        # vite config pour build statique (API en /api)
         cat > vite.config.js <<'EOF'
         import { defineConfig } from "vite";
         import react from "@vitejs/plugin-react";
@@ -109,7 +110,6 @@ services:
         npm run build
         rm -rf /usr/share/nginx/html/*
         cp -r dist/* /usr/share/nginx/html/
-        # nginx conf SPA + port 8081
         cat > /etc/nginx/conf.d/default.conf <<'NGINX'
         server {
           listen 8081;
@@ -117,11 +117,7 @@ services:
           root /usr/share/nginx/html;
           index index.html;
           charset utf-8;
-
-          # SPA
-          location / {
-            try_files $uri $uri/ /index.html;
-          }
+          location / { try_files $uri $uri/ /index.html; }
         }
         NGINX
         nginx -g 'daemon off;'
