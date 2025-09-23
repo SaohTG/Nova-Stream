@@ -10,15 +10,14 @@ export default defineConfig(({ mode }) => {
     server: { host: true, port: 5173, allowedHosts: ["lector.lorna.tv"] },
     preview: { host: true, port: 5173, allowedHosts: ["lector.lorna.tv"] },
 
-    // Ne prébundle pas Shaka en dev
-    optimizeDeps: {
-      exclude: ["shaka-player", "shaka-player/dist/shaka-player.compiled.js"],
-    },
-    // Marque Shaka comme externe au build (chargé via <script> CDN)
-    build: {
-      rollupOptions: {
-        external: ["shaka-player", "shaka-player/dist/shaka-player.compiled.js"],
+    resolve: {
+      alias: {
+        // utilise le bundle compilé de Shaka côté import
+        "shaka-player": "shaka-player/dist/shaka-player.compiled.js",
       },
+    },
+    optimizeDeps: {
+      include: ["shaka-player/dist/shaka-player.compiled.js"],
     },
 
     define: {
