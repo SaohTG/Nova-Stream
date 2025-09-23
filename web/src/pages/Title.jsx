@@ -40,7 +40,7 @@ export default function Title() {
     return () => { alive = false; };
   }, [kind, id]);
 
-  // ---- helpers de résolution ----
+  // ---------- helpers ----------
   async function probeJson(path) {
     try {
       const j = await getJson(path);
@@ -52,7 +52,7 @@ export default function Title() {
         j.hls_url ||
         j.m3u8 ||
         j.src ||
-        (typeof j.playback === "object" ? j.playback.src : null) ||
+        (j.playback && j.playback.src) ||
         null
       );
     } catch {
@@ -65,6 +65,7 @@ export default function Title() {
       `/media/${kind}/${id}/stream`,
       `/media/${kind}/${id}/stream-url`,
       `/media/${kind}/${id}/play`,
+      `/media/${kind}/${id}/sources`,
       `/media/${kind}/${id}/stream?refresh=1`,
       `/media/${kind}/${id}/stream-url?refresh=1`,
       `/media/${kind}/${id}/play?refresh=1`,
@@ -77,47 +78,76 @@ export default function Title() {
     return "";
   }
 
+  // cherche un id xtream plausible dans n'importe quel niveau
+  function pickXtreamVodId(obj) {
+    let found = null;
+    const wanted = ["stream_id", "movie_id", "vod_id"];
+    (function walk(o) {
+      if (!o || found) return;
+      if (typeof o !== "object") return;
+      for (const k of Object.keys(o)) {
+        const v = o[k];
+        const key = k.toLowerCase();
+        if (wanted.includes(key) && Number.isFinite(+v) && +v > 0) {
+          found = String(+v);
+          return;
+        }
+        if (typeof v === "object") walk(v);
+      }
+    })(obj);
+    return found;
+  }
+
+  function pickPortalBase(raw) {
+    const s = (raw || "")
+      .replace(/\/player_api\.php.*$/i, "")
+      .replace(/\/portal\.php.*$/i, "")
+      .replace(/\/stalker_portal.*$/i, "")
+      .replace(/\/(?:series|movie|live)\/.*$/i, "")
+      .replace(/\/+$/g, "");
+    return s;
+  }
+
   async function resolveXtreamUrlFallback() {
     try {
       const st = await getJson("/xtream/status");
       if (!st?.linked) return "";
 
-      const portal =
-        st.base_url || st.portal_url || st.url || st.server || "";
-      const base = (portal || "")
-        .replace(/\/player_api\.php.*$/i, "")
-        .replace(/\/portal\.php.*$/i, "")
-        .replace(/\/stalker_portal.*$/i, "")
-        .replace(/\/+$/g, "");
+      const portal = st.base_url || st.portal_url || st.url || st.server || st.api_url || "";
+      const base = pickPortalBase(portal);
       const user = st.username || st.user || st.login;
       const pass = st.password || st.pass || st.pwd;
       if (!base || !user || !pass) return "";
 
-      // deviner un id xtream depuis les données
+      // essayer d'extraire un id
       const vid =
         data?.xtream_id ||
         data?.movie_id ||
         data?.vod_id ||
         data?.stream_id ||
         data?.ids?.xtream ||
-        null;
-      if (!vid || kind !== "movie") return "";
+        pickXtreamVodId(data);
 
-      return `${base}/movie/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${vid}.m3u8`;
+      if (!vid) return "";
+
+      if (kind === "movie") {
+        // HLS
+        return `${base}/movie/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${vid}.m3u8`;
+      }
+      return "";
     } catch {
       return "";
     }
   }
 
   async function startPlayback() {
-    if (kind !== "movie") return; // limiter ici aux films
+    if (kind !== "movie") return; // ici on ne gère que les films
     setPlaying(true);
     setResolvingSrc(true);
     setPlayErr("");
     setSrc("");
 
     try {
-      // 1) champs directs du payload /media
       let u =
         data?.stream_url ||
         data?.hls_url ||
@@ -125,25 +155,22 @@ export default function Title() {
         data?.url ||
         (data?.playback && data.playback.src);
 
-      // 2) endpoints backend connus
       if (!u) u = await resolveFromApi();
-
-      // 3) fallback xtream local si id présent
       if (!u) u = await resolveXtreamUrlFallback();
 
       if (!u) throw new Error("no-src");
 
       setSrc(u);
     } catch (e) {
-      console.warn("[play]", e);
       setPlayErr(
-        "Impossible d’obtenir l’URL du flux. Vérifiez que l’API expose /media/:kind/:id/(stream|stream-url|play) ou fournisse un id Xtream."
+        "Impossible d’obtenir l’URL du flux. Aucune source trouvée dans l’API et aucun id Xtream exploitable."
       );
     } finally {
       setResolvingSrc(false);
     }
   }
 
+  // ---------- UI ----------
   if (loading) {
     return <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">Chargement…</div>;
   }
@@ -164,7 +191,6 @@ export default function Title() {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
-      {/* lecteur en haut si lecture */}
       {playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
           {resolvingSrc && (
@@ -195,7 +221,6 @@ export default function Title() {
       )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
-        {/* miniature + overlay play */}
         <button
           type="button"
           className="relative w-[220px] rounded-xl overflow-hidden group"
@@ -259,7 +284,6 @@ export default function Title() {
         </div>
       </div>
 
-      {/* modale trailer */}
       {showTrailer && hasTrailer && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4"
