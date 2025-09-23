@@ -110,9 +110,20 @@ async function fetchJson(url) {
 }
 
 /* ================= Matching helpers ================= */
+const LANG_TAGS = [
+  "FR","VF","VO","VOSTFR","VOST","STFR","TRUEFRENCH","FRENCH","SUBFRENCH","SUBFR","SUB","SUBS",
+  "EN","ENG","DE","ES","IT","PT","NL","RU","PL","TR","TURK","AR","ARAB","ARABIC","LAT","LATINO","DUAL","MULTI"
+];
+
+// supprime en tête: |...|, [...], (...), ou tokens (FR, STFR, VOSTFR, …)
 function dropLeadingTags(raw = "") {
-  // supprime tous les blocs en tête: |...|, [...], (...)
-  return String(raw).replace(/^(?:\s*(?:\|[^|]*\||\[[^\]]*\]|\([^\)]*\)))+\s*/i, "");
+  let s = String(raw).trim();
+  s = s.replace(/^(?:\s*(?:\|[^|]*\||\[[^\]]*\]|\([^\)]*\)))+\s*/i, "");
+  const tag = `(?:${LANG_TAGS.join("|")})`;
+  const sep = `(?:\\s*[|:/\\\\\\-·•]\\s*|\\s+)`;
+  const seq = new RegExp(`^(?:${tag})(?:${sep}(?:${tag}))*${sep}*`, "i");
+  s = s.replace(seq, "");
+  return s.trimStart();
 }
 function stripTitle(raw = "") {
   let s = dropLeadingTags(raw);
@@ -121,7 +132,7 @@ function stripTitle(raw = "") {
   s = s.replace(/\[[^\]]*\]|\([^\)]*\)/g, " ");
   s = s.replace(/\b(19|20)\d{2}\b/g, " ");
   s = s.replace(/\bS\d{1,2}E\d{1,2}\b/gi, " ");
-  s = s.replace(/\b(2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|hdr|webrip|b[dr]rip|dvdrip|cam|ts|multi|truefrench|french|vostfr|vost|vf|vo)\b/gi, " ");
+  s = s.replace(/\b(2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|hdr|webrip|b[dr]rip|dvdrip|cam|ts|multi|truefrench|french|vostfr|vost|stfr|vf|vo)\b/gi, " ");
   s = s.replace(/\s+/g, " ").trim();
   return s;
 }
@@ -331,7 +342,6 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
 
   let tmdbId = Number(info?.info?.tmdb_id || 0) || null;
 
-  // Titre brut et variantes
   const anyEpisodeTitle = (() => {
     const epObj = info?.episodes || {};
     const seasons = Object.keys(epObj);
