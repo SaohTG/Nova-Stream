@@ -11,11 +11,12 @@ import userRouter from "./modules/user.js";
 import xtreamRouter from "./modules/xtream.js";
 import tmdbRouter from "./modules/tmdb.js";
 import mediaRouter from "./modules/media.js";
-import mylistRouter from "./modules/mylist.js";  // ← ajout
-import watchRouter from "./modules/watch.js";    // ← ajout
+import mylistRouter from "./modules/mylist.js";
+import watchRouter from "./modules/watch.js";
 
 const app = express();
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
 
 // CORS
 const ORIGINS = (process.env.CORS_ORIGIN || "http://localhost:5173")
@@ -23,15 +24,22 @@ const ORIGINS = (process.env.CORS_ORIGIN || "http://localhost:5173")
   .map((s) => s.trim())
   .filter(Boolean);
 
-app.use(
-  cors({
-    origin: (origin, cb) =>
-      !origin || ORIGINS.includes(origin) ? cb(null, true) : cb(null, false),
-    credentials: true,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-  })
-);
+const corsOptions = {
+  origin: (origin, cb) => {
+    // Autorise requêtes sans Origin (curl, apps natives) + liste blanche
+    if (!origin || ORIGINS.includes(origin)) return cb(null, true);
+    return cb(null, false);
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Range"],
+  exposedHeaders: ["Accept-Ranges", "Content-Range", "Content-Length", "Content-Type"],
+  optionsSuccessStatus: 204,
+};
+
+app.use(cors(corsOptions));
+// Préflight explicite si besoin
+app.options("*", cors(corsOptions));
 
 app.use(cookieParser());
 app.use(express.json({ limit: "1mb" }));
@@ -39,24 +47,27 @@ app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(morgan("dev"));
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
+app.get("/api/health", (_req, res) => res.json({ ok: true })); // si proxy /api
 
 app.use("/auth", authRouter);
 app.use("/user", ensureAuth, userRouter);
-app.use("/user/mylist", ensureAuth, mylistRouter); // ← ajout
-app.use("/user/watch", ensureAuth, watchRouter);   // ← ajout
+app.use("/user/mylist", ensureAuth, mylistRouter);
+app.use("/user/watch", ensureAuth, watchRouter);
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
 
-// Supporte les deux chemins selon config proxy (avec ou sans /api)
+// Media proxy/URL: support des chemins avec ou sans /api
 app.use(["/media", "/api/media"], ensureAuth, mediaRouter);
 
 app.get("/debug/whoami", ensureAuth, (req, res) => res.json({ user: req.user }));
 
+// 404 JSON
 app.use((req, res, next) => {
   if (res.headersSent) return next();
   res.status(404).json({ error: "Not Found", path: req.path });
 });
 
+// Error handler
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
   const status = err.status || err.statusCode || 500;
