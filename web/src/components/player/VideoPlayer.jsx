@@ -1,9 +1,6 @@
 // web/src/components/player/VideoPlayer.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import ShakaPlayer from "shaka-player/dist/shaka-player.compiled.js";
 import { postJson } from "../../lib/api";
-
-const shaka = ShakaPlayer || (typeof window !== "undefined" ? window.shaka : null);
 
 function fmt(t) {
   if (!Number.isFinite(t)) return "--:--";
@@ -47,28 +44,41 @@ export default function VideoPlayer({
 
   useEffect(() => {
     let mounted = true;
+
     async function boot() {
-      if (!videoRef.current || !src || !shaka) return;
+      if (!videoRef.current || !src) return;
+
+      // Import dynamique côté client
+      let shaka;
+      try {
+        const mod = await import("shaka-player");
+        shaka = mod.default || mod;
+      } catch (e) {
+        console.error("[Player] Impossible de charger shaka-player", e);
+        return;
+      }
+
       try {
         shaka.polyfill.installAll();
         if (!shaka.Player.isBrowserSupported()) throw new Error("Shaka unsupported");
+
         const player = new shaka.Player(videoRef.current);
         playerRef.current = player;
 
         const refreshTracks = () => {
           const a = player.getAudioLanguagesAndRoles(); // [{language,role}]
           const tks = player.getTextLanguages();        // ["fr","en",...]
-          setAudios(a.map(x => ({
-            lang: x.language,
-            role: x.role || null,
-            label: x.role ? `${x.language} • ${x.role}` : x.language
-          })));
-          setTexts(tks.map(l => ({ lang: l, kind: "sub", label: l })));
-          const al = player.getConfiguration().preferredAudioLanguage || null;
-          const ar = player.getConfiguration().preferredAudioRole || null;
-          const tl = player.getConfiguration().preferredTextLanguage || null;
-          setAudioSel({ lang: al, role: ar || null });
-          setTextSel(s => ({ ...s, lang: tl || s.lang || null }));
+          setAudios(
+            a.map((x) => ({
+              lang: x.language,
+              role: x.role || null,
+              label: x.role ? `${x.language} • ${x.role}` : x.language,
+            }))
+          );
+          setTexts(tks.map((l) => ({ lang: l, kind: "sub", label: l })));
+          const cfg = player.getConfiguration();
+          setAudioSel({ lang: cfg.preferredAudioLanguage || null, role: cfg.preferredAudioRole || null });
+          setTextSel((s) => ({ ...s, lang: cfg.preferredTextLanguage || s.lang || null }));
         };
 
         player.addEventListener("trackschanged", refreshTracks);
@@ -76,6 +86,8 @@ export default function VideoPlayer({
         player.addEventListener("textchanged", refreshTracks);
 
         await player.load(src, initialTime);
+        if (!mounted) return;
+
         setDur(videoRef.current.duration || NaN);
         refreshTracks();
         setReady(true);
@@ -83,8 +95,11 @@ export default function VideoPlayer({
         console.error("[Player]", e);
       }
     }
+
     boot();
+
     return () => {
+      mounted = false;
       const p = playerRef.current;
       playerRef.current = null;
       if (p) p.destroy();
