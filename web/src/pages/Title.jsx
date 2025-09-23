@@ -1,28 +1,20 @@
 // web/src/pages/Title.jsx
 import { useEffect, useState } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { getJson } from "../lib/api";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
 export default function Title() {
-  const { kind, id } = useParams(); // "movie" | "series"
+  const { kind, id } = useParams(); // "movie" | "series" ; id = TMDB id côté app
   const nav = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [showTrailer, setShowTrailer] = useState(false);
 
   // lecture in-page
   const [playing, setPlaying] = useState(false);
   const [resolvingSrc, setResolvingSrc] = useState(false);
   const [src, setSrc] = useState("");
   const [playErr, setPlayErr] = useState("");
-
-  useEffect(() => {
-    setPlaying(false);
-    setResolvingSrc(false);
-    setSrc("");
-    setPlayErr("");
-  }, [kind, id]);
 
   useEffect(() => {
     let alive = true;
@@ -40,130 +32,94 @@ export default function Title() {
     return () => { alive = false; };
   }, [kind, id]);
 
-  // ---------- helpers ----------
-  async function probeJson(path) {
-    try {
-      const j = await getJson(path);
-      if (!j) return null;
-      if (typeof j === "string" && /^https?:/i.test(j)) return j;
-      return (
-        j.url ||
-        j.stream_url ||
-        j.hls_url ||
-        j.m3u8 ||
-        j.src ||
-        (j.playback && j.playback.src) ||
-        null
-      );
-    } catch {
-      return null;
-    }
-  }
+  useEffect(() => {
+    setPlaying(false);
+    setResolvingSrc(false);
+    setSrc("");
+    setPlayErr("");
+  }, [kind, id]);
 
-  async function resolveFromApi() {
-    const baseCandidates = [
-      `/media/${kind}/${id}/stream`,
-      `/media/${kind}/${id}/stream-url`,
-      `/media/${kind}/${id}/play`,
-      `/media/${kind}/${id}/sources`,
-      `/media/${kind}/${id}/stream?refresh=1`,
-      `/media/${kind}/${id}/stream-url?refresh=1`,
-      `/media/${kind}/${id}/play?refresh=1`,
-      `/xtream/stream-url?kind=${kind}&id=${id}`,
-    ];
-    for (const p of baseCandidates) {
-      const u = await probeJson(p);
-      if (u) return u;
-    }
-    return "";
-  }
-
-  // cherche un id xtream plausible dans n'importe quel niveau
-  function pickXtreamVodId(obj) {
-    let found = null;
-    const wanted = ["stream_id", "movie_id", "vod_id"];
-    (function walk(o) {
-      if (!o || found) return;
-      if (typeof o !== "object") return;
-      for (const k of Object.keys(o)) {
-        const v = o[k];
-        const key = k.toLowerCase();
-        if (wanted.includes(key) && Number.isFinite(+v) && +v > 0) {
-          found = String(+v);
-          return;
-        }
-        if (typeof v === "object") walk(v);
-      }
-    })(obj);
-    return found;
-  }
-
-  function pickPortalBase(raw) {
-    const s = (raw || "")
+  // --------- helpers Xtream ----------
+  const stripBase = (raw) =>
+    (raw || "")
       .replace(/\/player_api\.php.*$/i, "")
       .replace(/\/portal\.php.*$/i, "")
       .replace(/\/stalker_portal.*$/i, "")
       .replace(/\/(?:series|movie|live)\/.*$/i, "")
       .replace(/\/+$/g, "");
-    return s;
-  }
 
-  async function resolveXtreamUrlFallback() {
+  const norm = (s) =>
+    (s || "")
+      .toLowerCase()
+      .normalize("NFD").replace(/\p{Diacritic}/gu, "")
+      .replace(/[^\w\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  async function resolveFromXtreamAccount() {
+    if (kind !== "movie") return "";
+    // 1) récupère les creds Xtream
+    const st = await getJson("/xtream/status").catch(() => null);
+    if (!st?.linked) return "";
+
+    const base = stripBase(st.base_url || st.portal_url || st.url || st.server || st.api_url || "");
+    const user = st.username || st.user || st.login;
+    const pass = st.password || st.pass || st.pwd;
+    if (!base || !user || !pass) return "";
+
+    const api = `${base}/player_api.php?username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`;
+
+    // 2) récupère la liste des VOD
+    let rows = [];
     try {
-      const st = await getJson("/xtream/status");
-      if (!st?.linked) return "";
-
-      const portal = st.base_url || st.portal_url || st.url || st.server || st.api_url || "";
-      const base = pickPortalBase(portal);
-      const user = st.username || st.user || st.login;
-      const pass = st.password || st.pass || st.pwd;
-      if (!base || !user || !pass) return "";
-
-      // essayer d'extraire un id
-      const vid =
-        data?.xtream_id ||
-        data?.movie_id ||
-        data?.vod_id ||
-        data?.stream_id ||
-        data?.ids?.xtream ||
-        pickXtreamVodId(data);
-
-      if (!vid) return "";
-
-      if (kind === "movie") {
-        // HLS
-        return `${base}/movie/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${vid}.m3u8`;
-      }
-      return "";
-    } catch {
+      const res = await fetch(`${api}&action=get_vod_streams`, { mode: "cors" });
+      rows = (await res.json()) || [];
+    } catch (e) {
+      // Portail sans CORS → côté serveur, prévoir un proxy /xtream/proxy
       return "";
     }
+    if (!Array.isArray(rows) || rows.length === 0) return "";
+
+    // 3) match par tmdb_id puis par titre+année
+    const tmdbId = String(data?.tmdb_id || id || "").trim();
+    let hit =
+      rows.find((r) => String(r.tmdb_id || "").trim() === tmdbId) ||
+      (() => {
+        const wantTitle = norm(data?.title);
+        const wantYear =
+          (data?.release_date && String(data.release_date).slice(0, 4)) ||
+          String(data?.year || "");
+        // filtre titres identiques
+        let cands = rows.filter((r) => norm(r.name) === wantTitle);
+        // si possible, garde même année
+        if (wantYear) {
+          const yCands = cands.filter((r) => String(r.year || "") === String(wantYear));
+          if (yCands.length) cands = yCands;
+        }
+        return cands[0];
+      })();
+
+    if (!hit?.stream_id) return "";
+
+    // 4) construit l’URL HLS (forcée en .m3u8)
+    return `${base}/movie/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${hit.stream_id}.m3u8`;
   }
 
   async function startPlayback() {
-    if (kind !== "movie") return; // ici on ne gère que les films
+    if (kind !== "movie") return;
     setPlaying(true);
     setResolvingSrc(true);
     setPlayErr("");
     setSrc("");
 
     try {
-      let u =
-        data?.stream_url ||
-        data?.hls_url ||
-        data?.m3u8 ||
-        data?.url ||
-        (data?.playback && data.playback.src);
-
-      if (!u) u = await resolveFromApi();
-      if (!u) u = await resolveXtreamUrlFallback();
-
+      // Toujours prioriser Xtream (compte utilisateur)
+      const u = await resolveFromXtreamAccount();
       if (!u) throw new Error("no-src");
-
       setSrc(u);
     } catch (e) {
       setPlayErr(
-        "Impossible d’obtenir l’URL du flux. Aucune source trouvée dans l’API et aucun id Xtream exploitable."
+        "Impossible d’obtenir l’URL du flux via votre compte Xtream. Vérifiez le lien Xtream et, si besoin, activez un proxy côté serveur pour contourner CORS."
       );
     } finally {
       setResolvingSrc(false);
@@ -185,12 +141,13 @@ export default function Title() {
     );
   }
 
-  const hasTrailer = Boolean(data?.trailer?.embed_url);
   const posterSrc = data.poster_url || data.backdrop_url || "";
+  const hasTrailer = Boolean(data?.trailer?.embed_url);
   const resumeKey = kind === "movie" ? `movie:${id}` : undefined;
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
+      {/* Lecteur in-page */}
       {playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
           {resolvingSrc && (
@@ -209,18 +166,14 @@ export default function Title() {
           )}
           {!resolvingSrc && !src && playErr && (
             <div className="flex h-full w-full items-center justify-center p-4 text-center text-red-300">
-              <div>
-                <div>{playErr}</div>
-                <div className="mt-3">
-                  <Link className="underline" to={`/watch/${kind}/${id}`}>Essayer sur /watch</Link>
-                </div>
-              </div>
+              {playErr}
             </div>
           )}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
+        {/* Jaquette + overlay Play */}
         <button
           type="button"
           className="relative w-[220px] rounded-xl overflow-hidden group"
@@ -268,42 +221,14 @@ export default function Title() {
             )}
             <button
               className="btn disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={() => hasTrailer && setShowTrailer(true)}
+              onClick={() => hasTrailer && window.open(data?.trailer?.url, "_blank")}
               disabled={!hasTrailer}
             >
               ▶ Bande-annonce
             </button>
-            {hasTrailer ? (
-              <a className="btn" href={data.trailer.url} target="_blank" rel="noreferrer">
-                Ouvrir sur YouTube
-              </a>
-            ) : (
-              <span className="text-sm text-zinc-400">Pas de bande-annonce disponible</span>
-            )}
           </div>
         </div>
       </div>
-
-      {showTrailer && hasTrailer && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4"
-          onClick={() => setShowTrailer(false)}
-        >
-          <div
-            className="w-full max-w-4xl aspect-video overflow-hidden rounded-xl shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <iframe
-              src={`${data.trailer.embed_url}${data.trailer.embed_url.includes("?") ? "&" : "?"}autoplay=1&rel=0&modestbranding=1`}
-              title={data.trailer?.name || "Trailer"}
-              allow="autoplay; encrypted-media; picture-in-picture"
-              allowFullScreen
-              className="h-full w-full"
-            />
-          </div>
-          <button className="mt-4 btn" onClick={() => setShowTrailer(false)}>Fermer</button>
-        </div>
-      )}
     </div>
   );
 }
