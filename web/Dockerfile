@@ -1,23 +1,15 @@
-# --- Build ---
-FROM node:20-alpine AS build
+FROM node:20-alpine
 WORKDIR /app
 
-# Installe exactement selon package-lock.json (inclut shaka-player s’il est listé)
-COPY package.json package-lock.json ./
-RUN npm ci
+# Dépendances (on force la présence de shaka-player et on vérifie)
+COPY package.json package-lock.json* ./
+RUN npm pkg set dependencies.shaka-player="^4.9.6" \
+ && (npm ci || npm i) \
+ && node -e "console.log('shaka at:', require.resolve('shaka-player'))"
 
-# Build
+# Code + build
 COPY . .
 RUN npm run build
 
-# --- Runtime (serve statique) ---
-FROM node:20-alpine AS runtime
-WORKDIR /app
-ENV NODE_ENV=production
-
-# petit serveur statique avec fallback SPA
-RUN npm i -g serve
-COPY --from=build /app/dist ./dist
-
 EXPOSE 5173
-CMD ["serve", "-s", "dist", "-l", "5173", "-n"]
+CMD ["npm","run","preview","--","--host","0.0.0.0","--port","5173"]
