@@ -17,6 +17,14 @@ export default function Title() {
   const [src, setSrc] = useState("");
   const [playErr, setPlayErr] = useState("");
 
+  // reset état lecture quand on change de titre
+  useEffect(() => {
+    setPlaying(false);
+    setResolvingSrc(false);
+    setSrc("");
+    setPlayErr("");
+  }, [kind, id]);
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -39,10 +47,15 @@ export default function Title() {
       const st = await getJson("/xtream/status"); // doit contenir base + user/pass
       if (!st?.linked) return "";
 
-      const base =
-        (st.base_url || st.portal_url || st.url || "").replace(/\/player_api\.php.*$/i, "").replace(/\/+$/, "");
-      const user = st.username || st.user;
-      const pass = st.password || st.pass;
+      const portal =
+        st.base_url || st.portal_url || st.url || st.server || "";
+      const base = portal
+        .replace(/\/player_api\.php.*$/i, "")
+        .replace(/\/portal\.php.*$/i, "")
+        .replace(/\/stalker_portal.*$/i, "")
+        .replace(/\/+$/g, "");
+      const user = st.username || st.user || st.login;
+      const pass = st.password || st.pass || st.pwd;
       if (!base || !user || !pass) return "";
 
       // Essayer de deviner l’id Xtream du film
@@ -55,13 +68,12 @@ export default function Title() {
         id;
 
       if (!vid) return "";
-
       if (kind === "movie") {
-        // Beaucoup de portails exposent le HLS sur .m3u8 pour la VOD
         return `${base}/movie/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${vid}.m3u8`;
       }
       return "";
-    } catch {
+    } catch (e) {
+      console.debug("[xtream]", e);
       return "";
     }
   }
@@ -71,22 +83,26 @@ export default function Title() {
     setPlaying(true);
     setResolvingSrc(true);
     setPlayErr("");
+    setSrc("");
 
-    // 1) champs directs déjà présents
-    let u =
-      data?.stream_url || data?.hls_url || data?.m3u8 || data?.url || data?.playback?.src;
+    try {
+      // 1) champs directs
+      let u =
+        data?.stream_url || data?.hls_url || data?.m3u8 || data?.url || data?.playback?.src;
 
-    // 2) sinon, construire l’URL Xtream
-    if (!u) u = await resolveXtreamUrl();
+      // 2) sinon, construire l’URL Xtream
+      if (!u) u = await resolveXtreamUrl();
 
-    if (!u) {
+      if (!u) {
+        throw new Error("no-src");
+      }
+      setSrc(u);
+    } catch (e) {
+      console.warn("[play]", e);
       setPlayErr("Source vidéo introuvable sur le portail Xtream.");
-      setPlaying(false);
+    } finally {
       setResolvingSrc(false);
-      return;
     }
-    setSrc(u);
-    setResolvingSrc(false);
   }
 
   if (loading) {
@@ -120,10 +136,14 @@ export default function Title() {
           {!resolvingSrc && src && (
             <VideoPlayer src={src} poster={posterSrc} title={data.title} resumeKey={resumeKey} resumeApi />
           )}
-          {!resolvingSrc && playErr && (
-            <div className="p-4 text-center text-red-300">
-              {playErr}{" "}
-              <Link className="underline" to={`/watch/${kind}/${id}`}>Ouvrir /watch</Link>
+          {!resolvingSrc && !src && playErr && (
+            <div className="flex h-full w-full items-center justify-center p-4 text-center text-red-300">
+              <div>
+                <div>{playErr}</div>
+                <div className="mt-3">
+                  <Link className="underline" to={`/watch/${kind}/${id}`}>Essayer sur /watch</Link>
+                </div>
+              </div>
             </div>
           )}
         </div>
