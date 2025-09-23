@@ -1,26 +1,20 @@
 // web/src/components/PosterCard.jsx
 import { Link } from "react-router-dom";
+import { useCallback, useMemo } from "react";
+import { useMyListStatus, toggleMyList } from "../lib/mylist";
 
 export default function PosterCard({
   item,
-  kind = "vod", // "vod" films, "series" séries, "live" TV
+  kind = "vod",          // "vod" films, "series" séries, "live" TV
   showTitle = true,
 }) {
-  // Détermine le type depuis props OU depuis la donnée (TMDB: media_type)
-  const inferredKind =
-    kind === "series" || item?.series_id || item?.media_type === "tv" || item?.type === "tv"
-      ? "series"
-      : "movie";
+  const isSeries = kind === "series" || !!item?.series_id || item?.media_type === "tv" || item?.type === "tv";
+  const detKind = isSeries ? "series" : "movie";
 
-  // Couvre Xtream ET TMDB
-  const detId =
-    item?.series_id ??            // Xtream séries
-    item?.stream_id ??            // Xtream films
-    item?.tmdb_id ??              // mapping interne éventuel
-    item?.id ??                   // TMDB brut
-    null;
-
-  const clickable = (inferredKind === "movie" || inferredKind === "series") && !!detId;
+  // ID Xtream requis pour la page détail
+  const detId = isSeries
+    ? (item?.series_id ?? item?.id ?? item?.tmdb_id ?? null)
+    : (item?.stream_id ?? item?.id ?? item?.tmdb_id ?? null);
 
   const title =
     item?.name ||
@@ -38,13 +32,47 @@ export default function PosterCard({
     item?.icon ||
     item?.stream_icon ||
     item?.cover ||
+    item?.poster_path ||
     "";
 
   const aspect = kind === "live" ? "aspect-video" : "aspect-[2/3]";
+  const clickable = (detKind === "movie" || detKind === "series") && !!detId;
 
-  const content = (
+  // état "Ma Liste"
+  const saved = useMyListStatus(detKind, detId || "__nil__");
+
+  const onToggle = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!detId) return;
+    toggleMyList(detKind, detId, { title, img, raw: item });
+  }, [detKind, detId, title, img, item]);
+
+  const BookmarkIcon = useMemo(() => (
+    <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true">
+      {saved
+        ? <path fill="currentColor" d="M6 2h12a2 2 0 0 1 2 2v18l-8-4-8 4V4a2 2 0 0 1 2-2z"/>
+        : <path fill="currentColor" d="M6 2h12a2 2 0 0 1 2 2v18l-8-4-8 4V4a2 2 0 0 1 2-2zm0 2v14.764l6-3 6 3V4H6z"/>}
+    </svg>
+  ), [saved]);
+
+  const cardContent = (
     <>
       <div className={`relative ${aspect} w-full overflow-hidden rounded-xl bg-zinc-800`}>
+        {/* bouton signet */}
+        {detId && (
+          <button
+            type="button"
+            aria-label={saved ? "Retirer de Ma Liste" : "Ajouter à Ma Liste"}
+            aria-pressed={saved}
+            onClick={onToggle}
+            className={`absolute right-2 top-2 z-20 grid h-8 w-8 place-items-center rounded-full
+                        bg-black/50 backdrop-blur text-white transition
+                        ${saved ? "text-amber-400" : "hover:bg-black/70"}`}
+          >
+            {BookmarkIcon}
+          </button>
+        )}
         {img ? (
           <img
             src={img}
@@ -63,13 +91,15 @@ export default function PosterCard({
 
   return clickable ? (
     <Link
-      to={`/title/${inferredKind}/${encodeURIComponent(detId)}`}
+      to={`/title/${detKind}/${encodeURIComponent(detId)}`}
       className="block focus:outline-none focus:ring-2 focus:ring-white/40 rounded-xl"
       onDragStart={(e) => e.preventDefault()}
     >
-      {content}
+      {cardContent}
     </Link>
   ) : (
-    <div className="block" onDragStart={(e) => e.preventDefault()}>{content}</div>
+    <div className="block" onDragStart={(e) => e.preventDefault()}>
+      {cardContent}
+    </div>
   );
 }
