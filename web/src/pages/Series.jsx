@@ -1,106 +1,152 @@
 // web/src/pages/Series.jsx
-import { useEffect, useState, useCallback } from "react";
-import { getJson, postJson } from "../lib/api";
-import Row from "../components/Row.jsx";
-
-const CATS_BATCH = 30;
-const PER_CAT    = 15;
+import { useEffect, useState } from "react";
+import { useParams } from "react-router-dom";
+import { getJson } from "../lib/api";
 
 export default function Series() {
-  const [cats, setCats] = useState([]);
-  const [rows, setRows] = useState([]);
-  const [nextIndex, setNextIndex] = useState(0);
-  const [loadingCats, setLoadingCats] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const { id } = useParams();               // peut être TMDB id OU series_id Xtream
+  const [data, setData] = useState(null);
+  const [episodes, setEpisodes] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
 
   useEffect(() => {
     let alive = true;
-    (async () => {
-      try {
-        setErr(null);
-        setLoadingCats(true);
-        const list = await getJson("/xtream/series-categories");
-        if (!alive) return;
-        const safe = Array.isArray(list) ? list : [];
-        setCats(safe);
-        setRows([]);
-        setNextIndex(0);
-      } catch (e) {
-        if (!alive) return;
-        setErr(e?.message || "Erreur catégories séries");
-      } finally {
-        if (alive) setLoadingCats(false);
+    const ac = new AbortController();
+
+    const tryEndpoints = async () => {
+      setLoading(true); setErr(null);
+
+      // 1) TMDB (mapped)
+      const tmdbPaths = [
+        `/tmdb/tv/${id}-mapped`,
+        `/tmdb/tv/${id}`, // fallback si pas de -mapped
+      ];
+
+      // 2) Xtream
+      const xtreamPaths = [
+        `/xtream/series/${id}`,
+        `/xstream/series/${id}`, // selon ton naming
+      ];
+
+      const tryFetch = async (paths) => {
+        for (const p of paths) {
+          try {
+            const res = await getJson(p, { signal: ac.signal });
+            if (res && typeof res === "object") return res;
+          } catch (_) { /* continue */ }
+        }
+        return null;
+      };
+
+      // ordre: TMDB puis Xtream
+      let meta = await tryFetch(tmdbPaths);
+      let source = "tmdb";
+      if (!meta) {
+        meta = await tryFetch(xtreamPaths);
+        source = meta ? "xtream" : null;
       }
-    })();
-    return () => { alive = false; };
-  }, []);
+      if (!alive) return;
 
-  const loadMoreCats = useCallback(async () => {
-    if (loadingMore) return;
-    setLoadingMore(true);
-    const slice = cats.slice(nextIndex, nextIndex + CATS_BATCH);
+      if (!meta || !source) {
+        setErr("Aucune donnée série trouvée.");
+        setLoading(false);
+        return;
+      }
 
-    const settled = await Promise.allSettled(
-      slice.map(async (c) => {
-        const items = await postJson("/xtream/series", {
-          category_id: c.category_id,
-          limit: PER_CAT,
-        });
-        return {
-          id: String(c.category_id),
-          name: c.category_name || "Sans catégorie",
-          items: Array.isArray(items) ? items : [],
-        };
-      })
-    );
+      setData({ ...meta, __source: source });
 
-    const ok = settled
-      .filter((s) => s.status === "fulfilled")
-      .map((s) => s.value)
-      .filter((r) => r.items.length > 0);
+      // Episodes
+      try {
+        if (source === "tmdb") {
+          // si ton mapping inclut déjà les saisons/épisodes, ajuste ici
+          // sinon, charge une saison par défaut (ex: 1)
+          const s1 = await getJson(`/tmdb/tv/${id}/season/1-mapped`, { signal: ac.signal });
+          if (Array.isArray(s1?.episodes)) setEpisodes(s1.episodes);
+        } else {
+          // Xtream: liste d’épisodes par series_id
+          const eps = await getJson(`/xtream/series/${id}/episodes`, { signal: ac.signal });
+          if (Array.isArray(eps)) setEpisodes(eps);
+        }
+      } catch {
+        // tolérant
+      } finally {
+        if (alive) setLoading(false);
+      }
+    };
 
-    setRows((prev) => [...prev, ...ok]);
-    setNextIndex((i) => i + slice.length);
-    setLoadingMore(false);
-  }, [cats, nextIndex, loadingMore]);
+    tryEndpoints();
+    return () => { alive = false; ac.abort(); };
+  }, [id]);
 
-  useEffect(() => {
-    if (!loadingCats && cats.length > 0 && nextIndex === 0) {
-      loadMoreCats();
-    }
-  }, [loadingCats, cats, nextIndex, loadMoreCats]);
+  if (loading) return <div className="p-6 text-zinc-300">Chargement…</div>;
+  if (err) return <div className="p-6 text-red-400">{err}</div>;
+  if (!data) return null;
+
+  const title = data.name || data.title || data.original_name || "Série";
+  const overview = data.overview || data.plot || data.description || "";
+
+  // Bande-annonce
+  let trailerUrl = data.trailer_url || "";
+  if (!trailerUrl && Array.isArray(data.videos)) {
+    const yt = data.videos.find(v => (v.site === "YouTube" || v.host === "YouTube") && (v.type === "Trailer" || v.kind === "Trailer"));
+    if (yt?.key) trailerUrl = `https://www.youtube.com/watch?v=${yt.key}`;
+  }
 
   return (
-    <>
-      <h1 className="mb-4 text-2xl font-bold">Séries</h1>
-      {err && <div className="mb-4 rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
+    <div className="px-4 md:px-8 lg:px-12 py-6">
+      <div className="flex gap-6">
+        {data.poster_path || data.poster ? (
+          <img
+            src={data.poster || data.poster_path}
+            alt={title}
+            className="w-40 md:w-48 lg:w-56 rounded-xl object-cover"
+            loading="lazy"
+          />
+        ) : null}
 
-      {rows.length === 0 && (loadingCats || loadingMore) && (
-        <Row title="Chargement…" loading />
-      )}
+        <div className="flex-1">
+          <h1 className="text-2xl md:text-3xl font-bold text-white">{title}</h1>
+          <p className="mt-3 text-zinc-300 whitespace-pre-line">{overview}</p>
 
-      {rows.map((g) => (
-        <Row
-          key={`cat-${g.id}`}
-          title={g.name}
-          items={g.items}
-          kind="series"
-          seeMoreHref={`/series/category/${g.id}?name=${encodeURIComponent(g.name)}`}
-        />
-      ))}
-
-      {nextIndex < cats.length && (
-        <div className="mt-6 flex justify-center">
-          <button
-            onClick={loadMoreCats}
-            className="rounded-lg bg-zinc-800 px-4 py-2 text-sm text-zinc-200 ring-1 ring-white/10 hover:bg-zinc-700"
-            disabled={loadingMore}
-          >
-            {loadingMore ? "Chargement…" : "Voir plus de catégories"}
-          </button>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            {trailerUrl ? (
+              <a
+                href={trailerUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center rounded-lg bg-white/10 px-4 py-2 text-sm text-white hover:bg-white/20"
+              >
+                Bande-annonce
+              </a>
+            ) : (
+              <span className="text-sm text-zinc-400">Pas de bande-annonce disponible</span>
+            )}
+          </div>
         </div>
-      )}
-    </>
+      </div>
+
+      <div className="mt-8">
+        <h2 className="text-xl font-semibold text-white mb-3">Épisodes</h2>
+        {episodes.length === 0 ? (
+          <div className="text-zinc-400 text-sm">Aucun épisode trouvé.</div>
+        ) : (
+          <ul className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {episodes.map((ep) => {
+              const epTitle = ep.name || ep.title || `Épisode ${ep.episode_number || ""}`;
+              const thumb = ep.still_path || ep.image || ep.thumbnail || "";
+              return (
+                <li key={ep.id || `${ep.season_number}-${ep.episode_number}-${epTitle}`}>
+                  <div className="rounded-lg overflow-hidden bg-zinc-800">
+                    {thumb ? <img src={thumb} alt={epTitle} className="w-full aspect-video object-cover" loading="lazy" /> : <div className="w-full aspect-video bg-zinc-700" />}
+                  </div>
+                  <div className="mt-1 text-sm text-zinc-200 line-clamp-2">{epTitle}</div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </div>
   );
 }
