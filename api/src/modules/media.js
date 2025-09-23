@@ -3,7 +3,6 @@ import { Router } from "express";
 import { Pool } from "pg";
 import crypto from "crypto";
 import { Readable } from "node:stream";
-import { Agent } from "undici";
 
 const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -11,8 +10,6 @@ pool.on("error", (e) => console.error("[PG ERROR]", e));
 
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600); // 7 jours
-const INSECURE = process.env.XTREAM_INSECURE_TLS === "1";
-const dispatcher = INSECURE ? new Agent({ connect: { rejectUnauthorized: false } }) : undefined;
 
 /* ================= Crypto (même schéma que xtream.js) ================= */
 function getKey() {
@@ -102,7 +99,7 @@ async function fetchWithTimeout(url, ms = 12000, headers = {}, init = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
-    const r = await fetch(url, { signal: ctrl.signal, headers, dispatcher, ...init });
+    const r = await fetch(url, { signal: ctrl.signal, headers, ...init });
     return r;
   } finally { clearTimeout(t); }
 }
@@ -262,7 +259,7 @@ function formatSeriesPayload(xtreamId, det) {
   };
 }
 
-/* ================= Resolvers (métadonnées) ================= */
+/* ================= Resolvers ================= */
 async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
   if (!refresh) {
     const cached = await getCache("movie", vodId);
@@ -328,7 +325,7 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
   if (!refresh) {
     const cached = await getCache("series", seriesId);
     if (cached && cached.data && !(cached.data.tmdb_id) && !(cached.data.vote_average) && !(cached.data.overview)) {
-      // upgrade possible
+      // essayer upgrade
     } else if (cached && cached.data) {
       return cached.data;
     }
@@ -649,37 +646,32 @@ router.get("/series/:seriesId/season/:s/episode/:e/stream-url", async (req, res,
   } catch (e) { next(e); }
 });
 
-/* ================= TMDB → lecture Xtream ================= */
+/* ================= Résolution TMDB → lecture Xtream ================= */
+// Trouve le stream_id Xtream d’un film à partir d’un tmdb_id
 async function findVodByTmdb(userId, tmdbId) {
   const creds = await getCreds(userId);
   if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
 
   const det = await tmdbDetails("movie", Number(tmdbId));
+  const wantedTitles = Array.from(new Set([det?.title, det?.original_title, det?.original_name].filter(Boolean)));
   const wantedYear = Number((det?.release_date || "").slice(0, 4)) || undefined;
-  const wantedTitles = Array.from(new Set(
-    [det?.title, det?.original_title, det?.original_name]
-      .filter(Boolean)
-      .flatMap(t => [t, stripTitle(t)])
-  ));
 
   const listUrl = buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_streams");
-  const raw = await fetchJson(listUrl);
-  const items = Array.isArray(raw) ? raw : (raw?.movie_list || raw?.vod_list || []);
-  if (!Array.isArray(items) || !items.length) throw Object.assign(new Error("empty-list"), { status: 404 });
+  const rawList = await fetchJson(listUrl);
+  const list = Array.isArray(rawList) ? rawList : (rawList?.movie_list || []);
 
-  function scoreName(name) {
-    const n = name || "";
+  function scoreCand(name) {
     let s = 0;
-    for (const t of wantedTitles) s = Math.max(s, similarity(t, n));
-    const y = yearFromStrings(n);
-    if (wantedYear && y) s += (1 - Math.min(Math.abs(wantedYear - y) * 0.05, 0.5)) * 0.1;
+    for (const t of wantedTitles) s = Math.max(s, similarity(t, name));
+    const y = yearFromStrings(name);
+    if (wantedYear && y) s -= Math.min(Math.abs(wantedYear - y) * 0.03, 0.3);
     return s;
   }
 
-  const ranked = items
-    .map(x => ({ ...x, _name: x.name || x.title || x.stream_display_name || "", _score: scoreName(x.name || x.title || "") }))
+  const ranked = list
+    .map(x => ({ ...x, _score: scoreCand(x.name || x.title || "") }))
     .sort((a, b) => b._score - a._score)
-    .slice(0, 25);
+    .slice(0, 8);
 
   for (const cand of ranked) {
     try {
@@ -691,19 +683,11 @@ async function findVodByTmdb(userId, tmdbId) {
     } catch {}
   }
 
-  const THRESH = 0.20;
-  for (const cand of ranked) {
-    if (cand._score < THRESH) break;
-    const url = await firstReachable(
-      streamCandidates(creds.baseUrl, creds.username, creds.password, "movie", cand.stream_id).filter(u => u.endsWith(".m3u8") || u.endsWith(".mp4")),
-      { "User-Agent": "VLC/3.0" }
-    );
-    if (url) return { streamId: String(cand.stream_id) };
-  }
-
+  if (ranked[0]?._score >= 0.35) return { streamId: String(ranked[0].stream_id) };
   throw Object.assign(new Error("no-match"), { status: 404 });
 }
 
+// Routes TMDB → HLS / file (lecture Xtream)
 router.get("/movie/tmdb/:tmdbId/hls.m3u8", async (req, res, next) => {
   try {
     const { streamId } = await findVodByTmdb(req.user?.sub, req.params.tmdbId);
@@ -716,41 +700,6 @@ router.get("/movie/tmdb/:tmdbId/file", async (req, res, next) => {
     const { streamId } = await findVodByTmdb(req.user?.sub, req.params.tmdbId);
     req.url = `/api/media/movie/${streamId}/file`;
     return router.handle(req, res, next);
-  } catch (e) { next(e); }
-});
-
-/* ================= Debug matching TMDB ================= */
-router.get("/debug/tmdb/:tmdbId", async (req, res, next) => {
-  try {
-    const creds = await getCreds(req.user?.sub);
-    if (!creds) return res.status(404).json({ error: "no-xtream" });
-
-    const det = await tmdbDetails("movie", Number(req.params.tmdbId));
-    const wantedYear = Number((det?.release_date || "").slice(0, 4)) || undefined;
-    const wanted = Array.from(new Set([det?.title, det?.original_title, det?.original_name].filter(Boolean)
-      .flatMap(t => [t, stripTitle(t)])));
-
-    const listUrl = buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_streams");
-    const raw = await fetchJson(listUrl);
-    const items = Array.isArray(raw) ? raw : (raw?.movie_list || raw?.vod_list || []);
-
-    function scoreName(name) {
-      let s = 0; for (const t of wanted) s = Math.max(s, similarity(t, name || ""));
-      const y = yearFromStrings(name || "");
-      if (wantedYear && y) s += (1 - Math.min(Math.abs(wantedYear - y) * 0.05, 0.5)) * 0.1;
-      return Number(s.toFixed(4));
-    }
-
-    const top = (items || []).map(x => ({
-      stream_id: x.stream_id,
-      name: x.name || x.title || x.stream_display_name || "",
-      year_hint: yearFromStrings(x.name || x.title || null),
-      score: scoreName(x.name || x.title || ""),
-    }))
-    .sort((a,b)=>b.score-a.score)
-    .slice(0, 25);
-
-    res.json({ tmdb: { id: det?.id, title: det?.title, year: wantedYear }, top });
   } catch (e) { next(e); }
 });
 
