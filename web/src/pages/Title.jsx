@@ -39,14 +39,14 @@ export default function Title() {
     );
   }
 
-  const isMovie = kind === "movie";
   const hasTrailer = Boolean(data?.trailer?.embed_url);
+  const posterSrc = data.poster_url || data.backdrop_url || "";
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
         <img
-          src={data.poster_url || data.backdrop_url || ""}
+          src={posterSrc}
           alt={data.title || ""}
           className="w-[220px] rounded-xl object-cover"
           draggable={false}
@@ -64,32 +64,30 @@ export default function Title() {
             <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>
           )}
 
-          {/* Bouton / message bande-annonce pour les films */}
-          {isMovie && (
-            <div className="mt-6 flex items-center gap-3">
-              <button
-                className="btn disabled:opacity-50 disabled:cursor-not-allowed"
-                onClick={() => hasTrailer && setShowTrailer(true)}
-                disabled={!hasTrailer}
-                title={hasTrailer ? "Voir la bande-annonce" : "Bande-annonce indisponible"}
+          {/* Bande-annonce pour films ET séries */}
+          <div className="mt-6 flex items-center gap-3">
+            <button
+              className="btn disabled:opacity-50 disabled:cursor-not-allowed"
+              onClick={() => hasTrailer && setShowTrailer(true)}
+              disabled={!hasTrailer}
+              title={hasTrailer ? "Voir la bande-annonce" : "Bande-annonce indisponible"}
+            >
+              ▶ Bande-annonce
+            </button>
+            {hasTrailer ? (
+              <a
+                className="btn"
+                href={data.trailer.url}
+                target="_blank"
+                rel="noreferrer"
+                title="Ouvrir sur YouTube"
               >
-                ▶ Bande-annonce
-              </button>
-              {hasTrailer ? (
-                <a
-                  className="btn"
-                  href={data.trailer.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  title="Ouvrir sur YouTube"
-                >
-                  Ouvrir sur YouTube
-                </a>
-              ) : (
-                <span className="text-sm text-zinc-400">Pas de bande-annonce disponible</span>
-              )}
-            </div>
-          )}
+                Ouvrir sur YouTube
+              </a>
+            ) : (
+              <span className="text-sm text-zinc-400">Pas de bande-annonce disponible</span>
+            )}
+          </div>
         </div>
       </div>
 
