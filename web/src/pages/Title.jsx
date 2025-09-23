@@ -17,7 +17,6 @@ export default function Title() {
   const [src, setSrc] = useState("");
   const [playErr, setPlayErr] = useState("");
 
-  // reset état lecture quand on change de titre
   useEffect(() => {
     setPlaying(false);
     setResolvingSrc(false);
@@ -41,15 +40,51 @@ export default function Title() {
     return () => { alive = false; };
   }, [kind, id]);
 
-  // --- Résolution URL Xtream (client-side) ---
-  async function resolveXtreamUrl() {
+  // ---- helpers de résolution ----
+  async function probeJson(path) {
     try {
-      const st = await getJson("/xtream/status"); // doit contenir base + user/pass
+      const j = await getJson(path);
+      if (!j) return null;
+      if (typeof j === "string" && /^https?:/i.test(j)) return j;
+      return (
+        j.url ||
+        j.stream_url ||
+        j.hls_url ||
+        j.m3u8 ||
+        j.src ||
+        (typeof j.playback === "object" ? j.playback.src : null) ||
+        null
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  async function resolveFromApi() {
+    const baseCandidates = [
+      `/media/${kind}/${id}/stream`,
+      `/media/${kind}/${id}/stream-url`,
+      `/media/${kind}/${id}/play`,
+      `/media/${kind}/${id}/stream?refresh=1`,
+      `/media/${kind}/${id}/stream-url?refresh=1`,
+      `/media/${kind}/${id}/play?refresh=1`,
+      `/xtream/stream-url?kind=${kind}&id=${id}`,
+    ];
+    for (const p of baseCandidates) {
+      const u = await probeJson(p);
+      if (u) return u;
+    }
+    return "";
+  }
+
+  async function resolveXtreamUrlFallback() {
+    try {
+      const st = await getJson("/xtream/status");
       if (!st?.linked) return "";
 
       const portal =
         st.base_url || st.portal_url || st.url || st.server || "";
-      const base = portal
+      const base = (portal || "")
         .replace(/\/player_api\.php.*$/i, "")
         .replace(/\/portal\.php.*$/i, "")
         .replace(/\/stalker_portal.*$/i, "")
@@ -58,48 +93,52 @@ export default function Title() {
       const pass = st.password || st.pass || st.pwd;
       if (!base || !user || !pass) return "";
 
-      // Essayer de deviner l’id Xtream du film
+      // deviner un id xtream depuis les données
       const vid =
         data?.xtream_id ||
         data?.movie_id ||
         data?.vod_id ||
         data?.stream_id ||
         data?.ids?.xtream ||
-        id;
+        null;
+      if (!vid || kind !== "movie") return "";
 
-      if (!vid) return "";
-      if (kind === "movie") {
-        return `${base}/movie/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${vid}.m3u8`;
-      }
-      return "";
-    } catch (e) {
-      console.debug("[xtream]", e);
+      return `${base}/movie/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${vid}.m3u8`;
+    } catch {
       return "";
     }
   }
 
   async function startPlayback() {
-    if (kind !== "movie") return; // on garde simple pour l’instant
+    if (kind !== "movie") return; // limiter ici aux films
     setPlaying(true);
     setResolvingSrc(true);
     setPlayErr("");
     setSrc("");
 
     try {
-      // 1) champs directs
+      // 1) champs directs du payload /media
       let u =
-        data?.stream_url || data?.hls_url || data?.m3u8 || data?.url || data?.playback?.src;
+        data?.stream_url ||
+        data?.hls_url ||
+        data?.m3u8 ||
+        data?.url ||
+        (data?.playback && data.playback.src);
 
-      // 2) sinon, construire l’URL Xtream
-      if (!u) u = await resolveXtreamUrl();
+      // 2) endpoints backend connus
+      if (!u) u = await resolveFromApi();
 
-      if (!u) {
-        throw new Error("no-src");
-      }
+      // 3) fallback xtream local si id présent
+      if (!u) u = await resolveXtreamUrlFallback();
+
+      if (!u) throw new Error("no-src");
+
       setSrc(u);
     } catch (e) {
       console.warn("[play]", e);
-      setPlayErr("Source vidéo introuvable sur le portail Xtream.");
+      setPlayErr(
+        "Impossible d’obtenir l’URL du flux. Vérifiez que l’API expose /media/:kind/:id/(stream|stream-url|play) ou fournisse un id Xtream."
+      );
     } finally {
       setResolvingSrc(false);
     }
@@ -125,7 +164,7 @@ export default function Title() {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
-      {/* Player en haut quand lecture */}
+      {/* lecteur en haut si lecture */}
       {playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
           {resolvingSrc && (
@@ -134,7 +173,13 @@ export default function Title() {
             </div>
           )}
           {!resolvingSrc && src && (
-            <VideoPlayer src={src} poster={posterSrc} title={data.title} resumeKey={resumeKey} resumeApi />
+            <VideoPlayer
+              src={src}
+              poster={posterSrc}
+              title={data.title}
+              resumeKey={resumeKey}
+              resumeApi
+            />
           )}
           {!resolvingSrc && !src && playErr && (
             <div className="flex h-full w-full items-center justify-center p-4 text-center text-red-300">
@@ -150,7 +195,7 @@ export default function Title() {
       )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
-        {/* Vignette + overlay Play */}
+        {/* miniature + overlay play */}
         <button
           type="button"
           className="relative w-[220px] rounded-xl overflow-hidden group"
@@ -158,7 +203,12 @@ export default function Title() {
           disabled={kind !== "movie"}
           title={kind === "movie" ? "Regarder" : "Lecture non disponible ici"}
         >
-          <img src={posterSrc} alt={data.title || ""} className="w-[220px] h-full object-cover" draggable={false} />
+          <img
+            src={posterSrc}
+            alt={data.title || ""}
+            className="w-[220px] h-full object-cover"
+            draggable={false}
+          />
           {kind === "movie" && (
             <div className="absolute inset-0 grid place-items-center bg-black/0 group-hover:bg-black/40 transition">
               <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-black text-sm">
@@ -174,13 +224,20 @@ export default function Title() {
         <div>
           <h1 className="text-2xl font-bold">{data.title}</h1>
           {data.vote_average != null && (
-            <div className="mt-1 text-sm text-zinc-300">Note TMDB&nbsp;: {Number(data.vote_average).toFixed(1)}/10</div>
+            <div className="mt-1 text-sm text-zinc-300">
+              Note TMDB&nbsp;: {Number(data.vote_average).toFixed(1)}/10
+            </div>
           )}
-          {data.overview && <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>}
+          {data.overview && (
+            <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>
+          )}
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
             {kind === "movie" && (
-              <button className="btn bg-emerald-600 text-white hover:bg-emerald-500" onClick={startPlayback}>
+              <button
+                className="btn bg-emerald-600 text-white hover:bg-emerald-500"
+                onClick={startPlayback}
+              >
                 ▶ Regarder
               </button>
             )}
@@ -192,7 +249,9 @@ export default function Title() {
               ▶ Bande-annonce
             </button>
             {hasTrailer ? (
-              <a className="btn" href={data.trailer.url} target="_blank" rel="noreferrer">Ouvrir sur YouTube</a>
+              <a className="btn" href={data.trailer.url} target="_blank" rel="noreferrer">
+                Ouvrir sur YouTube
+              </a>
             ) : (
               <span className="text-sm text-zinc-400">Pas de bande-annonce disponible</span>
             )}
@@ -200,9 +259,16 @@ export default function Title() {
         </div>
       </div>
 
+      {/* modale trailer */}
       {showTrailer && hasTrailer && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4" onClick={() => setShowTrailer(false)}>
-          <div className="w-full max-w-4xl aspect-video overflow-hidden rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4"
+          onClick={() => setShowTrailer(false)}
+        >
+          <div
+            className="w-full max-w-4xl aspect-video overflow-hidden rounded-xl shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
             <iframe
               src={`${data.trailer.embed_url}${data.trailer.embed_url.includes("?") ? "&" : "?"}autoplay=1&rel=0&modestbranding=1`}
               title={data.trailer?.name || "Trailer"}
