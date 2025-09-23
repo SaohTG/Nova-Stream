@@ -124,18 +124,6 @@ export default function TopRow() {
   }, []);
   const onPointerUp   = useCallback(() => end(), []);
 
-  // Molette: horizontal explicite => carrousel; sinon, laisser défiler la page
-  const onWheel = useCallback((e) => {
-    const el = trackRef.current; if (!el) return;
-    const ax = Math.abs(e.deltaX), ay = Math.abs(e.deltaY);
-    const horizontalIntent = e.shiftKey || ax >= ay * 2 || (ax > 12 && ay < 3);
-    if (!horizontalIntent) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const dx = ax ? e.deltaX : (e.deltaY > 0 ? 120 : -120);
-    el.scrollBy({ left: dx, behavior: "auto" });
-  }, []);
-
   const onClickCapture = useCallback((e) => {
     if (hasDragged.current || performance.now() < blockClickUntil.current) {
       e.preventDefault(); e.stopPropagation();
@@ -177,7 +165,6 @@ export default function TopRow() {
           onPointerUp={onPointerUp}
           onPointerLeave={onPointerUp}
           onPointerCancel={onPointerUp}
-          onWheel={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
           role="region"
