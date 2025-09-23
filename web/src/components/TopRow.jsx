@@ -135,12 +135,12 @@ export default function TopRow() {
   }, []);
   const onTouchEnd   = useCallback(() => end(), []);
 
-  // Molette: horizontal => carrousel; vertical => laisser la page défiler
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
     const ax = Math.abs(e.deltaX);
     const ay = Math.abs(e.deltaY);
-    if (e.shiftKey || ax > ay) {
+    const horizontalIntent = e.shiftKey || ax >= ay * 1.5 || (ax > 10 && ay < 4);
+    if (horizontalIntent) {
       e.preventDefault();
       e.stopPropagation();
       const dx = ax ? e.deltaX : (e.deltaY > 0 ? 120 : -120);
