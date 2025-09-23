@@ -112,7 +112,11 @@ async function fetchJson(url) {
 /* ================= Matching helpers ================= */
 function stripTitle(raw = "") {
   let s = String(raw);
-  s = s.replace(/[._]/g, " ");
+  // retire tags langue/pays au début et séparateurs
+  s = s.replace(/^\s*\|?[A-Z]{2}\|\s*/g, " ");      // |FR|, |EN|
+  s = s.replace(/^\s*\[(?:VF|VOSTFR|FR|TRUEFRENCH)\]\s*/gi, " ");
+  s = s.replace(/[|._]/g, " ");
+  s = s.replace(/\s-\s/g, " ");
   s = s.replace(/\[[^\]]*\]|\([^\)]*\)/g, " ");
   s = s.replace(/\b(19|20)\d{2}\b/g, " ");
   s = s.replace(/\bS\d{1,2}E\d{1,2}\b/gi, " ");
@@ -310,9 +314,8 @@ async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
 async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
   if (!refresh) {
     const cached = await getCache("series", seriesId);
-    // si le cache est “vide” (xtream_only) on tente une upgrade
     if (cached && cached.data && !(cached.data.tmdb_id) && !(cached.data.vote_average) && !(cached.data.overview)) {
-      // continue pour tenter TMDB
+      // continuer pour tenter TMDB
     } else if (cached && cached.data) {
       return cached.data;
     }
@@ -327,7 +330,7 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
 
   let tmdbId = Number(info?.info?.tmdb_id || 0) || null;
 
-  // titre Xtream: couvrir plus de variantes
+  // Variantes de titre Xtream
   const anyEpisodeTitle = (() => {
     const epObj = info?.episodes || {};
     const seasons = Object.keys(epObj);
@@ -339,7 +342,7 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
     return "";
   })();
 
-  let titleCand =
+  const rawTitle =
     info?.info?.name ||
     info?.info?.series_name ||
     info?.info?.o_name ||
@@ -347,14 +350,26 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
     anyEpisodeTitle ||
     "";
 
+  // Année candidate
   const yearCand =
     Number(info?.info?.releasedate?.slice?.(0, 4)) ||
     Number(info?.info?.releaseDate?.slice?.(0, 4)) ||
     Number(info?.info?.first_air_date?.slice?.(0, 4)) ||
-    yearFromStrings(info?.info?.releasedate, info?.info?.releaseDate, info?.info?.first_air_date, titleCand);
+    yearFromStrings(info?.info?.releasedate, info?.info?.releaseDate, info?.info?.first_air_date, rawTitle);
 
-  if (!tmdbId && TMDB_KEY && titleCand) {
-    const queries = [titleCand, stripTitle(titleCand)];
+  // Prépare plusieurs requêtes de recherche robustes
+  const noLang = rawTitle.replace(/^\s*\|?[A-Z]{2}\|\s*/g, " ").trim(); // retire |FR|
+  const lastSeg = rawTitle.split(" - ").pop().trim();
+  const queries = Array.from(new Set([
+    rawTitle,
+    noLang,
+    lastSeg,
+    stripTitle(rawTitle),
+    stripTitle(noLang),
+    stripTitle(lastSeg),
+  ])).filter(Boolean);
+
+  if (!tmdbId && TMDB_KEY && queries.length) {
     let best = null;
 
     // TV direct
@@ -367,7 +382,7 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
     }
 
     // fallback multi
-    if (!best || best.score <= 0.2) {
+    if (!best || best.score <= 0.1) {
       for (const q of queries) {
         const sr = await tmdbSearchMulti(q);
         const tvOnly = (sr?.results || []).filter((r) => r.media_type === "tv");
@@ -378,14 +393,14 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
       }
     }
 
-    if (best && best.score > 0.2) tmdbId = best.r.id;
+    if (best && best.score > 0.1) tmdbId = best.r.id;
   }
 
   if (!tmdbId) {
     const payload = {
       kind: "series",
       xtream_id: String(seriesId),
-      title: titleCand || null,
+      title: stripTitle(rawTitle) || null,
       overview: null,
       vote_average: null,
       poster_url: null,
@@ -393,7 +408,7 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
       trailer: null,
       source: { xtream_only: true, info },
     };
-    await putCache("series", seriesId, null, titleCand || null, payload);
+    await putCache("series", seriesId, null, stripTitle(rawTitle) || null, payload);
     return payload;
   }
 
