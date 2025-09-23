@@ -1,5 +1,10 @@
 version: "3.9"
 
+# IMPORTANT NPM:
+# - Proxy Host app.lorna.tv -> Forward SCHEME=http, HOST=<server ip>, PORT=8081
+# - Custom location /api -> SCHEME=http, HOST=<server ip>, PORT=4000
+# - Ne PAS activer SSL Passthrough. Cert LE côté NPM seulement.
+
 services:
   db:
     image: postgres:16-alpine
@@ -24,6 +29,7 @@ services:
       API_PORT: 4000
       HOST: 0.0.0.0
       TZ: Europe/Brussels
+      # Autoriser le front derrière NPM
       CORS_ORIGIN: https://app.lorna.tv,https://lector.lorna.tv,http://85.31.239.110:5173
       COOKIE_SECURE: "true"
       COOKIE_SAMESITE: none
@@ -35,6 +41,7 @@ services:
       API_JWT_ACCESS_TTL: "900"
       API_JWT_REFRESH_TTL: "1209600"
       API_ENCRYPTION_KEY: "a1b2c3d4e5f60718293a4bc5de6f70819a2b3c4d5e6f7a801f2e3d4c9b8a7c6d"
+      # Si Xtream en HTTPS auto-signé:
       XTREAM_INSECURE_TLS: "1"
     command:
       - sh
@@ -49,11 +56,13 @@ services:
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/api/. /app
         npm install --include=dev --no-audit --no-fund
-        npm i undici@^6 --no-audit --no-fund        # ← corrige l’erreur "Cannot find package 'undici'"
+        npm i undici@^6 --no-audit --no-fund
         npm run build
         node dist/main.js
     depends_on:
       - db
+    # Option: limiter à l’hôte si NPM tourne sur le même hôte (sinon garder 0.0.0.0)
+    # ports: ["127.0.0.1:4000:4000"]
     ports:
       - "4000:4000"
     networks: [webnet]
@@ -100,12 +109,18 @@ services:
           root /usr/share/nginx/html;
           index index.html;
           charset utf-8;
-          location / { try_files $uri $uri/ /index.html; }
+
+          # SPA
+          location / {
+            try_files $uri $uri/ /index.html;
+          }
         }
         NGINX
         nginx -g 'daemon off;'
     depends_on:
       - api
+    # Option: limiter à l’hôte si NPM sur le même hôte
+    # ports: ["127.0.0.1:8081:8081"]
     ports:
       - "8081:8081"
     networks: [webnet]
