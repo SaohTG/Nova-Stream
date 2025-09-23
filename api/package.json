@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=20" },
   "scripts": {
-    "dev": "node --watch src/main.js",
-    "build": "node build.mjs",
+    "build": "esbuild src/main.js --bundle --platform=node --format=esm --outfile=dist/main.js",
     "start": "node dist/main.js",
-    "health": "node healthcheck.js"
+    "dev": "node --watch dist/main.js || nodemon src/main.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -18,6 +18,9 @@
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "pg": "^8.12.0",
-    "zod": "^3.23.8"
+    "undici": "^6.19.8"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.5"
   }
 }
