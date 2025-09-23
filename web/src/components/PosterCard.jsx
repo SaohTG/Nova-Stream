@@ -3,12 +3,24 @@ import { Link } from "react-router-dom";
 
 export default function PosterCard({
   item,
-  kind = "vod",          // "vod" for films, "series" for series, "live" for TV
+  kind = "vod", // "vod" films, "series" séries, "live" TV
   showTitle = true,
 }) {
-  const isSeries = kind === "series" || !!item?.series_id;
-  const detKind = isSeries ? "series" : "movie";
-  const detId = item?.series_id || item?.stream_id; // requis pour la page détail
+  // Détermine le type depuis props OU depuis la donnée (TMDB: media_type)
+  const inferredKind =
+    kind === "series" || item?.series_id || item?.media_type === "tv" || item?.type === "tv"
+      ? "series"
+      : "movie";
+
+  // Couvre Xtream ET TMDB
+  const detId =
+    item?.series_id ??            // Xtream séries
+    item?.stream_id ??            // Xtream films
+    item?.tmdb_id ??              // mapping interne éventuel
+    item?.id ??                   // TMDB brut
+    null;
+
+  const clickable = (inferredKind === "movie" || inferredKind === "series") && !!detId;
 
   const title =
     item?.name ||
@@ -39,6 +51,7 @@ export default function PosterCard({
             alt={title || "Affiche"}
             className="h-full w-full object-cover"
             draggable={false}
+            loading="lazy"
           />
         ) : null}
       </div>
@@ -48,20 +61,15 @@ export default function PosterCard({
     </>
   );
 
-  // Lien actif uniquement pour films/séries avec un id Xtream disponible
-  const clickable = (kind === "vod" || kind === "series") && !!detId;
-
   return clickable ? (
     <Link
-      to={`/title/${detKind}/${detId}`}
+      to={`/title/${inferredKind}/${encodeURIComponent(detId)}`}
       className="block focus:outline-none focus:ring-2 focus:ring-white/40 rounded-xl"
       onDragStart={(e) => e.preventDefault()}
     >
       {content}
     </Link>
   ) : (
-    <div className="block" onDragStart={(e) => e.preventDefault()}>
-      {content}
-    </div>
+    <div className="block" onDragStart={(e) => e.preventDefault()}>{content}</div>
   );
 }
