@@ -49,6 +49,7 @@ services:
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/api/. /app
         npm install --include=dev --no-audit --no-fund
+        npm i undici@^6 --no-audit --no-fund        # ← corrige l’erreur "Cannot find package 'undici'"
         npm run build
         node dist/main.js
     depends_on:
