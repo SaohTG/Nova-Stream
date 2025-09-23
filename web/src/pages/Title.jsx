@@ -1,7 +1,8 @@
 // web/src/pages/Title.jsx
 import { useEffect, useState } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { getJson } from "../lib/api";
+import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
 export default function Title() {
   const { kind, id } = useParams(); // "movie" | "series"
@@ -10,12 +11,18 @@ export default function Title() {
   const [loading, setLoading] = useState(true);
   const [showTrailer, setShowTrailer] = useState(false);
 
+  // lecture in-page
+  const [playing, setPlaying] = useState(false);
+  const [resolvingSrc, setResolvingSrc] = useState(false);
+  const [src, setSrc] = useState("");
+  const [playErr, setPlayErr] = useState("");
+
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        // Forcer l’upgrade TMDB pour les séries afin d’avoir overview, note, etc.
-        const url = kind === "series" ? `/media/${kind}/${id}?refresh=1` : `/media/${kind}/${id}`;
+        const url =
+          kind === "series" ? `/media/${kind}/${id}?refresh=1` : `/media/${kind}/${id}`;
         const j = await getJson(url);
         if (alive) setData(j);
       } catch {
@@ -24,18 +31,47 @@ export default function Title() {
         if (alive) setLoading(false);
       }
     })();
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, [kind, id]);
 
+  async function startPlayback() {
+    if (kind !== "movie") return;
+    setPlaying(true);
+    setResolvingSrc(true);
+    setPlayErr("");
+    try {
+      let u = data?.stream_url || data?.hls_url || data?.url;
+      if (!u) {
+        const r = await getJson(`/xtream/stream-url?kind=movie&id=${id}`);
+        u = r?.src || r?.url;
+      }
+      if (!u) throw new Error("missing src");
+      setSrc(u);
+    } catch {
+      setPlayErr("Source vidéo manquante.");
+      setPlaying(false);
+    } finally {
+      setResolvingSrc(false);
+    }
+  }
+
   if (loading) {
-    return <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">Chargement…</div>;
+    return (
+      <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">
+        Chargement…
+      </div>
+    );
   }
   if (!data) {
     return (
       <div className="mx-auto max-w-4xl p-4 text-center text-zinc-300">
         Aucune donnée.
         <div className="mt-4">
-          <button className="btn" onClick={() => nav(-1)}>Retour</button>
+          <button className="btn" onClick={() => nav(-1)}>
+            Retour
+          </button>
         </div>
       </div>
     );
@@ -43,22 +79,65 @@ export default function Title() {
 
   const hasTrailer = Boolean(data?.trailer?.embed_url);
   const posterSrc = data.poster_url || data.backdrop_url || "";
-  const watchHref =
-    kind === "movie"
-      ? `/watch/movie/${id}?rk=${encodeURIComponent(`movie:${id}`)}&title=${encodeURIComponent(
-          data.title || ""
-        )}&poster=${encodeURIComponent(posterSrc || "")}`
-      : null;
+  const resumeKey = kind === "movie" ? `movie:${id}` : undefined;
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
+      {/* Player au-dessus du contenu quand on lance la lecture */}
+      {playing && (
+        <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
+          {resolvingSrc && (
+            <div className="flex h-full w-full items-center justify-center text-zinc-300">
+              Préparation du flux…
+            </div>
+          )}
+          {!resolvingSrc && src && (
+            <VideoPlayer
+              src={src}
+              poster={posterSrc}
+              title={data.title}
+              resumeKey={resumeKey}
+              resumeApi
+            />
+          )}
+          {!resolvingSrc && playErr && (
+            <div className="p-4 text-center text-red-300">{playErr}</div>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
-        <img
-          src={posterSrc}
-          alt={data.title || ""}
-          className="w-[220px] rounded-xl object-cover"
-          draggable={false}
-        />
+        {/* Miniature avec overlay Play */}
+        <button
+          type="button"
+          className="relative w-[220px] rounded-xl overflow-hidden group"
+          onClick={startPlayback}
+          disabled={kind !== "movie"}
+          title={kind === "movie" ? "Regarder" : "Lecture non disponible ici"}
+        >
+          <img
+            src={posterSrc}
+            alt={data.title || ""}
+            className="w-[220px] h-full object-cover"
+            draggable={false}
+          />
+          {kind === "movie" && (
+            <div className="absolute inset-0 grid place-items-center bg-black/0 group-hover:bg-black/40 transition">
+              <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-black text-sm">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                  className="h-4 w-4"
+                >
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                Regarder
+              </div>
+            </div>
+          )}
+        </button>
+
         <div>
           <h1 className="text-2xl font-bold">{data.title}</h1>
 
@@ -73,15 +152,14 @@ export default function Title() {
           )}
 
           {/* Actions */}
-          <div className="mt-6 flex items-center gap-3">
+          <div className="mt-6 flex flex-wrap items-center gap-3">
             {kind === "movie" && (
-              <Link
-                to={watchHref}
+              <button
                 className="btn bg-emerald-600 text-white hover:bg-emerald-500"
-                title="Regarder le film"
+                onClick={startPlayback}
               >
                 ▶ Regarder
-              </Link>
+              </button>
             )}
 
             <button
@@ -121,14 +199,18 @@ export default function Title() {
             onClick={(e) => e.stopPropagation()}
           >
             <iframe
-              src={`${data.trailer.embed_url}${data.trailer.embed_url.includes("?") ? "&" : "?"}autoplay=1&rel=0&modestbranding=1`}
+              src={`${data.trailer.embed_url}${
+                data.trailer.embed_url.includes("?") ? "&" : "?"
+              }autoplay=1&rel=0&modestbranding=1`}
               title={data.trailer?.name || "Trailer"}
               allow="autoplay; encrypted-media; picture-in-picture"
               allowFullScreen
               className="h-full w-full"
             />
           </div>
-          <button className="mt-4 btn" onClick={() => setShowTrailer(false)}>Fermer</button>
+          <button className="mt-4 btn" onClick={() => setShowTrailer(false)}>
+            Fermer
+          </button>
         </div>
       )}
     </div>
