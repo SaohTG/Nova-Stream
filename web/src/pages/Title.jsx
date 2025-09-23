@@ -33,63 +33,64 @@ export default function Title() {
     return () => { alive = false; };
   }, [kind, id]);
 
-  async function resolveStreamUrl() {
-    // 1) champs possibles depuis /media
-    let u =
-      data?.stream_url ||
-      data?.hls_url ||
-      data?.m3u8 ||
-      data?.url ||
-      data?.playback?.src;
+  // --- Résolution URL Xtream (client-side) ---
+  async function resolveXtreamUrl() {
+    try {
+      const st = await getJson("/xtream/status"); // doit contenir base + user/pass
+      if (!st?.linked) return "";
 
-    // 2) appels d’API connus
-    const tryApis = [
-      `/media/${kind}/${id}/stream-url`,
-      `/media/${kind}/${id}/stream`,
-      `/xtream/stream-url?kind=${kind}&id=${id}`,
-    ];
-    const tryFetch = async (p) => {
-      try {
-        const r = await getJson(p);
-        return r?.src || r?.url || r?.hls || null;
-      } catch {
-        return null;
+      const base =
+        (st.base_url || st.portal_url || st.url || "").replace(/\/player_api\.php.*$/i, "").replace(/\/+$/, "");
+      const user = st.username || st.user;
+      const pass = st.password || st.pass;
+      if (!base || !user || !pass) return "";
+
+      // Essayer de deviner l’id Xtream du film
+      const vid =
+        data?.xtream_id ||
+        data?.movie_id ||
+        data?.vod_id ||
+        data?.stream_id ||
+        data?.ids?.xtream ||
+        id;
+
+      if (!vid) return "";
+
+      if (kind === "movie") {
+        // Beaucoup de portails exposent le HLS sur .m3u8 pour la VOD
+        return `${base}/movie/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${vid}.m3u8`;
       }
-    };
-    if (!u) {
-      for (const p of tryApis) {
-        // stop dès qu’on trouve une URL exploitable
-        // eslint-disable-next-line no-await-in-loop
-        const found = await tryFetch(p);
-        if (found) { u = found; break; }
-      }
+      return "";
+    } catch {
+      return "";
     }
-    return u || "";
   }
 
   async function startPlayback() {
-    if (kind !== "movie") return;
+    if (kind !== "movie") return; // on garde simple pour l’instant
     setPlaying(true);
     setResolvingSrc(true);
     setPlayErr("");
-    const u = await resolveStreamUrl();
+
+    // 1) champs directs déjà présents
+    let u =
+      data?.stream_url || data?.hls_url || data?.m3u8 || data?.url || data?.playback?.src;
+
+    // 2) sinon, construire l’URL Xtream
+    if (!u) u = await resolveXtreamUrl();
+
     if (!u) {
-      setPlayErr(
-        "Source vidéo introuvable. Utilisez la page de lecture dédiée."
-      );
+      setPlayErr("Source vidéo introuvable sur le portail Xtream.");
       setPlaying(false);
-    } else {
-      setSrc(u);
+      setResolvingSrc(false);
+      return;
     }
+    setSrc(u);
     setResolvingSrc(false);
   }
 
   if (loading) {
-    return (
-      <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">
-        Chargement…
-      </div>
-    );
+    return <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">Chargement…</div>;
   }
   if (!data) {
     return (
@@ -108,7 +109,7 @@ export default function Title() {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
-      {/* Player au-dessus quand la lecture démarre */}
+      {/* Player en haut quand lecture */}
       {playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
           {resolvingSrc && (
@@ -117,27 +118,19 @@ export default function Title() {
             </div>
           )}
           {!resolvingSrc && src && (
-            <VideoPlayer
-              src={src}
-              poster={posterSrc}
-              title={data.title}
-              resumeKey={resumeKey}
-              resumeApi
-            />
+            <VideoPlayer src={src} poster={posterSrc} title={data.title} resumeKey={resumeKey} resumeApi />
           )}
           {!resolvingSrc && playErr && (
             <div className="p-4 text-center text-red-300">
               {playErr}{" "}
-              <Link className="underline" to={`/watch/${kind}/${id}`}>
-                Ouvrir /watch
-              </Link>
+              <Link className="underline" to={`/watch/${kind}/${id}`}>Ouvrir /watch</Link>
             </div>
           )}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
-        {/* Miniature + overlay Play */}
+        {/* Vignette + overlay Play */}
         <button
           type="button"
           className="relative w-[220px] rounded-xl overflow-hidden group"
@@ -145,12 +138,7 @@ export default function Title() {
           disabled={kind !== "movie"}
           title={kind === "movie" ? "Regarder" : "Lecture non disponible ici"}
         >
-          <img
-            src={posterSrc}
-            alt={data.title || ""}
-            className="w-[220px] h-full object-cover"
-            draggable={false}
-          />
+          <img src={posterSrc} alt={data.title || ""} className="w-[220px] h-full object-cover" draggable={false} />
           {kind === "movie" && (
             <div className="absolute inset-0 grid place-items-center bg-black/0 group-hover:bg-black/40 transition">
               <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-black text-sm">
@@ -166,21 +154,13 @@ export default function Title() {
         <div>
           <h1 className="text-2xl font-bold">{data.title}</h1>
           {data.vote_average != null && (
-            <div className="mt-1 text-sm text-zinc-300">
-              Note TMDB&nbsp;: {Number(data.vote_average).toFixed(1)}/10
-            </div>
+            <div className="mt-1 text-sm text-zinc-300">Note TMDB&nbsp;: {Number(data.vote_average).toFixed(1)}/10</div>
           )}
-          {data.overview && (
-            <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>
-          )}
+          {data.overview && <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>}
 
-          {/* Actions */}
           <div className="mt-6 flex flex-wrap items-center gap-3">
             {kind === "movie" && (
-              <button
-                className="btn bg-emerald-600 text-white hover:bg-emerald-500"
-                onClick={startPlayback}
-              >
+              <button className="btn bg-emerald-600 text-white hover:bg-emerald-500" onClick={startPlayback}>
                 ▶ Regarder
               </button>
             )}
@@ -188,14 +168,11 @@ export default function Title() {
               className="btn disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={() => hasTrailer && setShowTrailer(true)}
               disabled={!hasTrailer}
-              title={hasTrailer ? "Voir la bande-annonce" : "Bande-annonce indisponible"}
             >
               ▶ Bande-annonce
             </button>
             {hasTrailer ? (
-              <a className="btn" href={data.trailer.url} target="_blank" rel="noreferrer">
-                Ouvrir sur YouTube
-              </a>
+              <a className="btn" href={data.trailer.url} target="_blank" rel="noreferrer">Ouvrir sur YouTube</a>
             ) : (
               <span className="text-sm text-zinc-400">Pas de bande-annonce disponible</span>
             )}
@@ -203,16 +180,9 @@ export default function Title() {
         </div>
       </div>
 
-      {/* Modale trailer */}
       {showTrailer && hasTrailer && (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4"
-          onClick={() => setShowTrailer(false)}
-        >
-          <div
-            className="w-full max-w-4xl aspect-video overflow-hidden rounded-xl shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <div className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4" onClick={() => setShowTrailer(false)}>
+          <div className="w-full max-w-4xl aspect-video overflow-hidden rounded-xl shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <iframe
               src={`${data.trailer.embed_url}${data.trailer.embed_url.includes("?") ? "&" : "?"}autoplay=1&rel=0&modestbranding=1`}
               title={data.trailer?.name || "Trailer"}
