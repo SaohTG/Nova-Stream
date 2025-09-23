@@ -135,7 +135,19 @@ export default function TopRow() {
   }, []);
   const onTouchEnd   = useCallback(() => end(), []);
 
-  const onWheel = useCallback((e) => { e.preventDefault(); e.stopPropagation(); }, []);
+  // Molette: horizontal => carrousel; vertical => laisser la page défiler
+  const onWheel = useCallback((e) => {
+    const el = trackRef.current; if (!el) return;
+    const ax = Math.abs(e.deltaX);
+    const ay = Math.abs(e.deltaY);
+    if (e.shiftKey || ax > ay) {
+      e.preventDefault();
+      e.stopPropagation();
+      const dx = ax ? e.deltaX : (e.deltaY > 0 ? 120 : -120);
+      el.scrollBy({ left: dx, behavior: "auto" });
+    }
+  }, []);
+
   const onClickCapture = useCallback((e) => {
     if (hasDragged.current || performance.now() < blockClickUntil.current) {
       e.preventDefault(); e.stopPropagation();
@@ -176,7 +188,7 @@ export default function TopRow() {
           onTouchStart={onTouchStart}
           onTouchMove={onTouchMove}
           onTouchEnd={onTouchEnd}
-          onWheelCapture={onWheel}
+          onWheel={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
         >
