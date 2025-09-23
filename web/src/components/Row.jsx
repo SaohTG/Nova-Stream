@@ -25,10 +25,10 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   const lastX = useRef(0);
   const vel = useRef(0);
   const moved = useRef(0);
-  const axis = useRef(null);           // null | 'x' | 'y'
+  const axis = useRef(null); // null | 'x' | 'y'
   const pressed = useRef(false);
   const hasDragged = useRef(false);
-  const blockClickUntil = useRef(0);   // timestamp ms
+  const blockClickUntil = useRef(0);
 
   const [dragging, setDragging] = useState(false);
   const [canLeft, setCanLeft] = useState(false);
@@ -88,7 +88,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   const end = () => {
     pressed.current = false;
     const el = trackRef.current; if (!el) { setDragging(false); return; }
-
     const dragged = hasDragged.current;
     setDragging(false);
     axis.current = null;
@@ -107,19 +106,13 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   };
 
   // Souris / stylet
-  const onPointerDown = useCallback((e) => {
-    begin(e.clientX, e.clientY);
-  }, []);
-  const onPointerMove = useCallback((e) => {
-    if (!pressed.current) return;
-    dragHoriz(e.clientX);
-  }, []);
-  const onPointerUp = useCallback(() => end(), []);
+  const onPointerDown = useCallback((e) => begin(e.clientX, e.clientY), []);
+  const onPointerMove = useCallback((e) => { if (pressed.current) dragHoriz(e.clientX); }, []);
+  const onPointerUp   = useCallback(() => end(), []);
 
   // Tactile
   const onTouchStart = useCallback((e) => {
-    const t = e.touches[0];
-    begin(t.clientX, t.clientY);
+    const t = e.touches[0]; begin(t.clientX, t.clientY);
   }, []);
   const onTouchMove  = useCallback((e) => {
     const t = e.touches[0];
@@ -128,19 +121,17 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     if (axis.current == null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
       axis.current = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
     }
-    if (axis.current === "x") {
-      e.preventDefault(); // bloque le scroll page pendant swipe horizontal
-      dragHoriz(t.clientX);
-    }
+    if (axis.current === "x") { e.preventDefault(); dragHoriz(t.clientX); }
   }, []);
   const onTouchEnd   = useCallback(() => end(), []);
 
-  // Molette: horizontal => carrousel; vertical => laisser la page défiler
+  // Molette: horizontal clair => carrousel; sinon laisser la page défiler
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
     const ax = Math.abs(e.deltaX);
     const ay = Math.abs(e.deltaY);
-    if (e.shiftKey || ax > ay) {
+    const horizontalIntent = e.shiftKey || ax >= ay * 1.5 || (ax > 10 && ay < 4);
+    if (horizontalIntent) {
       e.preventDefault();
       e.stopPropagation();
       const dx = ax ? e.deltaX : (e.deltaY > 0 ? 120 : -120);
@@ -148,11 +139,9 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     }
   }, []);
 
-  // Bloque le clic seulement si vrai drag ou juste après
   const onClickCapture = useCallback((e) => {
     if (hasDragged.current || performance.now() < blockClickUntil.current) {
-      e.preventDefault();
-      e.stopPropagation();
+      e.preventDefault(); e.stopPropagation();
     }
   }, []);
 
