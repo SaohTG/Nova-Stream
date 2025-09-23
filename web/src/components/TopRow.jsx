@@ -55,6 +55,7 @@ export default function TopRow() {
     setCanLeft(el.scrollLeft > 4);
     setCanRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
   }, []);
+
   useEffect(() => {
     const el = trackRef.current; if (!el) return;
     const onScroll = () => measure();
@@ -84,6 +85,7 @@ export default function TopRow() {
     vel.current = 0;
     moved.current = 0;
   };
+
   const dragHoriz = (x) => {
     const el = trackRef.current; if (!el) return;
     const dx = x - lastX.current;
@@ -97,6 +99,7 @@ export default function TopRow() {
     }
     measure();
   };
+
   const end = () => {
     pressed.current = false;
     const el = trackRef.current; if (!el) { setDragging(false); return; }
@@ -117,10 +120,12 @@ export default function TopRow() {
     rafRef.current = requestAnimationFrame(step);
   };
 
+  // Souris / stylet
   const onPointerDown = useCallback((e) => begin(e.clientX, e.clientY), []);
   const onPointerMove = useCallback((e) => { if (pressed.current) dragHoriz(e.clientX); }, []);
   const onPointerUp   = useCallback(() => end(), []);
 
+  // Tactile
   const onTouchStart = useCallback((e) => {
     const t = e.touches[0]; begin(t.clientX, t.clientY);
   }, []);
@@ -131,15 +136,19 @@ export default function TopRow() {
     if (axis.current == null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
       axis.current = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
     }
-    if (axis.current === "x") { e.preventDefault(); dragHoriz(t.clientX); }
+    if (axis.current === "x") { if (e.cancelable) e.preventDefault(); dragHoriz(t.clientX); }
   }, []);
   const onTouchEnd   = useCallback(() => end(), []);
 
+  // Molette: horizontal explicite => carrousel; sinon laisser la page défiler
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
     const ax = Math.abs(e.deltaX);
     const ay = Math.abs(e.deltaY);
-    const horizontalIntent = e.shiftKey || ax >= ay * 1.5 || (ax > 10 && ay < 4);
+    const horizontalIntent =
+      e.shiftKey ||
+      ax >= ay * 2.0 ||
+      (ax > 12 && ay < 3);
     if (horizontalIntent) {
       e.preventDefault();
       e.stopPropagation();
@@ -191,6 +200,8 @@ export default function TopRow() {
           onWheel={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
+          role="region"
+          aria-label="Tendances de la semaine"
         >
           <div className="flex gap-4 md:gap-5 lg:gap-6">
             {loading
