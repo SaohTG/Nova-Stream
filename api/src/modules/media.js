@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { Pool } from "pg";
 import crypto from "crypto";
+import { Readable } from "node:stream";
 
 const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -33,7 +34,7 @@ function dec(blob) {
 async function ensureTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS media_cache (
-      kind text NOT NULL,          -- 'movie' | 'series'
+      kind text NOT NULL,
       xtream_id text NOT NULL,
       tmdb_id integer,
       title text,
@@ -94,11 +95,11 @@ function buildPlayerApi(baseUrl, username, password, action, extra = {}) {
   for (const [k, v] of Object.entries(extra)) if (v != null) u.searchParams.set(k, String(v));
   return u.toString();
 }
-async function fetchWithTimeout(url, ms = 12000, headers = {}) {
+async function fetchWithTimeout(url, ms = 12000, headers = {}, init = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
   try {
-    const r = await fetch(url, { signal: ctrl.signal, headers });
+    const r = await fetch(url, { signal: ctrl.signal, headers, ...init });
     return r;
   } finally { clearTimeout(t); }
 }
@@ -114,8 +115,6 @@ const LANG_TAGS = [
   "FR","VF","VO","VOSTFR","VOST","STFR","TRUEFRENCH","FRENCH","SUBFRENCH","SUBFR","SUB","SUBS",
   "EN","ENG","DE","ES","IT","PT","NL","RU","PL","TR","TURK","AR","ARAB","ARABIC","LAT","LATINO","DUAL","MULTI"
 ];
-
-// supprime en tête: |...|, [...], (...), ou tokens (FR, STFR, VOSTFR, …)
 function dropLeadingTags(raw = "") {
   let s = String(raw).trim();
   s = s.replace(/^(?:\s*(?:\|[^|]*\||\[[^\]]*\]|\([^\)]*\)))+\s*/i, "");
@@ -161,7 +160,6 @@ function yearPenalty(yearCand, dateStr) {
 
 /* ================= TMDB ================= */
 const TMDB_BASE = "https://api.themoviedb.org/3";
-
 async function tmdbSearchMovie(q, year) {
   const u = new URL(`${TMDB_BASE}/search/movie`);
   u.searchParams.set("api_key", TMDB_KEY);
@@ -426,7 +424,147 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
   return payload;
 }
 
-/* ================= Routes ================= */
+/* ================= Streaming helpers ================= */
+function streamCandidates(baseUrl, username, password, kind, id) {
+  const root = baseUrl;
+  if (kind === "live") return [
+    `${root}/live/${username}/${password}/${id}.m3u8`,
+    `${root}/live/${username}/${password}/${id}.ts`,
+  ];
+  if (kind === "movie") return [
+    `${root}/movie/${username}/${password}/${id}.m3u8`,
+    `${root}/movie/${username}/${password}/${id}.mp4`,
+  ];
+  return [
+    `${root}/series/${username}/${password}/${id}.m3u8`,
+    `${root}/series/${username}/${password}/${id}.mp4`,
+  ];
+}
+async function firstReachable(urls, headers = {}) {
+  for (const u of urls) {
+    try {
+      // HEAD peut être rejeté par certains Xtream → tente Range GET minimal
+      let r = await fetchWithTimeout(u, 6000, { ...headers }, { method: "HEAD" });
+      if (!r.ok) r = await fetchWithTimeout(u, 6000, { Range: "bytes=0-0", ...headers }, { method: "GET" });
+      if (r.ok) return u;
+    } catch {}
+  }
+  return null;
+}
+function assertSameHost(url, baseUrl) {
+  const want = new URL(baseUrl);
+  const got = new URL(url);
+  const wantPort = Number(want.port || (want.protocol === "https:" ? 443 : 80));
+  const gotPort = Number(got.port || (got.protocol === "https:" ? 443 : 80));
+  if (want.hostname !== got.hostname || wantPort !== gotPort || want.protocol !== got.protocol) {
+    const e = new Error("forbidden host"); e.status = 400; throw e;
+  }
+}
+
+/* ================= Routes API (streaming) ================= */
+
+// URL directe (debug)
+router.get("/:kind(movie|series|live)/:id/stream-url", async (req, res, next) => {
+  try {
+    const creds = await getCreds(req.user?.sub);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+    const url = await firstReachable(
+      streamCandidates(creds.baseUrl, creds.username, creds.password, req.params.kind, req.params.id),
+      { "User-Agent": "VLC/3.0" }
+    );
+    if (!url) return res.status(404).json({ error: "no-src" });
+    res.json({ url });
+  } catch (e) { next(e); }
+});
+
+// Playlist HLS proxifiée avec réécriture des URI en /api/media/proxy?url=...
+router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
+  try {
+    const { kind, id } = req.params;
+    const creds = await getCreds(req.user?.sub);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const m3u8Url = await firstReachable(
+      streamCandidates(creds.baseUrl, creds.username, creds.password, kind, id).filter(u => u.endsWith(".m3u8")),
+      { "User-Agent": "VLC/3.0" }
+    );
+    if (!m3u8Url) return res.status(404).json({ error: "no-hls" });
+
+    const up = await fetchWithTimeout(m3u8Url, 12000, { "User-Agent": "VLC/3.0" });
+    if (!up.ok) { const t = await up.text(); const e = new Error(`UPSTREAM_${up.status}`); e.body = t; e.status = 502; throw e; }
+    const origin = new URL(m3u8Url);
+    const text = await up.text();
+
+    const rewrite = (line) => {
+      if (line.startsWith("#EXT-X-KEY")) {
+        return line.replace(/URI="([^"]+)"/, (_m, uri) => {
+          const abs = new URL(uri, origin).toString();
+          return `URI="/api/media/proxy?url=${encodeURIComponent(abs)}"`;
+        });
+      }
+      if (!line || line.startsWith("#")) return line;
+      const abs = new URL(line, origin).toString();
+      return `/api/media/proxy?url=${encodeURIComponent(abs)}`;
+    };
+
+    const body = text.split(/\r?\n/).map(rewrite).join("\n");
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(body);
+  } catch (e) { next(e); }
+});
+
+// Proxy générique sécurisé (segments .ts, clés, variantes, mp4)
+router.get("/proxy", async (req, res, next) => {
+  try {
+    const creds = await getCreds(req.user?.sub);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+    const url = (req.query.url || "").toString();
+    if (!url) { const e = new Error("missing url"); e.status = 400; throw e; }
+    assertSameHost(url, creds.baseUrl);
+
+    const headers = {
+      "User-Agent": "VLC/3.0",
+      "Referer": creds.baseUrl + "/",
+    };
+    if (req.headers.range) headers.Range = req.headers.range;
+    if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
+
+    const up = await fetchWithTimeout(url, 15000, headers);
+    // propage headers utiles
+    const ct = up.headers.get("content-type");
+    const cr = up.headers.get("content-range");
+    const ar = up.headers.get("accept-ranges");
+    if (ct) res.setHeader("Content-Type", ct);
+    if (cr) res.setHeader("Content-Range", cr);
+    if (ar) res.setHeader("Accept-Ranges", ar);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(up.status);
+    if (up.body) Readable.fromWeb(up.body).pipe(res);
+    else res.end();
+  } catch (e) { next(e); }
+});
+
+// Fallback progressif MP4/TS
+router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
+  try {
+    const { kind, id } = req.params;
+    const creds = await getCreds(req.user?.sub);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const fileUrl = await firstReachable(
+      streamCandidates(creds.baseUrl, creds.username, creds.password, kind, id).filter(u => u.endsWith(".mp4") || u.endsWith(".ts")),
+      { "User-Agent": "VLC/3.0" }
+    );
+    if (!fileUrl) return res.status(404).json({ error: "no-file" });
+
+    // réutilise le proxy pour gérer Range
+    req.url = `/api/media/proxy?url=${encodeURIComponent(fileUrl)}`;
+    return router.handle(req, res, next);
+  } catch (e) { next(e); }
+});
+
+/* ================= Routes metadata (existantes) ================= */
 // support ?refresh=1 pour forcer une MAJ
 router.get("/movie/:id", async (req, res, next) => {
   try {
