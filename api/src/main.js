@@ -11,6 +11,7 @@ import userRouter from "./modules/user.js";
 import xtreamRouter from "./modules/xtream.js";
 import tmdbRouter from "./modules/tmdb.js";
 import mediaRouter from "./modules/media.js";
+import mylistRouter from "./modules/mylist.js"; // ← ajout
 
 const app = express();
 app.set("trust proxy", 1);
@@ -40,6 +41,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 
 app.use("/auth", authRouter);
 app.use("/user", ensureAuth, userRouter);
+app.use("/user/mylist", ensureAuth, mylistRouter); // ← ajout
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
 
