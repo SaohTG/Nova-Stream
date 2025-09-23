@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
-  const hosts = ["app.lorna.tv","lector.lorna.tv","localhost","127.0.0.1","85.31.239.110"];
+  const hosts = ["app.lorna.tv", "lector.lorna.tv", "localhost", "127.0.0.1", "85.31.239.110"];
 
   return {
     plugins: [react()],
@@ -17,9 +17,9 @@ export default defineConfig(({ mode }) => {
     },
     preview: {
       host: true,
-      port: 5173,              // pour rester aligné avec NPM
+      port: 5173,              // aligne avec NPM
       strictPort: true,
-      allowedHosts: true,      // ← règle le blocage ("Blocked request … preview.allowedHosts")
+      allowedHosts: hosts,     // ← clé qui manque
     },
     optimizeDeps: { include: ["shaka-player"] },
     define: { "import.meta.env.VITE_API_BASE": JSON.stringify(env.VITE_API_BASE || "") },
