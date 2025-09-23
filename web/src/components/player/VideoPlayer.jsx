@@ -1,6 +1,6 @@
 // web/src/components/player/VideoPlayer.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import shaka from "shaka-player/dist/shaka-player.compiled.js";
+import shaka from "shaka-player";
 import { postJson } from "../../lib/api";
 
 function fmt(t) {
