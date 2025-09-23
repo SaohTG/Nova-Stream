@@ -443,7 +443,6 @@ function streamCandidates(baseUrl, username, password, kind, id) {
 async function firstReachable(urls, headers = {}) {
   for (const u of urls) {
     try {
-      // HEAD peut être rejeté par certains Xtream → tente Range GET minimal
       let r = await fetchWithTimeout(u, 6000, { ...headers }, { method: "HEAD" });
       if (!r.ok) r = await fetchWithTimeout(u, 6000, { Range: "bytes=0-0", ...headers }, { method: "GET" });
       if (r.ok) return u;
@@ -531,7 +530,6 @@ router.get("/proxy", async (req, res, next) => {
     if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
 
     const up = await fetchWithTimeout(url, 15000, headers);
-    // propage headers utiles
     const ct = up.headers.get("content-type");
     const cr = up.headers.get("content-range");
     const ar = up.headers.get("accept-ranges");
@@ -558,7 +556,6 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
     );
     if (!fileUrl) return res.status(404).json({ error: "no-file" });
 
-    // réutilise le proxy pour gérer Range
     req.url = `/api/media/proxy?url=${encodeURIComponent(fileUrl)}`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
@@ -577,6 +574,78 @@ router.get("/series/:id", async (req, res, next) => {
     const out = await resolveSeries(req.user?.sub, req.params.id, { refresh: req.query.refresh === "1" });
     res.json(out);
   } catch (e) { e.status = e.status || 500; next(e); }
+});
+
+/* ================= ID-less routes (résolvent stream_id) ================= */
+async function getVodStreamId(userId, vodId) {
+  const creds = await getCreds(userId);
+  if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
+  const info = await fetchJson(
+    buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_info", { vod_id: vodId })
+  );
+  const sid = Number(info?.movie_data?.stream_id || info?.info?.stream_id || 0);
+  if (!sid) throw Object.assign(new Error("no-stream-id"), { status: 404 });
+  return { streamId: String(sid) };
+}
+async function getEpisodeStreamId(userId, seriesId, seasonNum, episodeNum) {
+  const creds = await getCreds(userId);
+  if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
+  const info = await fetchJson(
+    buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series_info", { series_id: seriesId })
+  );
+  const seasons = info?.episodes || {};
+  const key = String(seasonNum);
+  const arr = Array.isArray(seasons[key]) ? seasons[key] : [];
+  const ep = arr.find(e => Number(e.episode_num) === Number(episodeNum)) || arr[Number(episodeNum) - 1];
+  const sid = Number(ep?.id || 0);
+  if (!sid) throw Object.assign(new Error("no-episode"), { status: 404 });
+  return { streamId: String(sid) };
+}
+
+// VOD via vod_id
+router.get("/movie/vod/:vodId/hls.m3u8", async (req, res, next) => {
+  try {
+    const { streamId } = await getVodStreamId(req.user?.sub, req.params.vodId);
+    req.url = `/api/media/movie/${streamId}/hls.m3u8`;
+    return router.handle(req, res, next);
+  } catch (e) { next(e); }
+});
+router.get("/movie/vod/:vodId/file", async (req, res, next) => {
+  try {
+    const { streamId } = await getVodStreamId(req.user?.sub, req.params.vodId);
+    req.url = `/api/media/movie/${streamId}/file`;
+    return router.handle(req, res, next);
+  } catch (e) { next(e); }
+});
+router.get("/movie/vod/:vodId/stream-url", async (req, res, next) => {
+  try {
+    const { streamId } = await getVodStreamId(req.user?.sub, req.params.vodId);
+    req.url = `/api/media/movie/${streamId}/stream-url`;
+    return router.handle(req, res, next);
+  } catch (e) { next(e); }
+});
+
+// Série via (series_id, saison, épisode)
+router.get("/series/:seriesId/season/:s/episode/:e/hls.m3u8", async (req, res, next) => {
+  try {
+    const { streamId } = await getEpisodeStreamId(req.user?.sub, req.params.seriesId, req.params.s, req.params.e);
+    req.url = `/api/media/series/${streamId}/hls.m3u8`;
+    return router.handle(req, res, next);
+  } catch (e) { next(e); }
+});
+router.get("/series/:seriesId/season/:s/episode/:e/file", async (req, res, next) => {
+  try {
+    const { streamId } = await getEpisodeStreamId(req.user?.sub, req.params.seriesId, req.params.s, req.params.e);
+    req.url = `/api/media/series/${streamId}/file`;
+    return router.handle(req, res, next);
+  } catch (e) { next(e); }
+});
+router.get("/series/:seriesId/season/:s/episode/:e/stream-url", async (req, res, next) => {
+  try {
+    const { streamId } = await getEpisodeStreamId(req.user?.sub, req.params.seriesId, req.params.s, req.params.e);
+    req.url = `/api/media/series/${streamId}/stream-url`;
+    return router.handle(req, res, next);
+  } catch (e) { next(e); }
 });
 
 export default router;
