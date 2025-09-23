@@ -1,6 +1,6 @@
 // web/src/pages/Title.jsx
 import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { getJson } from "../lib/api";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
@@ -21,8 +21,7 @@ export default function Title() {
     let alive = true;
     (async () => {
       try {
-        const url =
-          kind === "series" ? `/media/${kind}/${id}?refresh=1` : `/media/${kind}/${id}`;
+        const url = kind === "series" ? `/media/${kind}/${id}?refresh=1` : `/media/${kind}/${id}`;
         const j = await getJson(url);
         if (alive) setData(j);
       } catch {
@@ -31,30 +30,58 @@ export default function Title() {
         if (alive) setLoading(false);
       }
     })();
-    return () => {
-      alive = false;
-    };
+    return () => { alive = false; };
   }, [kind, id]);
+
+  async function resolveStreamUrl() {
+    // 1) champs possibles depuis /media
+    let u =
+      data?.stream_url ||
+      data?.hls_url ||
+      data?.m3u8 ||
+      data?.url ||
+      data?.playback?.src;
+
+    // 2) appels d’API connus
+    const tryApis = [
+      `/media/${kind}/${id}/stream-url`,
+      `/media/${kind}/${id}/stream`,
+      `/xtream/stream-url?kind=${kind}&id=${id}`,
+    ];
+    const tryFetch = async (p) => {
+      try {
+        const r = await getJson(p);
+        return r?.src || r?.url || r?.hls || null;
+      } catch {
+        return null;
+      }
+    };
+    if (!u) {
+      for (const p of tryApis) {
+        // stop dès qu’on trouve une URL exploitable
+        // eslint-disable-next-line no-await-in-loop
+        const found = await tryFetch(p);
+        if (found) { u = found; break; }
+      }
+    }
+    return u || "";
+  }
 
   async function startPlayback() {
     if (kind !== "movie") return;
     setPlaying(true);
     setResolvingSrc(true);
     setPlayErr("");
-    try {
-      let u = data?.stream_url || data?.hls_url || data?.url;
-      if (!u) {
-        const r = await getJson(`/xtream/stream-url?kind=movie&id=${id}`);
-        u = r?.src || r?.url;
-      }
-      if (!u) throw new Error("missing src");
-      setSrc(u);
-    } catch {
-      setPlayErr("Source vidéo manquante.");
+    const u = await resolveStreamUrl();
+    if (!u) {
+      setPlayErr(
+        "Source vidéo introuvable. Utilisez la page de lecture dédiée."
+      );
       setPlaying(false);
-    } finally {
-      setResolvingSrc(false);
+    } else {
+      setSrc(u);
     }
+    setResolvingSrc(false);
   }
 
   if (loading) {
@@ -69,9 +96,7 @@ export default function Title() {
       <div className="mx-auto max-w-4xl p-4 text-center text-zinc-300">
         Aucune donnée.
         <div className="mt-4">
-          <button className="btn" onClick={() => nav(-1)}>
-            Retour
-          </button>
+          <button className="btn" onClick={() => nav(-1)}>Retour</button>
         </div>
       </div>
     );
@@ -83,7 +108,7 @@ export default function Title() {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
-      {/* Player au-dessus du contenu quand on lance la lecture */}
+      {/* Player au-dessus quand la lecture démarre */}
       {playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
           {resolvingSrc && (
@@ -101,13 +126,18 @@ export default function Title() {
             />
           )}
           {!resolvingSrc && playErr && (
-            <div className="p-4 text-center text-red-300">{playErr}</div>
+            <div className="p-4 text-center text-red-300">
+              {playErr}{" "}
+              <Link className="underline" to={`/watch/${kind}/${id}`}>
+                Ouvrir /watch
+              </Link>
+            </div>
           )}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
-        {/* Miniature avec overlay Play */}
+        {/* Miniature + overlay Play */}
         <button
           type="button"
           className="relative w-[220px] rounded-xl overflow-hidden group"
@@ -124,12 +154,7 @@ export default function Title() {
           {kind === "movie" && (
             <div className="absolute inset-0 grid place-items-center bg-black/0 group-hover:bg-black/40 transition">
               <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-black text-sm">
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  className="h-4 w-4"
-                >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
                   <path d="M8 5v14l11-7z" />
                 </svg>
                 Regarder
@@ -140,13 +165,11 @@ export default function Title() {
 
         <div>
           <h1 className="text-2xl font-bold">{data.title}</h1>
-
           {data.vote_average != null && (
             <div className="mt-1 text-sm text-zinc-300">
               Note TMDB&nbsp;: {Number(data.vote_average).toFixed(1)}/10
             </div>
           )}
-
           {data.overview && (
             <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>
           )}
@@ -161,7 +184,6 @@ export default function Title() {
                 ▶ Regarder
               </button>
             )}
-
             <button
               className="btn disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={() => hasTrailer && setShowTrailer(true)}
@@ -170,15 +192,8 @@ export default function Title() {
             >
               ▶ Bande-annonce
             </button>
-
             {hasTrailer ? (
-              <a
-                className="btn"
-                href={data.trailer.url}
-                target="_blank"
-                rel="noreferrer"
-                title="Ouvrir sur YouTube"
-              >
+              <a className="btn" href={data.trailer.url} target="_blank" rel="noreferrer">
                 Ouvrir sur YouTube
               </a>
             ) : (
@@ -199,18 +214,14 @@ export default function Title() {
             onClick={(e) => e.stopPropagation()}
           >
             <iframe
-              src={`${data.trailer.embed_url}${
-                data.trailer.embed_url.includes("?") ? "&" : "?"
-              }autoplay=1&rel=0&modestbranding=1`}
+              src={`${data.trailer.embed_url}${data.trailer.embed_url.includes("?") ? "&" : "?"}autoplay=1&rel=0&modestbranding=1`}
               title={data.trailer?.name || "Trailer"}
               allow="autoplay; encrypted-media; picture-in-picture"
               allowFullScreen
               className="h-full w-full"
             />
           </div>
-          <button className="mt-4 btn" onClick={() => setShowTrailer(false)}>
-            Fermer
-          </button>
+          <button className="mt-4 btn" onClick={() => setShowTrailer(false)}>Fermer</button>
         </div>
       )}
     </div>
