@@ -1,6 +1,6 @@
 // web/src/pages/Title.jsx
 import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { getJson } from "../lib/api";
 
 export default function Title() {
@@ -43,6 +43,12 @@ export default function Title() {
 
   const hasTrailer = Boolean(data?.trailer?.embed_url);
   const posterSrc = data.poster_url || data.backdrop_url || "";
+  const watchHref =
+    kind === "movie"
+      ? `/watch/movie/${id}?rk=${encodeURIComponent(`movie:${id}`)}&title=${encodeURIComponent(
+          data.title || ""
+        )}&poster=${encodeURIComponent(posterSrc || "")}`
+      : null;
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
@@ -66,8 +72,18 @@ export default function Title() {
             <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>
           )}
 
-          {/* Bande-annonce pour films ET séries */}
+          {/* Actions */}
           <div className="mt-6 flex items-center gap-3">
+            {kind === "movie" && (
+              <Link
+                to={watchHref}
+                className="btn bg-emerald-600 text-white hover:bg-emerald-500"
+                title="Regarder le film"
+              >
+                ▶ Regarder
+              </Link>
+            )}
+
             <button
               className="btn disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={() => hasTrailer && setShowTrailer(true)}
@@ -76,6 +92,7 @@ export default function Title() {
             >
               ▶ Bande-annonce
             </button>
+
             {hasTrailer ? (
               <a
                 className="btn"
