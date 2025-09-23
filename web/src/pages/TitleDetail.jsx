@@ -14,7 +14,10 @@ export default function TitleDetail() {
     let alive = true;
     (async () => {
       try {
-        const j = await getJson(`/media/${kind}/${id}`);
+        if (!id) throw new Error("ID manquant");
+        // séries: forcer l’upgrade TMDB pour récupérer overview, note, trailer
+        const url = kind === "series" ? `/media/${kind}/${id}?refresh=1` : `/media/${kind}/${id}`;
+        const j = await getJson(url);
         if (!alive) return;
         setData(j);
       } catch {
@@ -41,7 +44,6 @@ export default function TitleDetail() {
     );
   }
 
-  const isMovie = kind === "movie";
   const hasTrailer = Boolean(data?.trailer?.embed_url);
 
   return (
@@ -66,20 +68,33 @@ export default function TitleDetail() {
             <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>
           )}
 
-          {isMovie && (
+          {/* Bande-annonce pour films ET séries */}
+          <div className="mt-6 flex items-center gap-3">
             <button
-              className="mt-6 btn"
+              className="btn disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={() => hasTrailer && setShowTrailer(true)}
               disabled={!hasTrailer}
               title={hasTrailer ? "Voir la bande-annonce" : "Bande-annonce indisponible"}
             >
               ▶ Bande-annonce
             </button>
-          )}
+            {hasTrailer ? (
+              <a
+                className="btn"
+                href={data.trailer.url}
+                target="_blank"
+                rel="noreferrer"
+                title="Ouvrir sur YouTube"
+              >
+                Ouvrir sur YouTube
+              </a>
+            ) : (
+              <span className="text-sm text-zinc-400">Pas de bande-annonce disponible</span>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Modale trailer */}
       {showTrailer && hasTrailer && (
         <div
           className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4"
