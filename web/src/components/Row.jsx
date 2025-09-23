@@ -19,10 +19,12 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   const trackRef = useRef(null);
   const rafRef = useRef(0);
   const startXRef = useRef(0);
+  const startYRef = useRef(0);
   const startScrollRef = useRef(0);
   const lastXRef = useRef(0);
   const velRef = useRef(0);
   const movedRef = useRef(0);
+  const axisRef = useRef(null); // null | 'x' | 'y'
 
   const [dragging, setDragging] = useState(false);
   const [canLeft, setCanLeft] = useState(false);
@@ -50,18 +52,19 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     return () => { document.body.style.userSelect = ""; };
   }, [dragging]);
 
-  const startDrag = (x) => {
+  const begin = (x, y) => {
     const el = trackRef.current; if (!el) return;
     stopInertia();
-    setDragging(true);
+    axisRef.current = null;
     startXRef.current = x;
+    startYRef.current = y;
     lastXRef.current = x;
     startScrollRef.current = el.scrollLeft;
     velRef.current = 0;
     movedRef.current = 0;
   };
-  const moveDrag = (x) => {
-    if (!dragging) return;
+
+  const dragX = (x) => {
     const el = trackRef.current; if (!el) return;
     const dx = x - lastXRef.current;
     el.scrollLeft = startScrollRef.current - (x - startXRef.current);
@@ -70,35 +73,65 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     movedRef.current += Math.abs(dx);
     measure();
   };
-  const endDrag = () => {
-    if (!dragging) return;
+
+  const end = () => {
+    if (!dragging) { axisRef.current = null; return; }
     setDragging(false);
     const el = trackRef.current; if (!el) return;
     let v = velRef.current;
     const friction = 0.92;
     const step = () => {
       v *= friction;
-      if (Math.abs(v) < 0.4) { measure(); return; }
+      if (Math.abs(v) < 0.4) { measure(); axisRef.current = null; return; }
       el.scrollLeft -= v;
       rafRef.current = requestAnimationFrame(step);
     };
     rafRef.current = requestAnimationFrame(step);
   };
 
+  // Souris / stylet via Pointer Events
   const onPointerDown = useCallback((e) => {
     e.currentTarget.setPointerCapture?.(e.pointerId);
-    startDrag(e.clientX);
+    setDragging(true);
+    begin(e.clientX, e.clientY);
   }, []);
-  const onPointerMove = useCallback((e) => moveDrag(e.clientX), [dragging]);
+  const onPointerMove = useCallback((e) => {
+    if (!dragging) return;
+    dragX(e.clientX);
+  }, [dragging]);
   const onPointerUp = useCallback((e) => {
     e.currentTarget.releasePointerCapture?.(e.pointerId);
-    endDrag();
+    end();
   }, [dragging]);
-  const onTouchStart = useCallback((e) => startDrag(e.touches[0].clientX), []);
-  const onTouchMove  = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
-  const onTouchEnd   = useCallback(() => endDrag(), [dragging]);
 
-  // Pas de handler wheel: la molette fait défiler la page, pas le carrousel.
+  // Tactile: détecter l’axe. Si horizontal => empêcher le scroll de page.
+  const onTouchStart = useCallback((e) => {
+    const t = e.touches[0];
+    begin(t.clientX, t.clientY);
+  }, []);
+  const onTouchMove  = useCallback((e) => {
+    const t = e.touches[0];
+    const dx = t.clientX - startXRef.current;
+    const dy = t.clientY - startYRef.current;
+
+    if (axisRef.current == null) {
+      if (Math.abs(dx) > 6 || Math.abs(dy) > 6) {
+        axisRef.current = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+        if (axisRef.current === "x") setDragging(true);
+      }
+    }
+    if (axisRef.current === "x") {
+      e.preventDefault(); // bloque le scroll vertical de la page pendant le swipe horizontal
+      dragX(t.clientX);
+    }
+  }, []);
+  const onTouchEnd   = useCallback(() => end(), [dragging]);
+
+  // Molette: ne rien faire quand la souris est sur le carrousel
+  const onWheel = useCallback((e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
 
   const onClickCapture = useCallback((e) => {
     if (movedRef.current > 5) { e.preventDefault(); e.stopPropagation(); }
@@ -110,7 +143,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     stopInertia();
     const amount = Math.round(el.clientWidth * 0.9) * (dir > 0 ? 1 : -1);
     el.scrollBy({ left: amount, behavior: "smooth" });
-    // mesurera après l’animation via "scroll" listener
   }, []);
 
   return (
@@ -145,6 +177,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
           onTouchStart={onTouchStart}
           onTouchMove={onTouchMove}
           onTouchEnd={onTouchEnd}
+          onWheelCapture={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
         >
