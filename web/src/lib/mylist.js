@@ -1,45 +1,94 @@
 // web/src/lib/mylist.js
+import { useEffect, useState } from "react";
+import { getJson, postJson } from "./api";
+
 const KEY = "ns_mylist_v1";
 const EVT = "ns_mylist_changed";
 
-function readMap() {
-  try { return JSON.parse(localStorage.getItem(KEY) || "{}") || {}; }
-  catch { return {}; }
+const k = (kind, id) => `${String(kind)}:${String(id)}`.toLowerCase();
+const readMap = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch { return {}; } };
+const writeMap = (m) => { localStorage.setItem(KEY, JSON.stringify(m)); window.dispatchEvent(new Event(EVT)); };
+
+async function tryRemote(fn) {
+  try { return await fn(); } catch { return null; }
 }
-function writeMap(m) {
-  localStorage.setItem(KEY, JSON.stringify(m));
-  window.dispatchEvent(new Event(EVT));
+
+// ---- public API
+export async function fetchMyList() {
+  const r = await tryRemote(() => getJson("/user/mylist"));
+  if (Array.isArray(r)) return r;
+  // fallback local
+  return Object.values(readMap()).sort((a,b)=>b.updatedAt-a.updatedAt);
 }
-function k(kind, id) { return `${String(kind)}:${String(id)}`.toLowerCase(); }
+
+export async function syncLocalToRemote() {
+  const map = readMap();
+  const items = Object.entries(map).map(([key, v]) => ({
+    kind: key.split(":")[0] === "series" ? "series" : "movie",
+    id: key.split(":")[1],
+    title: v.title || "",
+    img: v.img || "",
+    payload: v.raw || {},
+    updatedAt: v.updatedAt || Date.now(),
+  }));
+  const r = await tryRemote(() => postJson("/user/mylist/merge", { items }));
+  if (Array.isArray(r)) {
+    // miroir local
+    const m = {};
+    for (const it of r) {
+      m[k(it.kind, it.id)] = {
+        kind: it.kind, id: String(it.id),
+        title: it.title || "", img: it.img || "",
+        raw: it.payload || null, updatedAt: it.updatedAt || Date.now(),
+      };
+    }
+    writeMap(m);
+    return r;
+  }
+  return items;
+}
+
+export async function toggleMyList(kind, id, payload = {}) {
+  const key = k(kind, id);
+  const map = readMap();
+  const exists = Boolean(map[key]);
+  if (exists) {
+    map[key] && delete map[key];
+    writeMap(map);
+    await tryRemote(() => fetch(`/user/mylist/${kind}/${encodeURIComponent(id)}`, {
+      method: "DELETE", credentials: "include"
+    }));
+  } else {
+    const entry = {
+      kind, id: String(id), title: payload.title || "",
+      img: payload.img || "", raw: payload.raw || null, updatedAt: Date.now(),
+    };
+    map[key] = entry;
+    writeMap(map);
+    await tryRemote(() => postJson(`/user/mylist/${kind}/${encodeURIComponent(id)}`, {
+      title: entry.title, img: entry.img, payload: entry.raw
+    })); // PUT via postJson → méthode override côté API si besoin; sinon utilise fetch PUT
+  }
+}
 
 export function hasInMyList(kind, id) {
   return Boolean(readMap()[k(kind, id)]);
 }
-export function addToMyList(kind, id, payload = {}) {
-  const map = readMap();
-  map[k(kind, id)] = { kind, id: String(id), title: payload.title || "", img: payload.img || "", raw: payload.raw || null, updatedAt: Date.now() };
-  writeMap(map);
-}
-export function removeFromMyList(kind, id) {
-  const map = readMap();
-  delete map[k(kind, id)];
-  writeMap(map);
-}
-export function toggleMyList(kind, id, payload = {}) {
-  if (hasInMyList(kind, id)) removeFromMyList(kind, id);
-  else addToMyList(kind, id, payload);
-}
 
-// ---- Hooks compatibles React 16/17/18 ----
-import { useEffect, useState } from "react";
-
+// ---- hooks
 export function useMyList() {
-  const [list, setList] = useState(() => Object.values(readMap()).sort((a,b)=>b.updatedAt-a.updatedAt));
+  const [list, setList] = useState([]);
   useEffect(() => {
-    const h = () => setList(Object.values(readMap()).sort((a,b)=>b.updatedAt-a.updatedAt));
+    let alive = true;
+    const load = async () => {
+      const merged = await syncLocalToRemote();
+      if (alive) setList(merged);
+    };
+    load();
+    const h = () => fetchMyList().then((arr) => { if (alive) setList(arr); });
     window.addEventListener("storage", h);
     window.addEventListener(EVT, h);
-    return () => { window.removeEventListener("storage", h); window.removeEventListener(EVT, h); };
+    return () => { alive = false; window.removeEventListener("storage", h); window.removeEventListener(EVT, h); };
   }, []);
   return list;
 }
