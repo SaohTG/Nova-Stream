@@ -24,9 +24,10 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   const lastXRef = useRef(0);
   const velRef = useRef(0);
   const movedRef = useRef(0);
-  const axisRef = useRef(null); // null | 'x' | 'y'
+  const axisRef = useRef(null);    // null | 'x' | 'y'
+  const pressedRef = useRef(false); // pointeur enfoncé ?
+  const [panning, setPanning] = useState(false); // vrai drag horizontal actif
 
-  const [dragging, setDragging] = useState(false);
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
 
@@ -48,14 +49,16 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   }, [measure, items.length]);
 
   useEffect(() => {
-    document.body.style.userSelect = dragging ? "none" : "";
+    document.body.style.userSelect = panning ? "none" : "";
     return () => { document.body.style.userSelect = ""; };
-  }, [dragging]);
+  }, [panning]);
 
   const begin = (x, y) => {
     const el = trackRef.current; if (!el) return;
     stopInertia();
     axisRef.current = null;
+    pressedRef.current = true;
+    setPanning(false);
     startXRef.current = x;
     startYRef.current = y;
     lastXRef.current = x;
@@ -71,40 +74,41 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     velRef.current = dx;
     lastXRef.current = x;
     movedRef.current += Math.abs(dx);
+    if (!panning && movedRef.current > 6) setPanning(true);
     measure();
   };
 
   const end = () => {
-    if (!dragging) { axisRef.current = null; return; }
-    setDragging(false);
-    const el = trackRef.current; if (!el) return;
+    pressedRef.current = false;
+    const el = trackRef.current; if (!el) { setPanning(false); return; }
+    if (!panning) { setPanning(false); return; }
     let v = velRef.current;
     const friction = 0.92;
     const step = () => {
       v *= friction;
-      if (Math.abs(v) < 0.4) { measure(); axisRef.current = null; return; }
+      if (Math.abs(v) < 0.4) { setPanning(false); measure(); axisRef.current = null; return; }
       el.scrollLeft -= v;
       rafRef.current = requestAnimationFrame(step);
     };
     rafRef.current = requestAnimationFrame(step);
   };
 
-  // Souris / stylet via Pointer Events
+  // Souris / stylet
   const onPointerDown = useCallback((e) => {
     e.currentTarget.setPointerCapture?.(e.pointerId);
-    setDragging(true);
     begin(e.clientX, e.clientY);
   }, []);
   const onPointerMove = useCallback((e) => {
-    if (!dragging) return;
+    if (!pressedRef.current) return;
+    // souris: on choisit horizontal par défaut
     dragX(e.clientX);
-  }, [dragging]);
+  }, []);
   const onPointerUp = useCallback((e) => {
     e.currentTarget.releasePointerCapture?.(e.pointerId);
     end();
-  }, [dragging]);
+  }, []);
 
-  // Tactile: détecter l’axe. Si horizontal => empêcher le scroll de page.
+  // Tactile: choisir l’axe; bloquer la page seulement si horizontal
   const onTouchStart = useCallback((e) => {
     const t = e.touches[0];
     begin(t.clientX, t.clientY);
@@ -113,30 +117,29 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     const t = e.touches[0];
     const dx = t.clientX - startXRef.current;
     const dy = t.clientY - startYRef.current;
-
     if (axisRef.current == null) {
       if (Math.abs(dx) > 6 || Math.abs(dy) > 6) {
         axisRef.current = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
-        if (axisRef.current === "x") setDragging(true);
       }
     }
     if (axisRef.current === "x") {
-      e.preventDefault(); // bloque le scroll vertical de la page pendant le swipe horizontal
+      e.preventDefault();
       dragX(t.clientX);
     }
   }, []);
-  const onTouchEnd   = useCallback(() => end(), [dragging]);
+  const onTouchEnd   = useCallback(() => end(), []);
 
-  // Molette: ne rien faire quand la souris est sur le carrousel
+  // Molette: bloquer quand sur le carrousel (page défile ailleurs)
   const onWheel = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
   }, []);
 
+  // Si drag réel, bloquer le clic; sinon laisser passer
   const onClickCapture = useCallback((e) => {
-    if (movedRef.current > 5) { e.preventDefault(); e.stopPropagation(); }
+    if (panning || movedRef.current > 6) { e.preventDefault(); e.stopPropagation(); }
     movedRef.current = 0;
-  }, []);
+  }, [panning]);
 
   const go = useCallback((dir) => {
     const el = trackRef.current; if (!el) return;
@@ -167,7 +170,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
 
         <div
           ref={trackRef}
-          className={`-mx-4 overflow-x-auto overflow-y-hidden px-12 pb-2 ns-scroll ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+          className={`-mx-4 overflow-x-auto overflow-y-hidden px-12 pb-2 ns-scroll ${panning ? "cursor-grabbing" : "cursor-grab"}`}
           style={{ touchAction: "pan-y pinch-zoom", overscrollBehaviorX: "contain" }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -181,7 +184,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
         >
-          <div className={`flex gap-4 md:gap-5 lg:gap-6 ${dragging ? "pointer-events-none select-none" : ""}`}>
+          <div className={`flex gap-4 md:gap-5 lg:gap-6 ${panning ? "pointer-events-none select-none" : ""}`}>
             {loading
               ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
               : items.map((item) => {
