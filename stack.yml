@@ -28,8 +28,8 @@ services:
       PORT: 4000
       API_PORT: 4000
       HOST: 0.0.0.0
-      # Origins du front et de l'API
-      CORS_ORIGIN: https://app.lorna.tv,https://lector.lorna.tv
+      # Même-origine: le front est sur app.lorna.tv
+      CORS_ORIGIN: https://app.lorna.tv
       COOKIE_DOMAIN: .lorna.tv
       COOKIE_SECURE: "true"
       COOKIE_SAMESITE: none
@@ -79,8 +79,8 @@ services:
     init: true
     working_dir: /app
     environment:
-      # Appelle l'API via le domaine API
-      VITE_API_BASE: https://lector.lorna.tv/api
+      # Same-origin: le front appelle /api
+      VITE_API_BASE: /api
       NODE_ENV: production
       NPM_CONFIG_PRODUCTION: "false"
     command:
