@@ -20,12 +20,10 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   const rafRef = useRef(0);
 
   const startX = useRef(0);
-  const startY = useRef(0);
   const startScroll = useRef(0);
   const lastX = useRef(0);
   const vel = useRef(0);
   const moved = useRef(0);
-  const axis = useRef(null); // null | 'x' | 'y'
   const pressed = useRef(false);
   const hasDragged = useRef(false);
   const blockClickUntil = useRef(0);
@@ -56,15 +54,13 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     return () => { document.body.style.userSelect = ""; };
   }, [dragging]);
 
-  const begin = (x, y) => {
+  const begin = (x) => {
     const el = trackRef.current; if (!el) return;
     stopInertia();
-    axis.current = null;
     pressed.current = true;
     hasDragged.current = false;
     setDragging(false);
     startX.current = x;
-    startY.current = y;
     lastX.current = x;
     startScroll.current = el.scrollLeft;
     vel.current = 0;
@@ -90,7 +86,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     const el = trackRef.current; if (!el) { setDragging(false); return; }
     const dragged = hasDragged.current;
     setDragging(false);
-    axis.current = null;
     if (dragged) blockClickUntil.current = performance.now() + 150;
 
     if (!dragged) return;
@@ -105,40 +100,25 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     rafRef.current = requestAnimationFrame(step);
   };
 
-  // Souris / stylet
-  const onPointerDown = useCallback((e) => begin(e.clientX, e.clientY), []);
-  const onPointerMove = useCallback((e) => { if (pressed.current) dragHoriz(e.clientX); }, []);
+  // Souris uniquement
+  const onPointerDown = useCallback((e) => {
+    if (e.pointerType === "mouse") begin(e.clientX);
+  }, []);
+  const onPointerMove = useCallback((e) => {
+    if (e.pointerType === "mouse" && pressed.current) dragHoriz(e.clientX);
+  }, []);
   const onPointerUp   = useCallback(() => end(), []);
 
-  // Tactile
-  const onTouchStart = useCallback((e) => { const t = e.touches[0]; begin(t.clientX, t.clientY); }, []);
-  const onTouchMove  = useCallback((e) => {
-    const t = e.touches[0];
-    const dx = t.clientX - startX.current;
-    const dy = t.clientY - startY.current;
-    if (axis.current == null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
-      axis.current = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
-    }
-    if (axis.current === "x") { if (e.cancelable) e.preventDefault(); dragHoriz(t.clientX); }
-  }, []);
-  const onTouchEnd   = useCallback(() => end(), []);
-
-  // Molette: horizontal explicite => carrousel; sinon laisser la page défiler
+  // Molette: horizontal explicite => carrousel; sinon, laisser défiler la page
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
-    const ax = Math.abs(e.deltaX);
-    const ay = Math.abs(e.deltaY);
-    const horizontalIntent =
-      e.shiftKey ||
-      ax >= ay * 2.0 ||           // seuil plus strict
-      (ax > 12 && ay < 3);        // gestes trackpad quasi-purs en X
-    if (horizontalIntent) {
-      e.preventDefault();
-      e.stopPropagation();
-      const dx = ax ? e.deltaX : (e.deltaY > 0 ? 120 : -120);
-      el.scrollBy({ left: dx, behavior: "auto" });
-    }
-    // sinon: ne rien faire => la page défile en Y
+    const ax = Math.abs(e.deltaX), ay = Math.abs(e.deltaY);
+    const horizontalIntent = e.shiftKey || ax >= ay * 2 || (ax > 12 && ay < 3);
+    if (!horizontalIntent) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const dx = ax ? e.deltaX : (e.deltaY > 0 ? 120 : -120);
+    el.scrollBy({ left: dx, behavior: "auto" });
   }, []);
 
   const onClickCapture = useCallback((e) => {
@@ -177,15 +157,16 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
         <div
           ref={trackRef}
           className={`-mx-4 overflow-x-auto overflow-y-hidden px-12 pb-2 ns-scroll ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
-          style={{ touchAction: "pan-y pinch-zoom", overscrollBehaviorX: "contain" }}
+          style={{
+            touchAction: "pan-y pinch-zoom",
+            WebkitOverflowScrolling: "touch",
+            overscrollBehaviorX: "contain"
+          }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerLeave={onPointerUp}
           onPointerCancel={onPointerUp}
-          onTouchStart={onTouchStart}
-          onTouchMove={onTouchMove}
-          onTouchEnd={onTouchEnd}
           onWheel={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
