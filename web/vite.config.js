@@ -7,25 +7,20 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
-    server: {
-      host: true,
-      port: 5173,
-      allowedHosts: ["lector.lorna.tv"],
+    server: { host: true, port: 5173, allowedHosts: ["lector.lorna.tv"] },
+    preview: { host: true, port: 5173, allowedHosts: ["lector.lorna.tv"] },
+
+    // Ne prébundle pas Shaka en dev
+    optimizeDeps: {
+      exclude: ["shaka-player", "shaka-player/dist/shaka-player.compiled.js"],
     },
-    preview: {
-      host: true,
-      port: 5173,
-      allowedHosts: ["lector.lorna.tv"],
-    },
-    resolve: {
-      alias: {
-        // force l’usage du bundle compilé de Shaka pour Vite/Rollup
-        "shaka-player": "shaka-player/dist/shaka-player.compiled.js",
+    // Marque Shaka comme externe au build (chargé via <script> CDN)
+    build: {
+      rollupOptions: {
+        external: ["shaka-player", "shaka-player/dist/shaka-player.compiled.js"],
       },
     },
-    optimizeDeps: {
-      include: ["shaka-player/dist/shaka-player.compiled.js"],
-    },
+
     define: {
       "import.meta.env.VITE_API_BASE": JSON.stringify(env.VITE_API_BASE),
     },
