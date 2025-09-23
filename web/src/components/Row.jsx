@@ -18,16 +18,19 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
 
   const trackRef = useRef(null);
   const rafRef = useRef(0);
-  const startXRef = useRef(0);
-  const startYRef = useRef(0);
-  const startScrollRef = useRef(0);
-  const lastXRef = useRef(0);
-  const velRef = useRef(0);
-  const movedRef = useRef(0);
-  const axisRef = useRef(null);    // null | 'x' | 'y'
-  const pressedRef = useRef(false); // pointeur enfoncé ?
-  const [panning, setPanning] = useState(false); // vrai drag horizontal actif
 
+  const startX = useRef(0);
+  const startY = useRef(0);
+  const startScroll = useRef(0);
+  const lastX = useRef(0);
+  const vel = useRef(0);
+  const moved = useRef(0);
+  const axis = useRef(null);           // null | 'x' | 'y'
+  const pressed = useRef(false);
+  const hasDragged = useRef(false);
+  const blockClickUntil = useRef(0);   // timestamp ms
+
+  const [dragging, setDragging] = useState(false);
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
 
@@ -49,44 +52,56 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   }, [measure, items.length]);
 
   useEffect(() => {
-    document.body.style.userSelect = panning ? "none" : "";
+    document.body.style.userSelect = dragging ? "none" : "";
     return () => { document.body.style.userSelect = ""; };
-  }, [panning]);
+  }, [dragging]);
 
   const begin = (x, y) => {
     const el = trackRef.current; if (!el) return;
     stopInertia();
-    axisRef.current = null;
-    pressedRef.current = true;
-    setPanning(false);
-    startXRef.current = x;
-    startYRef.current = y;
-    lastXRef.current = x;
-    startScrollRef.current = el.scrollLeft;
-    velRef.current = 0;
-    movedRef.current = 0;
+    axis.current = null;
+    pressed.current = true;
+    hasDragged.current = false;
+    setDragging(false);
+    startX.current = x;
+    startY.current = y;
+    lastX.current = x;
+    startScroll.current = el.scrollLeft;
+    vel.current = 0;
+    moved.current = 0;
   };
 
-  const dragX = (x) => {
+  const dragHoriz = (x) => {
     const el = trackRef.current; if (!el) return;
-    const dx = x - lastXRef.current;
-    el.scrollLeft = startScrollRef.current - (x - startXRef.current);
-    velRef.current = dx;
-    lastXRef.current = x;
-    movedRef.current += Math.abs(dx);
-    if (!panning && movedRef.current > 6) setPanning(true);
+    const dx = x - lastX.current;
+    el.scrollLeft = startScroll.current - (x - startX.current);
+    vel.current = dx;
+    lastX.current = x;
+    moved.current += Math.abs(dx);
+    if (!hasDragged.current && moved.current > 6) {
+      hasDragged.current = true;
+      setDragging(true);
+    }
     measure();
   };
 
   const end = () => {
-    pressedRef.current = false;
-    const el = trackRef.current; if (!el) { setPanning(false); return; }
-    if (!panning) { setPanning(false); return; }
-    let v = velRef.current;
+    pressed.current = false;
+    const el = trackRef.current; if (!el) { setDragging(false); return; }
+
+    // Débloque les clics tout de suite, mais protège pendant 150ms si drag réel.
+    const dragged = hasDragged.current;
+    setDragging(false);
+    axis.current = null;
+    if (dragged) blockClickUntil.current = performance.now() + 150;
+
+    // Inertie sans désactiver les clics
+    if (!dragged) return;
+    let v = vel.current;
     const friction = 0.92;
     const step = () => {
       v *= friction;
-      if (Math.abs(v) < 0.4) { setPanning(false); measure(); axisRef.current = null; return; }
+      if (Math.abs(v) < 0.4) { measure(); return; }
       el.scrollLeft -= v;
       rafRef.current = requestAnimationFrame(step);
     };
@@ -95,51 +110,46 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
 
   // Souris / stylet
   const onPointerDown = useCallback((e) => {
-    e.currentTarget.setPointerCapture?.(e.pointerId);
     begin(e.clientX, e.clientY);
   }, []);
   const onPointerMove = useCallback((e) => {
-    if (!pressedRef.current) return;
-    // souris: on choisit horizontal par défaut
-    dragX(e.clientX);
+    if (!pressed.current) return;
+    dragHoriz(e.clientX); // souris: on force horizontal
   }, []);
-  const onPointerUp = useCallback((e) => {
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-    end();
-  }, []);
+  const onPointerUp = useCallback(() => end(), []);
 
-  // Tactile: choisir l’axe; bloquer la page seulement si horizontal
+  // Tactile
   const onTouchStart = useCallback((e) => {
     const t = e.touches[0];
     begin(t.clientX, t.clientY);
   }, []);
   const onTouchMove  = useCallback((e) => {
     const t = e.touches[0];
-    const dx = t.clientX - startXRef.current;
-    const dy = t.clientY - startYRef.current;
-    if (axisRef.current == null) {
-      if (Math.abs(dx) > 6 || Math.abs(dy) > 6) {
-        axisRef.current = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
-      }
+    const dx = t.clientX - startX.current;
+    const dy = t.clientY - startY.current;
+    if (axis.current == null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
+      axis.current = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
     }
-    if (axisRef.current === "x") {
-      e.preventDefault();
-      dragX(t.clientX);
+    if (axis.current === "x") {
+      e.preventDefault(); // bloque scroll page pendant le swipe horizontal
+      dragHoriz(t.clientX);
     }
   }, []);
   const onTouchEnd   = useCallback(() => end(), []);
 
-  // Molette: bloquer quand sur le carrousel (page défile ailleurs)
+  // Molette: bloque quand sur le carrousel (la page défile ailleurs)
   const onWheel = useCallback((e) => {
     e.preventDefault();
     e.stopPropagation();
   }, []);
 
-  // Si drag réel, bloquer le clic; sinon laisser passer
+  // Bloque le clic si un drag a eu lieu ou tout de suite après
   const onClickCapture = useCallback((e) => {
-    if (panning || movedRef.current > 6) { e.preventDefault(); e.stopPropagation(); }
-    movedRef.current = 0;
-  }, [panning]);
+    if (hasDragged.current || performance.now() < blockClickUntil.current) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, []);
 
   const go = useCallback((dir) => {
     const el = trackRef.current; if (!el) return;
@@ -170,7 +180,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
 
         <div
           ref={trackRef}
-          className={`-mx-4 overflow-x-auto overflow-y-hidden px-12 pb-2 ns-scroll ${panning ? "cursor-grabbing" : "cursor-grab"}`}
+          className={`-mx-4 overflow-x-auto overflow-y-hidden px-12 pb-2 ns-scroll ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
           style={{ touchAction: "pan-y pinch-zoom", overscrollBehaviorX: "contain" }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
@@ -184,7 +194,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
         >
-          <div className={`flex gap-4 md:gap-5 lg:gap-6 ${panning ? "pointer-events-none select-none" : ""}`}>
+          <div className="flex gap-4 md:gap-5 lg:gap-6">
             {loading
               ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
               : items.map((item) => {
