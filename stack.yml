@@ -28,7 +28,9 @@ services:
       PORT: 4000
       API_PORT: 4000
       HOST: 0.0.0.0
-      CORS_ORIGIN: https://lector.lorna.tv,http://85.31.239.110:5173
+      # Origins du front et de l'API
+      CORS_ORIGIN: https://app.lorna.tv,https://lector.lorna.tv
+      COOKIE_DOMAIN: .lorna.tv
       COOKIE_SECURE: "true"
       COOKIE_SAMESITE: none
       TMDB_API_KEY: d8175301037c00f3c719478998396539
@@ -77,7 +79,8 @@ services:
     init: true
     working_dir: /app
     environment:
-      VITE_API_BASE: /api
+      # Appelle l'API via le domaine API
+      VITE_API_BASE: https://lector.lorna.tv/api
       NODE_ENV: production
       NPM_CONFIG_PRODUCTION: "false"
     command:
@@ -91,18 +94,16 @@ services:
         unzip -o -q /tmp/src.zip -d /tmp
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/web/. /app
-        printf '%s\n' '{ "name":"nova-stream-web","version":"0.1.0","private":true,"type":"module","scripts":{"dev":"vite","build":"vite build","preview":"vite preview"}, "dependencies":{"axios":"^1.6.7","hls.js":"^1.5.7","react":"^18.2.0","react-dom":"^18.2.0","react-router-dom":"^6.26.2"}, "devDependencies":{"@vitejs/plugin-react":"^4.2.0","autoprefixer":"^10.4.17","postcss":"^8.4.35","tailwindcss":"^3.4.6","vite":"^5.0.0"} }' > /app/package.json
-        printf '%s\n' 'import { defineConfig } from "vite"; import react from "@vitejs/plugin-react"; export default defineConfig(({ mode })=>({ plugins:[react()], server:{ host:true, port:5173, allowedHosts:["lector.lorna.tv"] }, preview:{ host:true, port:5173, allowedHosts:["lector.lorna.tv"] } }));' > /app/vite.config.js
-        npm install --include=dev --no-audit --no-fund
+        npm ci || npm i
         npm run build
-        npm run preview -- --host 0.0.0.0 --port 5173
+        npx serve -s dist -l 8081
     depends_on:
       api:
         condition: service_healthy
     ports:
-      - "5173:5173"
+      - "8081:8081"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5173/ >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/ >/dev/null 2>&1 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 20
