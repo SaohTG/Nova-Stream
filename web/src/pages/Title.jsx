@@ -14,7 +14,9 @@ export default function Title() {
     let alive = true;
     (async () => {
       try {
-        const j = await getJson(`/media/${kind}/${id}`);
+        // Forcer l’upgrade TMDB pour les séries afin d’avoir overview, note, etc.
+        const url = kind === "series" ? `/media/${kind}/${id}?refresh=1` : `/media/${kind}/${id}`;
+        const j = await getJson(url);
         if (alive) setData(j);
       } catch {
         if (alive) setData(null);
