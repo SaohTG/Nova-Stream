@@ -44,23 +44,15 @@ export default function VideoPlayer({
 
   useEffect(() => {
     let mounted = true;
-
     async function boot() {
       if (!videoRef.current || !src) return;
-
-      // Import dynamique côté client
-      let shaka;
       try {
+        // Import dynamique pour éviter tout problème de résolution au build
         const mod = await import("shaka-player");
-        shaka = mod.default || mod;
-      } catch (e) {
-        console.error("[Player] Impossible de charger shaka-player", e);
-        return;
-      }
+        const shaka = mod?.default || mod; // compat default / namespace
 
-      try {
         shaka.polyfill.installAll();
-        if (!shaka.Player.isBrowserSupported()) throw new Error("Shaka unsupported");
+        if (!shaka.Player.isBrowserSupported()) throw new Error("Shaka unsupported in this browser");
 
         const player = new shaka.Player(videoRef.current);
         playerRef.current = player;
@@ -68,17 +60,15 @@ export default function VideoPlayer({
         const refreshTracks = () => {
           const a = player.getAudioLanguagesAndRoles(); // [{language,role}]
           const tks = player.getTextLanguages();        // ["fr","en",...]
-          setAudios(
-            a.map((x) => ({
-              lang: x.language,
-              role: x.role || null,
-              label: x.role ? `${x.language} • ${x.role}` : x.language,
-            }))
-          );
-          setTexts(tks.map((l) => ({ lang: l, kind: "sub", label: l })));
+          setAudios(a.map(x => ({
+            lang: x.language,
+            role: x.role || null,
+            label: x.role ? `${x.language} • ${x.role}` : x.language
+          })));
+          setTexts(tks.map(l => ({ lang: l, kind: "sub", label: l })));
           const cfg = player.getConfiguration();
           setAudioSel({ lang: cfg.preferredAudioLanguage || null, role: cfg.preferredAudioRole || null });
-          setTextSel((s) => ({ ...s, lang: cfg.preferredTextLanguage || s.lang || null }));
+          setTextSel(s => ({ ...s, lang: cfg.preferredTextLanguage || s.lang || null }));
         };
 
         player.addEventListener("trackschanged", refreshTracks);
@@ -87,7 +77,6 @@ export default function VideoPlayer({
 
         await player.load(src, initialTime);
         if (!mounted) return;
-
         setDur(videoRef.current.duration || NaN);
         refreshTracks();
         setReady(true);
@@ -95,9 +84,7 @@ export default function VideoPlayer({
         console.error("[Player]", e);
       }
     }
-
     boot();
-
     return () => {
       mounted = false;
       const p = playerRef.current;
@@ -170,34 +157,36 @@ export default function VideoPlayer({
         preload="metadata"
       />
       {/* sélecteurs audio / sous-titres */}
-      <div className="absolute right-3 top-3 flex gap-2">
-        <select
-          className="rounded bg-black/60 text-white text-xs px-2 py-1"
-          value={`${audioSel.lang || ""}||${audioSel.role || ""}`}
-          onChange={(e) => {
-            const [l, r] = e.target.value.split("||");
-            applyAudio(l || null, r || null);
-          }}
-        >
-          <option value="||">Audio auto</option>
-          {audios.map((a, i) => (
-            <option key={`a-${i}`} value={`${a.lang || ""}||${a.role || ""}`}>
-              {a.label}
-            </option>
-          ))}
-        </select>
+      {ready && (
+        <div className="absolute right-3 top-3 flex gap-2">
+          <select
+            className="rounded bg-black/60 text-white text-xs px-2 py-1"
+            value={`${audioSel.lang || ""}||${audioSel.role || ""}`}
+            onChange={(e) => {
+              const [l, r] = e.target.value.split("||");
+              applyAudio(l || null, r || null);
+            }}
+          >
+            <option value="||">Audio auto</option>
+            {audios.map((a, i) => (
+              <option key={`a-${i}`} value={`${a.lang || ""}||${a.role || ""}`}>
+                {a.label}
+              </option>
+            ))}
+          </select>
 
-        <select
-          className="rounded bg-black/60 text-white text-xs px-2 py-1"
-          value={textSel.enabled ? (textSel.lang || "") : ""}
-          onChange={(e) => applyText(e.target.value || null)}
-        >
-          <option value="">Sous-titres désactivés</option>
-          {texts.map((t, i) => (
-            <option key={`t-${i}`} value={t.lang}>{t.label}</option>
-          ))}
-        </select>
-      </div>
+          <select
+            className="rounded bg-black/60 text-white text-xs px-2 py-1"
+            value={textSel.enabled ? (textSel.lang || "") : ""}
+            onChange={(e) => applyText(e.target.value || null)}
+          >
+            <option value="">Sous-titres désactivés</option>
+            {texts.map((t, i) => (
+              <option key={`t-${i}`} value={t.lang}>{t.label}</option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="absolute left-3 bottom-3 text-[11px] rounded bg-black/50 text-white px-2 py-1">
         {fmt(t)} / {fmt(dur)}
