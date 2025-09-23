@@ -1,89 +1,55 @@
 // web/src/components/Row.jsx
+import { Link } from "react-router-dom";
 import { useEffect, useRef, useState, useCallback } from "react";
 import PosterCard from "./PosterCard.jsx";
 
 function SkeletonCard({ kind = "vod" }) {
-  const itemWidthClass = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
-  const ratioClass = kind === "live" ? "aspect-video" : "aspect-[2/3]";
+  const w = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
+  const r = kind === "live" ? "aspect-video" : "aspect-[2/3]";
   return (
-    <div className={`${itemWidthClass} shrink-0`}>
-      <div className={`relative ${ratioClass} w-full overflow-hidden rounded-xl bg-zinc-800 skel`} />
+    <div className={`${w} shrink-0`}>
+      <div className={`relative ${r} w-full overflow-hidden rounded-xl bg-zinc-800 skel`} />
     </div>
   );
 }
 
-export default function Row({
-  title,
-  items = [],
-  kind = "vod",
-  loading = false,
-  seeMoreHref = null,
-  showRank = false,
-}) {
-  const itemWidthClass = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
+export default function Row({ title, items = [], kind = "vod", loading = false, seeMoreHref }) {
+  const w = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
 
   const trackRef = useRef(null);
-  const leftRef = useRef(null);
-  const rightRef = useRef(null);
-
   const rafRef = useRef(0);
   const startXRef = useRef(0);
   const startScrollRef = useRef(0);
   const lastXRef = useRef(0);
-  const movedRef = useRef(0);
   const velRef = useRef(0);
-  const ignoreRef = useRef(false); // ne pas bloquer les <Link>
+  const movedRef = useRef(0);
 
   const [dragging, setDragging] = useState(false);
   const [canLeft, setCanLeft] = useState(false);
   const [canRight, setCanRight] = useState(false);
 
-  // visibilités flèches
-  useEffect(() => {
-    const root = trackRef.current, L = leftRef.current, R = rightRef.current;
-    if (!root || !L || !R) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.target === L) setCanLeft(!e.isIntersecting);
-          if (e.target === R) setCanRight(!e.isIntersecting);
-        }
-      },
-      { root, threshold: 0.99 }
-    );
-    io.observe(L); io.observe(R);
-    const t = setTimeout(() => root.scrollBy({ left: 0 }), 0);
-    return () => { clearTimeout(t); io.disconnect(); };
-  }, [items, loading]);
-
-  const recalc = useCallback(() => {
+  const stopInertia = () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
+  const measure = useCallback(() => {
     const el = trackRef.current; if (!el) return;
-    const max = el.scrollWidth - el.clientWidth;
-    setCanLeft(el.scrollLeft > 0);
-    setCanRight(el.scrollLeft < max - 1);
+    setCanLeft(el.scrollLeft > 4);
+    setCanRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
   }, []);
+
   useEffect(() => {
     const el = trackRef.current; if (!el) return;
-    let ticking = false;
-    const onScroll = () => {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => { recalc(); ticking = false; });
-    };
+    const onScroll = () => measure();
     el.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", recalc);
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", recalc);
-    };
-  }, [recalc, items]);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => { el.removeEventListener("scroll", onScroll); ro.disconnect(); };
+  }, [measure, items.length]);
 
   useEffect(() => {
     document.body.style.userSelect = dragging ? "none" : "";
     return () => { document.body.style.userSelect = ""; };
   }, [dragging]);
 
-  const stopInertia = () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); rafRef.current = 0; };
   const startDrag = (x) => {
     const el = trackRef.current; if (!el) return;
     stopInertia();
@@ -102,6 +68,7 @@ export default function Row({
     velRef.current = dx;
     lastXRef.current = x;
     movedRef.current += Math.abs(dx);
+    measure();
   };
   const endDrag = () => {
     if (!dragging) return;
@@ -111,7 +78,7 @@ export default function Row({
     const friction = 0.92;
     const step = () => {
       v *= friction;
-      if (Math.abs(v) < 0.4) return;
+      if (Math.abs(v) < 0.4) { measure(); return; }
       el.scrollLeft -= v;
       rafRef.current = requestAnimationFrame(step);
     };
@@ -119,51 +86,22 @@ export default function Row({
   };
 
   const onPointerDown = useCallback((e) => {
-    // clic sur lien ou bouton -> ne pas activer le drag
-    ignoreRef.current = !!e.target.closest("a,button");
-    if (ignoreRef.current) return;
-    if (e.pointerType === "mouse" && e.button !== 0) return;
     e.currentTarget.setPointerCapture?.(e.pointerId);
     startDrag(e.clientX);
   }, []);
-  const onPointerMove = useCallback((e) => {
-    if (ignoreRef.current) return;
-    moveDrag(e.clientX);
-  }, [dragging]);
+  const onPointerMove = useCallback((e) => moveDrag(e.clientX), [dragging]);
   const onPointerUp = useCallback((e) => {
-    if (!ignoreRef.current) {
-      e.currentTarget.releasePointerCapture?.(e.pointerId);
-      endDrag();
-    }
-    ignoreRef.current = false;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    endDrag();
   }, [dragging]);
+  const onTouchStart = useCallback((e) => startDrag(e.touches[0].clientX), []);
+  const onTouchMove  = useCallback((e) => moveDrag(e.touches[0].clientX), [dragging]);
+  const onTouchEnd   = useCallback(() => endDrag(), [dragging]);
 
-  const onTouchStart = useCallback((e) => {
-    ignoreRef.current = !!e.target.closest("a,button");
-    if (ignoreRef.current) return;
-    startDrag(e.touches[0].clientX);
-  }, []);
-  const onTouchMove  = useCallback((e) => {
-    if (ignoreRef.current) return;
-    moveDrag(e.touches[0].clientX);
-  }, [dragging]);
-  const onTouchEnd   = useCallback(() => {
-    if (!ignoreRef.current) endDrag();
-    ignoreRef.current = false;
-  }, [dragging]);
-
-  const onWheel = useCallback((e) => {
-    const el = trackRef.current; if (!el) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
-    el.scrollBy({ left: dx, behavior: "auto" });
-  }, []);
+  // Pas de handler wheel: la molette fait défiler la page, pas le carrousel.
 
   const onClickCapture = useCallback((e) => {
-    if (ignoreRef.current) { ignoreRef.current = false; return; }
-    // seuil plus large pour éviter les faux positifs
-    if (movedRef.current > 12) { e.preventDefault(); e.stopPropagation(); }
+    if (movedRef.current > 5) { e.preventDefault(); e.stopPropagation(); }
     movedRef.current = 0;
   }, []);
 
@@ -172,37 +110,33 @@ export default function Row({
     stopInertia();
     const amount = Math.round(el.clientWidth * 0.9) * (dir > 0 ? 1 : -1);
     el.scrollBy({ left: amount, behavior: "smooth" });
+    // mesurera après l’animation via "scroll" listener
   }, []);
-
-  const showLeftBtn = canLeft && !loading && items.length > 0;
-  const showRightBtn = canRight && !loading && items.length > 0;
 
   return (
     <section className="mb-10">
       <div className="mb-3 flex items-baseline justify-between">
         <h2 className="text-lg font-semibold tracking-tight text-white">{title}</h2>
         {!!seeMoreHref && items?.length > 0 && (
-          <a href={seeMoreHref} className="text-sm font-medium text-zinc-300 hover:text-white hover:underline">
+          <Link to={seeMoreHref} className="text-sm font-medium text-zinc-300 hover:text-white hover:underline">
             Voir plus
-          </a>
+          </Link>
         )}
       </div>
 
       <div className="relative">
-        {showLeftBtn && (
+        {canLeft && (
           <button
             aria-label="Précédent"
             onClick={() => go(-1)}
-            className="absolute left-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
-          >
-            ‹
-          </button>
+            className="absolute left-0 top-1/2 z-10 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white hover:bg-black/70"
+          >‹</button>
         )}
 
         <div
           ref={trackRef}
-          className={`-mx-4 overflow-x-auto overflow-y-hidden px-12 pb-2 select-none ns-scroll ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
-          style={{ scrollSnapType: "x mandatory", touchAction: "pan-y pinch-zoom", overscrollBehavior: "contain" }}
+          className={`-mx-4 overflow-x-auto overflow-y-hidden px-12 pb-2 ns-scroll ${dragging ? "cursor-grabbing" : "cursor-grab"}`}
+          style={{ touchAction: "pan-y pinch-zoom", overscrollBehaviorX: "contain" }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
@@ -211,45 +145,29 @@ export default function Row({
           onTouchStart={onTouchStart}
           onTouchMove={onTouchMove}
           onTouchEnd={onTouchEnd}
-          onWheelCapture={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
         >
-          <div className={`flex gap-4 md:gap-5 lg:gap-6 items-stretch ${dragging ? "pointer-events-none" : ""}`}>
-            <div ref={leftRef} className="w-px h-px shrink-0" aria-hidden />
-            {(loading
+          <div className={`flex gap-4 md:gap-5 lg:gap-6 ${dragging ? "pointer-events-none select-none" : ""}`}>
+            {loading
               ? Array.from({ length: 15 }).map((_, i) => <SkeletonCard key={`sk-${i}`} kind={kind} />)
-              : items.map((item, idx) => {
-                  const key = `${kind}-${item.stream_id || item.series_id || item.name || idx}`;
-                  const rank = showRank ? item.__rank ?? idx + 1 : null;
+              : items.map((item) => {
+                  const key = `${kind}-${item.stream_id || item.series_id || item.name}`;
                   return (
-                    <div className={`${itemWidthClass} shrink-0 snap-start relative overflow-visible`} key={key}>
-                      <div className="relative z-10">
-                        <PosterCard item={item} kind={kind} showTitle={false} />
-                      </div>
-                      {rank != null && (
-                        <div
-                          className="absolute -left-3 -bottom-2 z-20 text-white/20 font-extrabold leading-none pointer-events-none select-none [text-shadow:0_0_20px_rgba(0,0,0,0.6)] text-[88px] md:text-[120px] lg:text-[160px]"
-                          aria-hidden
-                        >
-                          {rank}
-                        </div>
-                      )}
+                    <div className={`${w} shrink-0`} key={key}>
+                      <PosterCard item={item} kind={kind} showTitle={false} />
                     </div>
                   );
-                }))}
-            <div ref={rightRef} className="w-px h-px shrink-0" aria-hidden />
+                })}
           </div>
         </div>
 
-        {showRightBtn && (
+        {canRight && (
           <button
             aria-label="Suivant"
             onClick={() => go(1)}
-            className="absolute right-0 top-1/2 -translate-y-1/2 z-10 rounded-full bg-black/50 text-white w-10 h-10 grid place-items-center hover:bg-black/70 focus:outline-none"
-          >
-            ›
-          </button>
+            className="absolute right-0 top-1/2 z-10 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white hover:bg-black/70"
+          >›</button>
         )}
       </div>
     </section>
