@@ -1,9 +1,9 @@
 version: "3.9"
 
-# IMPORTANT NPM:
-# - Proxy Host app.lorna.tv -> Forward SCHEME=http, HOST=<server ip>, PORT=8081
-# - Custom location /api -> SCHEME=http, HOST=<server ip>, PORT=4000
-# - Ne PAS activer SSL Passthrough. Cert LE côté NPM seulement.
+# Nginx Proxy Manager:
+# - app.lorna.tv → Forward SCHEME=http, HOST=<server ip>, PORT=8081
+# - Custom location /api → SCHEME=http, HOST=<server ip>, PORT=4000
+# - SSL Passthrough: OFF. Cert LE côté NPM.
 
 services:
   db:
@@ -50,18 +50,50 @@ services:
         set -e
         apk add --no-cache unzip curl netcat-openbsd
         until nc -z db 5432; do echo 'waiting for db...'; sleep 2; done
+
+        # Récupère le code
         rm -rf /tmp/Nova-Stream-main /tmp/src.zip
         curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
         unzip -o -q /tmp/src.zip -d /tmp
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/api/. /app
+
+        # Force un package.json compatible CJS (corrige l’erreur "Dynamic require of fs")
+        cat > /app/package.json <<'PKG'
+        {
+          "name": "nova-stream-api",
+          "version": "0.1.0",
+          "private": true,
+          "type": "module",
+          "engines": { "node": ">=20" },
+          "scripts": {
+            "build": "esbuild src/main.js --bundle --platform=node --format=cjs --outfile=dist/main.cjs",
+            "start": "node dist/main.cjs",
+            "dev": "node dist/main.cjs"
+          },
+          "dependencies": {
+            "bcryptjs": "^2.4.3",
+            "cookie-parser": "^1.4.6",
+            "cors": "^2.8.5",
+            "dotenv": "^16.4.5",
+            "express": "^4.19.2",
+            "jsonwebtoken": "^9.0.2",
+            "morgan": "^1.10.0",
+            "pg": "^8.12.0",
+            "undici": "^6.19.8"
+          },
+          "devDependencies": {
+            "esbuild": "^0.21.5"
+          }
+        }
+        PKG
+
         npm install --include=dev --no-audit --no-fund
-        npm i undici@^6 --no-audit --no-fund
         npm run build
-        node dist/main.js
+        node dist/main.cjs
     depends_on:
       - db
-    # Option: limiter à l’hôte si NPM tourne sur le même hôte (sinon garder 0.0.0.0)
+    # Option: limiter à localhost si NPM est sur le même hôte
     # ports: ["127.0.0.1:4000:4000"]
     ports:
       - "4000:4000"
@@ -82,12 +114,36 @@ services:
         set -e
         apk add --no-cache nodejs npm curl unzip
         rm -rf /tmp/Nova-Stream-main /tmp/src.zip
-        curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
+        curl -L https://github.com/SaOhTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip || curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
         unzip -o -q /tmp/src.zip -d /tmp
         rm -rf /app; mkdir -p /app
         cp -r /tmp/Nova-Stream-main/web/. /app
         cd /app
-        printf '%s\n' '{ "name":"nova-stream-web","private":true,"type":"module","scripts":{"build":"vite build"}, "dependencies":{"axios":"^1.6.7","hls.js":"^1.5.7","react":"^18.2.0","react-dom":"^18.2.0","react-router-dom":"^6.26.2"}, "devDependencies":{"@vitejs/plugin-react":"^4.2.0","autoprefixer":"^10.4.17","postcss":"^8.4.35","tailwindcss":"^3.4.6","vite":"^5.0.0"} }' > package.json
+
+        # Build Vite statique. API en /api via NPM.
+        cat > package.json <<'PKG'
+        {
+          "name":"nova-stream-web",
+          "private":true,
+          "type":"module",
+          "scripts":{"build":"vite build"},
+          "dependencies":{
+            "axios":"^1.6.7",
+            "hls.js":"^1.5.7",
+            "react":"^18.2.0",
+            "react-dom":"^18.2.0",
+            "react-router-dom":"^6.26.2"
+          },
+          "devDependencies":{
+            "@vitejs/plugin-react":"^4.2.0",
+            "autoprefixer":"^10.4.17",
+            "postcss":"^8.4.35",
+            "tailwindcss":"^3.4.6",
+            "vite":"^5.0.0"
+          }
+        }
+        PKG
+
         cat > vite.config.js <<'EOF'
         import { defineConfig } from "vite";
         import react from "@vitejs/plugin-react";
@@ -98,10 +154,13 @@ services:
           build: { outDir: "dist", sourcemap: false }
         }));
         EOF
+
         npm i --include=dev --no-audit --no-fund
         npm run build
         rm -rf /usr/share/nginx/html/*
         cp -r dist/* /usr/share/nginx/html/
+
+        # Nginx pour SPA sur 8081
         cat > /etc/nginx/conf.d/default.conf <<'NGINX'
         server {
           listen 8081;
@@ -109,17 +168,14 @@ services:
           root /usr/share/nginx/html;
           index index.html;
           charset utf-8;
-
-          # SPA
-          location / {
-            try_files $uri $uri/ /index.html;
-          }
+          location / { try_files $uri $uri/ /index.html; }
         }
         NGINX
+
         nginx -g 'daemon off;'
     depends_on:
       - api
-    # Option: limiter à l’hôte si NPM sur le même hôte
+    # Option: limiter à localhost si NPM est sur le même hôte
     # ports: ["127.0.0.1:8081:8081"]
     ports:
       - "8081:8081"
