@@ -21,7 +21,8 @@ import MovieCategory from "./pages/MovieCategory.jsx";
 import SeriesCategory from "./pages/SeriesCategory.jsx";
 import SearchPage from "./pages/Search.jsx";
 import Title from "./pages/Title.jsx";
-import MyList from "./pages/MyList.jsx"; // ← ajout
+import MyList from "./pages/MyList.jsx";   // ← ajout
+import Watch from "./pages/Watch.jsx";     // ← ajout
 
 import Login from "./pages/Login.jsx";
 import Signup from "./pages/Signup.jsx";
@@ -111,7 +112,8 @@ export default function App() {
               <Route path="/movies/category/:id" element={<MovieCategory />} />
               <Route path="/series/category/:id" element={<SeriesCategory />} />
               <Route path="/title/:kind/:id" element={<Title />} />
-              <Route path="/my-list" element={<MyList />} /> {/* ← ajout */}
+              <Route path="/my-list" element={<MyList />} />
+              <Route path="/watch/:kind/:id" element={<Watch />} /> {/* ← ajout */}
             </Route>
           </Route>
         </Route>
