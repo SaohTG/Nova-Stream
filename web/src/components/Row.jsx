@@ -111,9 +111,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
   const onPointerUp   = useCallback(() => end(), []);
 
   // Tactile
-  const onTouchStart = useCallback((e) => {
-    const t = e.touches[0]; begin(t.clientX, t.clientY);
-  }, []);
+  const onTouchStart = useCallback((e) => { const t = e.touches[0]; begin(t.clientX, t.clientY); }, []);
   const onTouchMove  = useCallback((e) => {
     const t = e.touches[0];
     const dx = t.clientX - startX.current;
@@ -121,22 +119,26 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     if (axis.current == null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
       axis.current = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
     }
-    if (axis.current === "x") { e.preventDefault(); dragHoriz(t.clientX); }
+    if (axis.current === "x") { if (e.cancelable) e.preventDefault(); dragHoriz(t.clientX); }
   }, []);
   const onTouchEnd   = useCallback(() => end(), []);
 
-  // Molette: horizontal clair => carrousel; sinon laisser la page défiler
+  // Molette: horizontal explicite => carrousel; sinon laisser la page défiler
   const onWheel = useCallback((e) => {
     const el = trackRef.current; if (!el) return;
     const ax = Math.abs(e.deltaX);
     const ay = Math.abs(e.deltaY);
-    const horizontalIntent = e.shiftKey || ax >= ay * 1.5 || (ax > 10 && ay < 4);
+    const horizontalIntent =
+      e.shiftKey ||
+      ax >= ay * 2.0 ||           // seuil plus strict
+      (ax > 12 && ay < 3);        // gestes trackpad quasi-purs en X
     if (horizontalIntent) {
       e.preventDefault();
       e.stopPropagation();
       const dx = ax ? e.deltaX : (e.deltaY > 0 ? 120 : -120);
       el.scrollBy({ left: dx, behavior: "auto" });
     }
+    // sinon: ne rien faire => la page défile en Y
   }, []);
 
   const onClickCapture = useCallback((e) => {
@@ -187,6 +189,8 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
           onWheel={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
+          role="region"
+          aria-label={title}
         >
           <div className="flex gap-4 md:gap-5 lg:gap-6">
             {loading
