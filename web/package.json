@@ -13,7 +13,8 @@
     "hls.js": "^1.5.7",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.26.2"
+    "react-router-dom": "^6.26.2",
+    "shaka-player": "^4.0.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.0",
