@@ -7,7 +7,7 @@ import morgan from "morgan";
 import helmet from "helmet";
 
 import { initDatabase } from "./db/init.js";
-import authRouter, { ensureAuth } from "./modules/auth.js";
+import authRouter, { ensureAuth, ensureAuthOrRefresh } from "./modules/auth.js";
 import userRouter from "./modules/user.js";
 import xtreamRouter from "./modules/xtream.js";
 import tmdbRouter from "./modules/tmdb.js";
@@ -15,33 +15,40 @@ import mediaRouter from "./modules/media.js";
 import mylistRouter from "./modules/mylist.js";
 import watchRouter from "./modules/watch.js";
 import streamRouter from "./modules/stream.js";
-import { requireAccess } from "./middleware/resolveMe.js";
 
 const app = express();
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-/* Sécurité HTTP (pas de Permissions-Policy invalide) */
-app.use(helmet({
-  crossOriginEmbedderPolicy: false,
-  crossOriginOpenerPolicy: { policy: "same-origin" },
-  crossOriginResourcePolicy: { policy: "cross-origin" },
-}));
-app.use((_req, res, next) => { res.removeHeader("Permissions-Policy"); next(); });
+/* Sécurité HTTP */
+app.use(
+  helmet({
+    hsts: false, // HSTS via Nginx Proxy Manager
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: { policy: "same-origin" },
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  })
+);
+app.use((_req, res, next) => {
+  res.removeHeader("Permissions-Policy");
+  next();
+});
 
-/* CORS strict + credentials */
+/* CORS + credentials */
 const ORIGINS = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || "http://localhost:5173")
-  .split(",").map(s => s.trim()).filter(Boolean);
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true); // same-origin / healthcheck
+    if (!origin) return cb(null, true);
     return cb(ORIGINS.includes(origin) ? null : new Error("CORS blocked"), ORIGINS.includes(origin));
   },
   credentials: true,
-  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
-  allowedHeaders: ["Content-Type","Authorization","Range","If-Range"],
-  exposedHeaders: ["Accept-Ranges","Content-Range","Content-Length","Content-Type"],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Range", "If-Range"],
+  exposedHeaders: ["Accept-Ranges", "Content-Range", "Content-Length", "Content-Type"],
   optionsSuccessStatus: 204,
 };
 app.use(cors(corsOptions));
@@ -64,8 +71,8 @@ app.use("/user/mylist", ensureAuth, mylistRouter);
 app.use("/user/watch", ensureAuth, watchRouter);
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
-app.use("/media", requireAccess, mediaRouter);
-app.use("/stream", requireAccess, streamRouter);
+app.use("/media", ensureAuthOrRefresh, mediaRouter);   // important
+app.use("/stream", ensureAuthOrRefresh, streamRouter); // important
 
 /* Routes prefix /api */
 app.use("/api/auth", authRouter);
@@ -74,11 +81,11 @@ app.use("/api/user/mylist", ensureAuth, mylistRouter);
 app.use("/api/user/watch", ensureAuth, watchRouter);
 app.use("/api/xtream", ensureAuth, xtreamRouter);
 app.use("/api/tmdb", ensureAuth, tmdbRouter);
-app.use("/api/media", requireAccess, mediaRouter);
-app.use("/api/stream", requireAccess, streamRouter);
+app.use("/api/media", ensureAuthOrRefresh, mediaRouter);   // important
+app.use("/api/stream", ensureAuthOrRefresh, streamRouter); // important
 
 /* Debug */
-app.get("/debug/whoami", ensureAuth, (req, res) => res.json({ user: req.user }));
+app.get("/debug/whoami", ensureAuthOrRefresh, (req, res) => res.json({ user: req.user }));
 
 /* 404 */
 app.use((req, res, next) => {
@@ -97,7 +104,7 @@ app.use((err, req, res, _next) => {
   if (!res.headersSent) res.status(status).json({ error: message, detail: err.detail });
 });
 
-/* Boot + DB retry non bloquant pour healthcheck */
+/* Boot + DB retry non bloquant */
 const port = Number(process.env.API_PORT || 4000);
 
 async function waitForDb(maxTries = 40, delayMs = 3000) {
@@ -108,7 +115,7 @@ async function waitForDb(maxTries = 40, delayMs = 3000) {
       return;
     } catch (e) {
       console.log(`[db] retry ${i}/${maxTries}: ${e?.message || e}`);
-      await new Promise(r => setTimeout(r, delayMs));
+      await new Promise((r) => setTimeout(r, delayMs));
     }
   }
   console.error("[db] still not ready after retries");
