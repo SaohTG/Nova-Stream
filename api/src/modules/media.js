@@ -12,30 +12,64 @@ pool.on("error", (e) => console.error("[PG ERROR]", e));
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600); // 7 jours
 
-/* ================= Auth minimale (cookie httpOnly ou req.user) ================= */
+/* ================= Auth robuste (access + refresh) ================= */
+const IS_PROD = process.env.NODE_ENV === "production";
+const COOKIE_DOMAIN = process.env.COOKIE_DOMAIN || undefined;
+const ACCESS_TTL = Number(process.env.API_JWT_ACCESS_TTL || 900);
+
 function parseCookies(req) {
+  if (req.cookies) return req.cookies; // cookie-parser
   const h = req.headers.cookie;
   if (!h) return {};
   return h.split(";").reduce((a, p) => {
-    const [k, v] = p.split("=");
-    if (!k) return a;
-    a[k.trim()] = decodeURIComponent((v || "").trim());
+    const i = p.indexOf("="); if (i < 0) return a;
+    const k = p.slice(0, i).trim(); const v = p.slice(i + 1).trim();
+    a[k] = decodeURIComponent(v);
     return a;
   }, {});
 }
-function getUserId(req) {
-  // 1) middleware amont
-  if (req?.user?.id || req?.user?.sub) return String(req.user.id || req.user.sub);
-  // 2) cookie httpOnly "access"
-  const token = parseCookies(req)["access"];
-  if (!token) return null;
+function setAccessCookie(res, sub, email) {
+  const tok = jwt.sign({ sub, email }, process.env.API_JWT_SECRET, { expiresIn: ACCESS_TTL });
+  res.cookie("access", tok, {
+    httpOnly: true,
+    secure: IS_PROD,
+    sameSite: "none",
+    domain: COOKIE_DOMAIN,
+    path: "/",
+    maxAge: ACCESS_TTL * 1000,
+  });
+  return tok;
+}
+function ensureAuthLocal(req, res, next) {
+  // déjà posé par un middleware amont
+  if (req.user?.id || req.user?.sub) return next();
+
+  const ck = parseCookies(req);
+  const access = ck.access || ck.at;
+  if (access) {
+    try {
+      const p = jwt.verify(access, process.env.API_JWT_SECRET);
+      req.user = { id: String(p.sub || p.userId || p.id), sub: String(p.sub || p.userId || p.id), email: p.email };
+      return next();
+    } catch { /* expiré → on tente refresh */ }
+  }
+
+  const refresh = ck.refresh || ck.rt || ck.refresh_token || ck.ns_refresh;
+  if (!refresh) return res.status(401).json({ error: "unauthorized" });
+
   try {
-    const payload = jwt.verify(token, process.env.API_JWT_SECRET);
-    return String(payload.sub || payload.userId || payload.id);
+    const p = jwt.verify(refresh, process.env.API_REFRESH_SECRET);
+    setAccessCookie(res, String(p.sub || p.userId || p.id), p.email);
+    req.user = { id: String(p.sub || p.userId || p.id), sub: String(p.sub || p.userId || p.id), email: p.email };
+    return next();
   } catch {
-    return null;
+    return res.status(401).json({ error: "unauthorized" });
   }
 }
+function getUserId(req) {
+  return req?.user?.id || req?.user?.sub || null;
+}
+router.use(ensureAuthLocal);
 
 /* ================= Crypto (compatible xtream.js) ================= */
 function getKey() {
@@ -356,7 +390,7 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
   if (!refresh) {
     const cached = await getCache("series", seriesId);
     if (cached && cached.data && !(cached.data.tmdb_id) && !(cached.data.vote_average) && !(cached.data.overview)) {
-      // essayer upgrade plus tard
+      // upgrade possible plus tard
     } else if (cached && cached.data) {
       return cached.data;
     }
@@ -400,12 +434,7 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
   const lastSeg = base.split(" - ").pop().trim();
 
   const queries = Array.from(new Set([
-    rawTitle,
-    base,
-    lastSeg,
-    stripTitle(rawTitle),
-    stripTitle(base),
-    stripTitle(lastSeg),
+    rawTitle, base, lastSeg, stripTitle(rawTitle), stripTitle(base), stripTitle(lastSeg),
   ])).filter(Boolean);
 
   if (!tmdbId && TMDB_KEY && queries.length) {
@@ -497,12 +526,10 @@ function assertSameHost(url, baseUrl) {
 
 /* ================= Routes API (streaming) ================= */
 
-// Désactivé pour sécurité: on ne retourne plus d’URL directe
 router.get("/:kind(movie|series|live)/:id/stream-url", (_req, res) => {
   return res.status(410).json({ error: "direct-url-disabled" });
 });
 
-// Playlist HLS réécrite; fallback fichier si HLS indispo
 router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -547,7 +574,6 @@ router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Proxy générique sécurisé (segments .ts, clés, variantes, mp4/mkv)
 router.get("/proxy", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -581,7 +607,6 @@ router.get("/proxy", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Fallback progressif MP4/TS/MKV
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -605,7 +630,6 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
 });
 
 /* ================= Routes metadata ================= */
-// support ?refresh=1 pour forcer une MAJ
 router.get("/movie/:id", async (req, res, next) => {
   try {
     const out = await resolveMovie(getUserId(req), req.params.id, { refresh: req.query.refresh === "1" });
@@ -619,7 +643,7 @@ router.get("/series/:id", async (req, res, next) => {
   } catch (e) { e.status = e.status || 500; next(e); }
 });
 
-/* ================= ID-less routes (résolvent stream_id) ================= */
+/* ================= ID-less routes ================= */
 async function getVodStreamId(userId, vodId) {
   const creds = await getCreds(userId);
   if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
@@ -645,7 +669,6 @@ async function getEpisodeStreamId(userId, seriesId, seasonNum, episodeNum) {
   return { streamId: String(sid) };
 }
 
-// VOD via vod_id
 router.get("/movie/vod/:vodId/hls.m3u8", async (req, res, next) => {
   try {
     const { streamId } = await getVodStreamId(getUserId(req), req.params.vodId);
@@ -664,7 +687,6 @@ router.get("/movie/vod/:vodId/stream-url", async (_req, res) => {
   return res.status(410).json({ error: "direct-url-disabled" });
 });
 
-// Série via (series_id, saison, épisode)
 router.get("/series/:seriesId/season/:s/episode/:e/hls.m3u8", async (req, res, next) => {
   try {
     const { streamId } = await getEpisodeStreamId(getUserId(req), req.params.seriesId, req.params.s, req.params.e);
