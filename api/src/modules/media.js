@@ -11,9 +11,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
 const TMDB_KEY = process.env.TMDB_API_KEY;
-const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600); // 7 jours
-const IS_PROD = process.env.NODE_ENV === "production";
-const ACCESS_TTL = Number(process.env.API_JWT_ACCESS_TTL || 900);
+const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600);
 
 /* ================= Auth minimale ================= */
 function parseCookies(req) {
@@ -179,8 +177,7 @@ function similarity(a, b) {
   const A = new Set(stripTitle(a).toLowerCase().split(" ").filter(Boolean));
   const B = new Set(stripTitle(b).toLowerCase().split(" ").filter(Boolean));
   if (!A.size || !B.size) return 0;
-  let inter = 0;
-  for (const t of A) if (B.has(t)) inter++;
+  let inter = 0; for (const t of A) if (B.has(t)) inter++;
   return inter / Math.max(A.size, B.size);
 }
 function yearPenalty(yearCand, dateStr) {
@@ -341,12 +338,47 @@ router.get("/:kind(movie|series|live)/:id/stream-url", (_req, res) =>
   res.status(410).json({ error: "direct-url-disabled" })
 );
 
-// HLS réservé au live. VOD → redirect /file
-router.get("/:kind(movie|series|live)/:id/hls.m3u8", (req, res) => {
-  const { kind, id } = req.params;
-  if (kind !== "live") return res.redirect(302, `/api/media/${kind}/${id}/file`);
-  // On pourrait réécrire la playlist ici si nécessaire.
-  return res.redirect(302, `/api/media/${kind}/${id}/file`);
+// HLS: live → réécriture playlist; VOD → redir /file
+router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+
+    const { kind, id } = req.params;
+    if (kind !== "live") return res.redirect(302, `/api/media/${kind}/${id}/file`);
+
+    const creds = await getCreds(userId);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const m3u8Url = await firstReachable(
+      streamCandidates(creds.baseUrl, creds.username, creds.password, "live", id).filter(u => u.endsWith(".m3u8")),
+      { "User-Agent": "VLC/3.0" }
+    );
+    if (!m3u8Url) return res.redirect(302, `/api/media/live/${id}/file`);
+
+    const up = await fetchWithTimeout(m3u8Url, 12000, { "User-Agent": "VLC/3.0" });
+    if (!up.ok) return res.redirect(302, `/api/media/live/${id}/file`);
+
+    const origin = new URL(m3u8Url);
+    const text = await up.text();
+
+    const rewrite = (line) => {
+      if (line.startsWith("#EXT-X-KEY")) {
+        return line.replace(/URI="([^"]+)"/, (_m, uri) => {
+          const abs = new URL(uri, origin).toString();
+          return `URI="/api/media/proxy?url=${encodeURIComponent(abs)}"`;
+        });
+      }
+      if (!line || line.startsWith("#")) return line;
+      const abs = new URL(line, origin).toString();
+      return `/api/media/proxy?url=${encodeURIComponent(abs)}`;
+    };
+
+    const body = text.split(/\r?\n/).map(rewrite).join("\n");
+    res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+    res.setHeader("Cache-Control", "no-store");
+    res.send(body);
+  } catch (e) { next(e); }
 });
 
 // Proxy générique (segments, clés HLS, fichiers directs)
@@ -381,34 +413,78 @@ router.get("/proxy", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// VOD/Live → fichier direct via proxy (VOD: mp4/ts/mkv; Live: ts)
+// Fallback progressif MP4/TS/MKV avec résolutions stream_id | vod_id | tmdb
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
     const userId = getUserId(req);
     if (!userId) return res.sendStatus(401);
+
     const { kind, id } = req.params;
+    const debug = req.query.debug === "1";
+    const notes = [];
+    const tried = [];
 
     const creds = await getCreds(userId);
     if (!creds) return res.status(404).json({ error: "no-xtream" });
 
-    // 1) tenter l’id tel quel (stream_id)
-    let fileUrl = await firstReachable(
-      streamCandidates(creds.baseUrl, creds.username, creds.password, kind, id),
-      { "User-Agent": "VLC/3.0" }
-    );
+    const tryCandidates = async (kind_, id_) => {
+      const urls = streamCandidates(creds.baseUrl, creds.username, creds.password, kind_, id_);
+      tried.push(...urls);
+      return await firstReachable(urls, { "User-Agent": "VLC/3.0" });
+    };
 
-    // 2) fallback: si MOVIE et rien trouvé, traiter l’id comme TMDB id -> map vers stream_id
+    let fileUrl = null;
+
+    // 1) supposer id = stream_id
+    notes.push("try: stream_id");
+    fileUrl = await tryCandidates(kind, id);
+
+    // 2) si movie et échec, supposer id = vod_id → player_api:get_vod_info → stream_id
     if (!fileUrl && kind === "movie" && /^\d+$/.test(id)) {
       try {
-        const { streamId } = await getVodStreamIdByTmdb(userId, id);
-        fileUrl = await firstReachable(
-          streamCandidates(creds.baseUrl, creds.username, creds.password, "movie", streamId),
-          { "User-Agent": "VLC/3.0" }
+        notes.push("try: vod_id→get_vod_info");
+        const info = await fetchJson(
+          buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_info", { vod_id: id })
         );
-      } catch {}
+        const sid = String(Number(info?.movie_data?.stream_id || info?.info?.stream_id || 0) || "");
+        if (sid) {
+          notes.push(`resolved stream_id=${sid}`);
+          fileUrl = await tryCandidates("movie", sid);
+        } else {
+          notes.push("vod_id→stream_id not found");
+        }
+      } catch (e) {
+        notes.push(`vod_id lookup error: ${e.message || e}`);
+      }
     }
 
-    if (!fileUrl) return res.status(404).json({ error: "no-file" });
+    // 3) si toujours rien et id ressemble à TMDB → map TMDB → stream_id via get_vod_streams
+    if (!fileUrl && kind === "movie" && /^\d+$/.test(id)) {
+      try {
+        notes.push("try: tmdb→stream_id");
+        const { streamId } = await getVodStreamIdByTmdb(userId, id);
+        notes.push(`tmdb mapped stream_id=${streamId}`);
+        fileUrl = await tryCandidates("movie", streamId);
+      } catch (e) {
+        notes.push(`tmdb mapping failed: ${e.message || e}`);
+      }
+    }
+
+    if (!fileUrl) {
+      if (debug) {
+        return res.status(404).json({
+          error: "no-file",
+          base_url: creds.baseUrl,
+          username: "***",
+          password: "***",
+          tried,
+          notes,
+        });
+      }
+      return res.status(404).json({ error: "no-file" });
+    }
+
+    try { await assertAllowedUpstream(fileUrl, creds.baseUrl); } catch (e) { if (debug) notes.push(String(e)); }
 
     req.url = `/api/media/proxy?url=${encodeURIComponent(fileUrl)}`;
     return router.handle(req, res, next);
