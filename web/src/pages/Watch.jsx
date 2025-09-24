@@ -4,44 +4,80 @@ import { useLocation, useNavigate, useParams, useSearchParams } from "react-rout
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 import { getJson } from "../lib/api";
 
+function buildProxySrc(accId, kind, xtreamId) {
+  if (!accId || !xtreamId) return null;
+  if (String(kind).toLowerCase() === "live") {
+    return `/api/stream/hls/${encodeURIComponent(accId)}/live/${encodeURIComponent(xtreamId)}.m3u8`;
+  }
+  // VOD par défaut via remux MP4 (sûr pour MKV)
+  return `/api/stream/vodmp4/${encodeURIComponent(accId)}/${encodeURIComponent(xtreamId)}`;
+}
+
 export default function Watch() {
   const { kind, id } = useParams(); // "movie" | "series" | "live" (optionnel)
   const [qs] = useSearchParams();
   const nav = useNavigate();
   const loc = useLocation();
 
-  // src via ?src=... prioritaire. Sinon fallback facultatif depuis API interne si présent.
+  // Priorité aux paramètres explicites
   const srcQS = qs.get("src");
-  const [src, setSrc] = useState(srcQS || "");
-  const title = qs.get("title") || (loc.state && loc.state.title) || "";
-  const poster = qs.get("poster") || (loc.state && loc.state.poster) || "";
+  const accQS = qs.get("acc") || loc.state?.accId || null;     // accountId
+  const xidQS = qs.get("xid") || loc.state?.xtreamId || null;  // xtreamId (stream_id/vod_id/episode_id)
+
+  const computedSrc = useMemo(() => {
+    if (srcQS) return srcQS;
+    return buildProxySrc(accQS, kind, xidQS);
+  }, [srcQS, accQS, xidQS, kind]);
+
+  const [src, setSrc] = useState(computedSrc || "");
+
+  const title = qs.get("title") || loc.state?.title || "";
+  const poster = qs.get("poster") || loc.state?.poster || "";
 
   const resumeKey = useMemo(() => {
     if (!kind || !id) return null;
     // séries: accepter clé fournie via state (ex: "episode:SERIES:1:3")
-    return (loc.state && loc.state.resumeKey) || `${kind}:${id}`;
+    return loc.state?.resumeKey || `${kind}:${id}`;
   }, [kind, id, loc.state]);
 
+  // Si pas de src calculé, tentative de résolution côté API existante (/xtream/stream-url)
   useEffect(() => {
-    if (srcQS) return; // déjà fourni
-    // essai optionnel: endpoint interne pour construire l'URL du flux si dispo côté API
+    setSrc(computedSrc || "");
+  }, [computedSrc]);
+
+  useEffect(() => {
+    if (src) return; // déjà résolu
     let alive = true;
     (async () => {
       try {
-        const r = await getJson(`/xtream/stream-url?kind=${encodeURIComponent(kind || "")}&id=${encodeURIComponent(id || "")}`);
+        const url = `/xtream/stream-url?kind=${encodeURIComponent(kind || "")}&id=${encodeURIComponent(id || "")}` +
+                    (accQS ? `&acc=${encodeURIComponent(accQS)}` : "");
+        const r = await getJson(url);
         if (!alive) return;
         if (r?.src) setSrc(r.src);
-      } catch { /* silencieux */ }
+      } catch {
+        // silencieux
+      }
     })();
     return () => { alive = false; };
-  }, [kind, id, srcQS]);
+  }, [src, kind, id, accQS]);
 
   if (!src) {
     return (
       <div className="mx-auto max-w-xl p-4 text-center text-zinc-300">
         Source vidéo manquante.
-        <div className="mt-2 text-sm text-zinc-400">Passez ?src=… dans l’URL ou exposez /xtream/stream-url.</div>
-        <div className="mt-4"><button className="btn" onClick={() => nav(-1)}>Retour</button></div>
+        <div className="mt-2 text-sm text-zinc-400">
+          Passez un des formats suivants:
+          <div className="mt-1">
+            <code className="text-xs break-all">?src=&lt;URL&gt;</code>
+          </div>
+          <div className="mt-1">
+            <code className="text-xs break-all">?acc=&lt;accountId&gt;&amp;xid=&lt;xtreamId&gt;</code>
+          </div>
+        </div>
+        <div className="mt-4">
+          <button className="btn" onClick={() => nav(-1)}>Retour</button>
+        </div>
       </div>
     );
   }
@@ -56,7 +92,6 @@ export default function Watch() {
         resumeKey={resumeKey}
         resumeApi={true}
         onEnded={() => {
-          // Hook “next up” à compléter: utilisez loc.state.nextHref si fourni
           const next = loc.state?.nextHref;
           if (next) nav(next, { replace: true });
         }}
