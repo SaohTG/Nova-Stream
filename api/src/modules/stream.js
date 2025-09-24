@@ -4,11 +4,6 @@
 // - VOD remux MP4 (MKV ok): GET /api/stream/vodmp4/:vodId
 // - HLS playlist rewrite:   GET /api/stream/hls/:type/:id.m3u8   (type = live|movie|series)
 // - HLS segments proxy:     GET /api/stream/seg?u=<absolute-segment-url>
-//
-// Back-compat (facultatif): mêmes routes avec un accId inutile au milieu
-//   /vodmp4/:accId/:vodId, /hls/:accId/:type/:id.m3u8, /seg/:accId → accId ignoré.
-//
-// Prérequis: ffmpeg dans l’image Docker (voir Dockerfile fourni).
 
 import { Router } from "express";
 import { Pool } from "pg";
@@ -24,7 +19,7 @@ const APP_ORIGIN = process.env.APP_ORIGIN || "*";
 const ALLOW_PROXY_HOSTS = (process.env.ALLOW_PROXY_HOSTS || "")
   .split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
 
-/* -------------------- Crypto (même schéma que xtream.js/media.js) -------------------- */
+/* -------------------- Crypto -------------------- */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY must be 64 hex chars");
@@ -43,11 +38,10 @@ function dec(blob) {
   return pt.toString("utf8");
 }
 
-/* -------------------- Creds Xtream (1 compte par user) -------------------- */
+/* -------------------- Creds Xtream -------------------- */
 function normalizeBaseUrl(u) {
   let s = (u || "").toString().trim();
   if (!/^https?:\/\//i.test(s)) s = `http://${s}`;
-  // retire suffixes courants
   s = s.replace(/\/player_api\.php.*$/i, "")
        .replace(/\/portal\.php.*$/i, "")
        .replace(/\/stalker_portal.*$/i, "")
@@ -56,7 +50,6 @@ function normalizeBaseUrl(u) {
   return s;
 }
 async function getCreds(userId) {
-  // compatible avec xtream_accounts OU user_xtream (clé = user_id)
   const q = `
     SELECT base_url, username_enc, password_enc FROM xtream_accounts WHERE user_id=$1
     UNION ALL
@@ -127,7 +120,7 @@ async function handleVod(req, res, remuxMp4) {
       return;
     }
 
-    // Remux en MP4 fragmenté pour lecture progressive
+    // Remux MP4 fragmenté pour MKV/TS
     res.setHeader("Access-Control-Allow-Origin", APP_ORIGIN);
     res.setHeader("Content-Type", "video/mp4");
     res.setHeader("Cache-Control", "no-store");
@@ -173,13 +166,13 @@ async function handleHlsPlaylist(req, res) {
       if (line.startsWith("#EXT-X-KEY")) {
         return line.replace(/URI="([^"]+)"/, (_m, uri) => {
           const abs = new URL(uri, origin).toString();
-          try { assertAllowedHost(abs, base); } catch { /* ignore → bloquera au /seg */ }
+          try { assertAllowedHost(abs, base); } catch {}
           return `URI="/api/stream/seg?u=${encodeURIComponent(abs)}"`;
         });
       }
       if (!line || line.startsWith("#")) return line;
       const abs = new URL(line, origin).toString();
-      try { assertAllowedHost(abs, base); } catch { /* ignore */ }
+      try { assertAllowedHost(abs, base); } catch {}
       return `/api/stream/seg?u=${encodeURIComponent(abs)}`;
     };
 
@@ -217,22 +210,10 @@ async function handleSegment(req, res) {
   }
 }
 
-/* -------------------- Routes sans accId -------------------- */
-// VOD passthrough
+/* -------------------- Routes -------------------- */
 router.get("/vod/:vodId", (req, res) => handleVod(req, res, false));
-// VOD remux MP4
 router.get("/vodmp4/:vodId", (req, res) => handleVod(req, res, true));
-// HLS playlist rewrite
 router.get("/hls/:type(live|movie|series)/:id.m3u8", (req, res) => handleHlsPlaylist(req, res));
-// HLS segments proxy
 router.get("/seg", (req, res) => handleSegment(req, res));
-
-/* -------------------- Back-compat: routes avec accId (ignoré) -------------------- */
-// Remux MP4 avec accId ignoré
-router.get("/vodmp4/:accId/:vodId", (req, res) => handleVod(req, res, true));
-// HLS playlist avec accId ignoré
-router.get("/hls/:accId/:type(live|movie|series)/:id.m3u8", (req, res) => handleHlsPlaylist(req, res));
-// Segments avec accId ignoré via query
-router.get("/seg/:accId", (req, res) => handleSegment(req, res));
 
 export default router;
