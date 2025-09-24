@@ -10,6 +10,8 @@ pool.on("error", (e) => console.error("[PG ERROR]", e));
 
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600); // 7 jours
+const ALLOW_PROXY_HOSTS = (process.env.ALLOW_PROXY_HOSTS || "")
+  .split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
 
 /* ================= Crypto (même schéma que xtream.js) ================= */
 function getKey() {
@@ -450,12 +452,13 @@ async function firstReachable(urls, headers = {}) {
   }
   return null;
 }
-function assertSameHost(url, baseUrl) {
+function assertAllowedHost(url, baseUrl) {
   const want = new URL(baseUrl);
   const got = new URL(url);
-  const wantPort = Number(want.port || (want.protocol === "https:" ? 443 : 80));
-  const gotPort = Number(got.port || (got.protocol === "https:" ? 443 : 80));
-  if (want.hostname !== got.hostname || wantPort !== gotPort || want.protocol !== got.protocol) {
+  const gotHost = `${got.hostname}:${got.port || (got.protocol === "https:" ? 443 : 80)}`.toLowerCase();
+  const wantHost = `${want.hostname}:${want.port || (want.protocol === "https:" ? 443 : 80)}`.toLowerCase();
+  const allowSet = new Set([wantHost, ...ALLOW_PROXY_HOSTS]);
+  if (!allowSet.has(gotHost)) {
     const e = new Error("forbidden host"); e.status = 400; throw e;
   }
 }
@@ -520,7 +523,7 @@ router.get("/proxy", async (req, res, next) => {
     if (!creds) return res.status(404).json({ error: "no-xtream" });
     const url = (req.query.url || "").toString();
     if (!url) { const e = new Error("missing url"); e.status = 400; throw e; }
-    assertSameHost(url, creds.baseUrl);
+    assertAllowedHost(url, creds.baseUrl);
 
     const headers = {
       "User-Agent": "VLC/3.0",
@@ -558,6 +561,36 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
 
     req.url = `/api/media/proxy?url=${encodeURIComponent(fileUrl)}`;
     return router.handle(req, res, next);
+  } catch (e) { next(e); }
+});
+
+/* ================= NEW: source unique fournie par TON serveur ================= */
+// GET /media/play-src?kind=movie|series|live&id=<tmdbId>&url=<directUrl>&xid=<streamId>&prefer=hls|file
+router.get("/play-src", async (req, res, next) => {
+  try {
+    const uid = req.user?.sub;
+    if (!uid) return res.status(401).json({ error: "unauthorized" });
+
+    const kind = String(req.query.kind || "").toLowerCase();
+    const directUrl = req.query.url ? String(req.query.url) : "";
+    const xid = req.query.xid ? String(req.query.xid) : "";
+    const prefer = String(req.query.prefer || "hls").toLowerCase();
+
+    // 1) URL directe depuis TON serveur → proxy
+    if (directUrl) {
+      return res.json({ src: `/api/media/proxy?url=${encodeURIComponent(directUrl)}` });
+    }
+
+    // 2) Stream Xtream connu (id côté portail, sans exposer user/pass)
+    if (xid && (kind === "movie" || kind === "series" || kind === "live")) {
+      if (prefer === "file" && kind !== "live") {
+        return res.json({ src: `/api/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}/file` });
+      }
+      return res.json({ src: `/api/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}/hls.m3u8` });
+    }
+
+    // 3) Rien de fourni
+    return res.status(404).json({ error: "no_source" });
   } catch (e) { next(e); }
 });
 
