@@ -21,13 +21,12 @@ const app = express();
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-/* Sécurité HTTP de base */
+/* Sécurité HTTP (pas de Permissions-Policy invalide) */
 app.use(helmet({
   crossOriginEmbedderPolicy: false,
   crossOriginOpenerPolicy: { policy: "same-origin" },
   crossOriginResourcePolicy: { policy: "cross-origin" },
 }));
-// Ne pas envoyer de Permissions-Policy (NPM le gère côté proxy)
 app.use((_req, res, next) => { res.removeHeader("Permissions-Policy"); next(); });
 
 /* CORS strict + credentials */
@@ -36,7 +35,7 @@ const ORIGINS = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || "h
 
 const corsOptions = {
   origin(origin, cb) {
-    if (!origin) return cb(null, true); // same-origin / curl
+    if (!origin) return cb(null, true); // same-origin / healthcheck
     return cb(ORIGINS.includes(origin) ? null : new Error("CORS blocked"), ORIGINS.includes(origin));
   },
   credentials: true,
@@ -88,7 +87,8 @@ app.use((req, res, next) => {
 });
 
 /* Error handler */
-app.use((err, _req, res, _next) => {
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, _next) => {
   const status = err.status || err.statusCode || 500;
   const message = err.message || "internal_error";
   if (process.env.NODE_ENV !== "production") {
@@ -97,18 +97,25 @@ app.use((err, _req, res, _next) => {
   if (!res.headersSent) res.status(status).json({ error: message, detail: err.detail });
 });
 
-/* Boot */
+/* Boot + DB retry non bloquant pour healthcheck */
 const port = Number(process.env.API_PORT || 4000);
+
+async function waitForDb(maxTries = 40, delayMs = 3000) {
+  for (let i = 1; i <= maxTries; i++) {
+    try {
+      await initDatabase();
+      console.log("[db] ready");
+      return;
+    } catch (e) {
+      console.log(`[db] retry ${i}/${maxTries}: ${e?.message || e}`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+  console.error("[db] still not ready after retries");
+}
+
 process.on("unhandledRejection", (e) => console.error("[UNHANDLED_REJECTION]", e));
 process.on("uncaughtException", (e) => console.error("[UNCAUGHT_EXCEPTION]", e));
 
-async function startServer() {
-  try {
-    await initDatabase();
-    app.listen(port, () => console.log(`API on :${port}`));
-  } catch (error) {
-    console.error("Failed to start server:", error);
-    process.exit(1);
-  }
-}
-startServer();
+app.listen(port, () => console.log(`API on :${port}`));
+waitForDb();
