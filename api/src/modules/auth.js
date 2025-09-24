@@ -9,22 +9,22 @@ const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
-const ACCESS_TTL  = Number(process.env.API_JWT_ACCESS_TTL ?? 900);        // seconds
-const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL ?? 1209600);   // seconds
+const ACCESS_TTL  = Number(process.env.API_JWT_ACCESS_TTL ?? 900);        // s
+const REFRESH_TTL = Number(process.env.API_JWT_REFRESH_TTL ?? 1209600);   // s
 
-const COOKIE_SECURE    = String(process.env.COOKIE_SECURE) === "true";
-const COOKIE_SAMESITE  = (process.env.COOKIE_SAMESITE || "none").toLowerCase(); // default none pour cross-site
-const COOKIE_DOMAIN    = process.env.COOKIE_DOMAIN || undefined;
+const COOKIE_SECURE   = String(process.env.COOKIE_SECURE) === "true";
+const COOKIE_SAMESITE = (process.env.COOKIE_SAMESITE || "none").toLowerCase(); // none pour cross-site
+const COOKIE_DOMAIN   = process.env.COOKIE_DOMAIN || undefined;
 
-// Par défaut, utilise access/refresh
-const COOKIE_NAME_AT   = process.env.COOKIE_NAME_AT || "access";
-const COOKIE_NAME_RT   = process.env.COOKIE_NAME_RT || "refresh";
-// Duplique toujours en "access"/"refresh" pour compat requireAccess
-const COOKIE_COMPAT    = String(process.env.COOKIE_COMPAT ?? "true") === "true";
+// noms par défaut = access/refresh
+const COOKIE_NAME_AT = process.env.COOKIE_NAME_AT || "access";
+const COOKIE_NAME_RT = process.env.COOKIE_NAME_RT || "refresh";
+// duplique toujours pour compat
+const COOKIE_COMPAT  = String(process.env.COOKIE_COMPAT ?? "true") === "true";
 
 const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
-/* ============== bootstrap table ============== */
+/* ===== users table ===== */
 async function ensureUsers() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -37,7 +37,7 @@ async function ensureUsers() {
   `);
 }
 
-/* ============== password column autodetect ============== */
+/* ===== password column autodetect ===== */
 let PASSWORD_COL;
 async function getPasswordColumn() {
   if (PASSWORD_COL) return PASSWORD_COL;
@@ -50,22 +50,21 @@ async function getPasswordColumn() {
   );
   if (rows.length) {
     PASSWORD_COL = rows[0].column_name;
-    console.log(`[AUTH] Using users.${PASSWORD_COL}`);
     return PASSWORD_COL;
   }
   await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password text`);
   PASSWORD_COL = "password";
-  console.warn(`[AUTH] Created users.password`);
   return PASSWORD_COL;
 }
 
-/* ============== JWT helpers ============== */
+/* ===== JWT ===== */
 function signTokens(payload) {
   const accessToken  = jwt.sign(payload, process.env.API_JWT_SECRET,     { expiresIn: ACCESS_TTL });
   const refreshToken = jwt.sign(payload, process.env.API_REFRESH_SECRET, { expiresIn: REFRESH_TTL });
   return { accessToken, refreshToken };
 }
 
+/* ===== cookies ===== */
 function normalizeSameSite(v) {
   return ["lax","strict","none"].includes(v) ? v : "none";
 }
@@ -83,13 +82,11 @@ function cookieBase(maxAgeMs) {
 function setAccessCookie(res, token) {
   const opt = cookieBase(ACCESS_TTL * 1000);
   res.cookie(COOKIE_NAME_AT, token, opt);
-  // compat requireAccess
   if (COOKIE_COMPAT || COOKIE_NAME_AT !== "access") res.cookie("access", token, opt);
 }
 function setRefreshCookie(res, token) {
   const opt = cookieBase(REFRESH_TTL * 1000);
   res.cookie(COOKIE_NAME_RT, token, opt);
-  // compat requireAccess
   if (COOKIE_COMPAT || COOKIE_NAME_RT !== "refresh") res.cookie("refresh", token, opt);
 }
 function clearAuthCookies(res) {
@@ -100,7 +97,7 @@ function clearAuthCookies(res) {
   res.clearCookie("refresh", opt);
 }
 
-/* ============== DB helpers ============== */
+/* ===== DB ===== */
 async function getUserByEmail(email) {
   const col = await getPasswordColumn();
   const { rows } = await pool.query(
@@ -132,9 +129,101 @@ async function validateUser(email, passwordPlain) {
   return ok ? { id: u.id, email: u.email } : null;
 }
 
-/* ============== Auth middlewares ============== */
+/* ===== middlewares ===== */
 export function ensureAuth(req, res, next) {
   const h = req.headers.authorization || "";
   let token = null;
   if (h.startsWith("Bearer ")) token = h.split(" ")[1];
-  if (!token &
+  if (!token && req.cookies?.[COOKIE_NAME_AT]) token = req.cookies[COOKIE_NAME_AT];
+  if (!token && req.cookies?.access) token = req.cookies.access;
+  if (!token) return res.status(401).json({ message: "No token" });
+  try {
+    req.user = jwt.verify(token, process.env.API_JWT_SECRET);
+    return next();
+  } catch {
+    return res.status(401).json({ message: "Invalid token" });
+  }
+}
+
+export function ensureAuthOrRefresh(req, res, next) {
+  const h = req.headers.authorization || "";
+  let token = null;
+  if (h.startsWith("Bearer ")) token = h.split(" ")[1];
+  if (!token && req.cookies?.[COOKIE_NAME_AT]) token = req.cookies[COOKIE_NAME_AT];
+  if (!token && req.cookies?.access) token = req.cookies.access;
+
+  if (token) {
+    try {
+      req.user = jwt.verify(token, process.env.API_JWT_SECRET);
+      return next();
+    } catch { /* try refresh */ }
+  }
+  const rt =
+    req.cookies?.[COOKIE_NAME_RT] ||
+    req.cookies?.refresh ||
+    req.cookies?.refresh_token ||
+    req.cookies?.ns_refresh;
+
+  if (!rt) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const payload = jwt.verify(rt, process.env.API_REFRESH_SECRET);
+    const { accessToken, refreshToken } = signTokens({ sub: payload.sub, email: payload.email });
+    setRefreshCookie(res, refreshToken);
+    setAccessCookie(res, accessToken);
+    req.user = { sub: payload.sub, email: payload.email };
+    return next();
+  } catch {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
+}
+
+/* ===== routes ===== */
+router.post("/signup", ah(async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ message: "email/password required" });
+  await ensureUsers();
+  if (await getUserByEmail(email)) return res.status(409).json({ message: "Email already used" });
+  const user = await createUser(email, password);
+  const { accessToken, refreshToken } = signTokens({ sub: user.id, email: user.email });
+  setRefreshCookie(res, refreshToken);
+  setAccessCookie(res, accessToken);
+  res.status(201).json({ accessToken });
+}));
+
+router.post("/login", ah(async (req, res) => {
+  const { email, password } = req.body || {};
+  if (!email || !password) return res.status(400).json({ message: "email/password required" });
+  const user = await validateUser(email, password);
+  if (!user) return res.status(401).json({ message: "Invalid credentials" });
+  const { accessToken, refreshToken } = signTokens({ sub: user.id, email: user.email });
+  setRefreshCookie(res, refreshToken);
+  setAccessCookie(res, accessToken);
+  res.json({ accessToken });
+}));
+
+router.post("/refresh", ah(async (req, res) => {
+  const token =
+    req.cookies?.[COOKIE_NAME_RT] ||
+    req.cookies?.refresh ||
+    req.cookies?.refresh_token ||
+    req.cookies?.ns_refresh;
+  if (!token) return res.status(401).json({ message: "No refresh cookie" });
+  const payload = jwt.verify(token, process.env.API_REFRESH_SECRET);
+  const { accessToken, refreshToken } = signTokens({ sub: payload.sub, email: payload.email });
+  setRefreshCookie(res, refreshToken);
+  setAccessCookie(res, accessToken);
+  res.json({ accessToken });
+}));
+
+router.post("/logout", ah(async (_req, res) => {
+  clearAuthCookies(res);
+  res.status(204).end();
+}));
+
+router.get("/me", ensureAuthOrRefresh, (req, res) => {
+  res.set("Cache-Control", "no-store");
+  res.json(req.user);
+});
+
+export default router;
