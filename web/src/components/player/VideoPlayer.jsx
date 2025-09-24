@@ -34,7 +34,6 @@ function mapXtreamVodToProxy(src) {
     const url = new URL(src, window.location.origin);
     const m = url.pathname.match(/^\/(movie|series)\/([^/]+)\/([^/]+)\/([^/.]+)\.([a-z0-9]+)$/i);
     if (!m) return null;
-    const kind = m[1].toLowerCase(); // movie|series (même traitement)
     const user = decodeURIComponent(m[2]);
     const pass = decodeURIComponent(m[3]);
     const id   = decodeURIComponent(m[4]);
@@ -79,6 +78,11 @@ export default function VideoPlayer({
     return proxied || src; // si pas Xtream, on laisse tel quel
   }, [src]);
 
+  // Debug source
+  useEffect(() => {
+    console.log("[Video src]", resolvedSrc);
+  }, [resolvedSrc]);
+
   // Chargement selon le type: HLS via Shaka, sinon <video src=...>
   useEffect(() => {
     let destroyed = false;
@@ -119,7 +123,6 @@ export default function VideoPlayer({
           if (destroyed) return;
           setDur(v.duration || NaN);
           refreshTracks();
-          // Autoplay best-effort
           v.play?.().catch(()=>{});
         } catch (e) {
           console.error("[Player/HLS]", e);
@@ -127,7 +130,6 @@ export default function VideoPlayer({
       } else {
         // VOD MP4 (via proxy) ou autre source directe
         v.src = resolvedSrc;
-        // Applique le resume après metadata
         const onMeta = () => {
           try { if (initialTime > 0 && Number.isFinite(v.duration)) v.currentTime = Math.min(initialTime, v.duration - 1); } catch {}
           v.play?.().catch(()=>{});
@@ -199,7 +201,7 @@ export default function VideoPlayer({
           className="rounded bg-black/60 text-white text-xs px-2 py-1"
           value={`${audioSel.lang || ""}||${audioSel.role || ""}`}
           onChange={(e) => { const [l, r] = e.target.value.split("||"); applyAudio(l || null, r || null); }}
-          disabled={!playerRef.current /* pas de pistes externes en mode MP4 direct */}
+          disabled={!playerRef.current}
         >
           <option value="||">Audio auto</option>
           {audios.map((a, i) => (<option key={`a-${i}`} value={`${a.lang || ""}||${a.role || ""}`}>{a.label}</option>))}
