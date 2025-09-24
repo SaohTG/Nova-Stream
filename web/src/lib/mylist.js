@@ -4,10 +4,17 @@ import { getJson, postJson } from "./api";
 
 const KEY = "ns_mylist_v1";
 const EVT = "ns_mylist_changed";
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
 const k = (kind, id) => `${String(kind)}:${String(id)}`.toLowerCase();
-const readMap = () => { try { return JSON.parse(localStorage.getItem(KEY) || "{}") || {}; } catch { return {}; } };
-const writeMap = (m) => { localStorage.setItem(KEY, JSON.stringify(m)); window.dispatchEvent(new Event(EVT)); };
+const readMap = () => {
+  try { return JSON.parse(localStorage.getItem(KEY) || "{}") || {}; }
+  catch { return {}; }
+};
+const writeMap = (m) => {
+  localStorage.setItem(KEY, JSON.stringify(m));
+  window.dispatchEvent(new Event(EVT));
+};
 
 async function tryRemote(fn) {
   try { return await fn(); } catch { return null; }
@@ -18,7 +25,7 @@ export async function fetchMyList() {
   const r = await tryRemote(() => getJson("/user/mylist"));
   if (Array.isArray(r)) return r;
   // fallback local
-  return Object.values(readMap()).sort((a,b)=>b.updatedAt-a.updatedAt);
+  return Object.values(readMap()).sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 export async function syncLocalToRemote() {
@@ -37,9 +44,12 @@ export async function syncLocalToRemote() {
     const m = {};
     for (const it of r) {
       m[k(it.kind, it.id)] = {
-        kind: it.kind, id: String(it.id),
-        title: it.title || "", img: it.img || "",
-        raw: it.payload || null, updatedAt: it.updatedAt || Date.now(),
+        kind: it.kind,
+        id: String(it.id),
+        title: it.title || "",
+        img: it.img || "",
+        raw: it.payload || null,
+        updatedAt: it.updatedAt || Date.now(),
       };
     }
     writeMap(m);
@@ -52,22 +62,34 @@ export async function toggleMyList(kind, id, payload = {}) {
   const key = k(kind, id);
   const map = readMap();
   const exists = Boolean(map[key]);
+
   if (exists) {
-    map[key] && delete map[key];
+    if (map[key]) delete map[key];
     writeMap(map);
-    await tryRemote(() => fetch(`/user/mylist/${kind}/${encodeURIComponent(id)}`, {
-      method: "DELETE", credentials: "include"
-    }));
+    await tryRemote(() =>
+      fetch(`${API_BASE}/user/mylist/${kind}/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        credentials: "include",
+      })
+    );
   } else {
     const entry = {
-      kind, id: String(id), title: payload.title || "",
-      img: payload.img || "", raw: payload.raw || null, updatedAt: Date.now(),
+      kind,
+      id: String(id),
+      title: payload.title || "",
+      img: payload.img || "",
+      raw: payload.raw || null,
+      updatedAt: Date.now(),
     };
     map[key] = entry;
     writeMap(map);
-    await tryRemote(() => postJson(`/user/mylist/${kind}/${encodeURIComponent(id)}`, {
-      title: entry.title, img: entry.img, payload: entry.raw
-    })); // PUT via postJson → méthode override côté API si besoin; sinon utilise fetch PUT
+    await tryRemote(() =>
+      postJson(`/user/mylist/${kind}/${encodeURIComponent(id)}`, {
+        title: entry.title,
+        img: entry.img,
+        payload: entry.raw,
+      })
+    );
   }
 }
 
@@ -78,6 +100,7 @@ export function hasInMyList(kind, id) {
 // ---- hooks
 export function useMyList() {
   const [list, setList] = useState([]);
+
   useEffect(() => {
     let alive = true;
     const load = async () => {
@@ -85,11 +108,18 @@ export function useMyList() {
       if (alive) setList(merged);
     };
     load();
+
     const h = () => fetchMyList().then((arr) => { if (alive) setList(arr); });
     window.addEventListener("storage", h);
     window.addEventListener(EVT, h);
-    return () => { alive = false; window.removeEventListener("storage", h); window.removeEventListener(EVT, h); };
+
+    return () => {
+      alive = false;
+      window.removeEventListener("storage", h);
+      window.removeEventListener(EVT, h);
+    };
   }, []);
+
   return list;
 }
 
@@ -99,7 +129,10 @@ export function useMyListStatus(kind, id) {
     const h = () => setSaved(hasInMyList(kind, id));
     window.addEventListener("storage", h);
     window.addEventListener(EVT, h);
-    return () => { window.removeEventListener("storage", h); window.removeEventListener(EVT, h); };
+    return () => {
+      window.removeEventListener("storage", h);
+      window.removeEventListener(EVT, h);
+    };
   }, [kind, id]);
   return saved;
 }
