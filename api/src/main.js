@@ -43,6 +43,16 @@ app.use(express.json({ limit: "1mb" }));
 app.use(express.urlencoded({ extended: true, limit: "1mb" }));
 app.use(morgan("dev"));
 
+/* Anti-buffering pour les flux (utile derrière Nginx/Proxy) */
+app.use(
+  ["/stream", "/api/stream", "/media/proxy", "/api/media/proxy"],
+  (_req, res, next) => {
+    res.setHeader("X-Accel-Buffering", "no");
+    res.setHeader("Cache-Control", "no-store");
+    next();
+  }
+);
+
 /* Health */
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", (_req, res) => res.json({ ok: true })); // support prefix
