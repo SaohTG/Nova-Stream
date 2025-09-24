@@ -1,4 +1,3 @@
-// web/src/pages/Watch.jsx
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
@@ -9,20 +8,18 @@ function buildProxySrc(accId, kind, xtreamId) {
   if (String(kind).toLowerCase() === "live") {
     return `/api/stream/hls/${encodeURIComponent(accId)}/live/${encodeURIComponent(xtreamId)}.m3u8`;
   }
-  // VOD par défaut via remux MP4 (sûr pour MKV)
   return `/api/stream/vodmp4/${encodeURIComponent(accId)}/${encodeURIComponent(xtreamId)}`;
 }
 
 export default function Watch() {
-  const { kind, id } = useParams(); // "movie" | "series" | "live" (optionnel)
+  const { kind, id } = useParams();
   const [qs] = useSearchParams();
   const nav = useNavigate();
   const loc = useLocation();
 
-  // Priorité aux paramètres explicites
   const srcQS = qs.get("src");
-  const accQS = qs.get("acc") || loc.state?.accId || null;     // accountId
-  const xidQS = qs.get("xid") || loc.state?.xtreamId || null;  // xtreamId (stream_id/vod_id/episode_id)
+  const accQS = qs.get("acc") || loc.state?.accId || null;
+  const xidQS = qs.get("xid") || loc.state?.xtreamId || null;
 
   const computedSrc = useMemo(() => {
     if (srcQS) return srcQS;
@@ -30,23 +27,14 @@ export default function Watch() {
   }, [srcQS, accQS, xidQS, kind]);
 
   const [src, setSrc] = useState(computedSrc || "");
+  useEffect(() => { setSrc(computedSrc || ""); }, [computedSrc]);
 
   const title = qs.get("title") || loc.state?.title || "";
   const poster = qs.get("poster") || loc.state?.poster || "";
-
-  const resumeKey = useMemo(() => {
-    if (!kind || !id) return null;
-    // séries: accepter clé fournie via state (ex: "episode:SERIES:1:3")
-    return loc.state?.resumeKey || `${kind}:${id}`;
-  }, [kind, id, loc.state]);
-
-  // Si pas de src calculé, tentative de résolution côté API existante (/xtream/stream-url)
-  useEffect(() => {
-    setSrc(computedSrc || "");
-  }, [computedSrc]);
+  const resumeKey = useMemo(() => loc.state?.resumeKey || (kind && id ? `${kind}:${id}` : null), [kind, id, loc.state]);
 
   useEffect(() => {
-    if (src) return; // déjà résolu
+    if (src) return;
     let alive = true;
     (async () => {
       try {
@@ -55,9 +43,7 @@ export default function Watch() {
         const r = await getJson(url);
         if (!alive) return;
         if (r?.src) setSrc(r.src);
-      } catch {
-        // silencieux
-      }
+      } catch {}
     })();
     return () => { alive = false; };
   }, [src, kind, id, accQS]);
@@ -67,17 +53,9 @@ export default function Watch() {
       <div className="mx-auto max-w-xl p-4 text-center text-zinc-300">
         Source vidéo manquante.
         <div className="mt-2 text-sm text-zinc-400">
-          Passez un des formats suivants:
-          <div className="mt-1">
-            <code className="text-xs break-all">?src=&lt;URL&gt;</code>
-          </div>
-          <div className="mt-1">
-            <code className="text-xs break-all">?acc=&lt;accountId&gt;&amp;xid=&lt;xtreamId&gt;</code>
-          </div>
+          Fournir ?src=… ou ?acc=&xid=…
         </div>
-        <div className="mt-4">
-          <button className="btn" onClick={() => nav(-1)}>Retour</button>
-        </div>
+        <div className="mt-4"><button className="btn" onClick={() => nav(-1)}>Retour</button></div>
       </div>
     );
   }
