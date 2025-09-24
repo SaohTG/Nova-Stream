@@ -1,11 +1,12 @@
 // web/src/pages/Title.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { getJson } from "../lib/api";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
 export default function Title() {
-  const { kind, id } = useParams(); // kind: "movie" | "series" ; id = xtream_id
+  const { kind, id } = useParams();              // kind: "movie" | "series" ; id peut être "xid-123" ou "123"
+  const xid = useMemo(() => String(id || "").replace(/^xid-/, ""), [id]); // ← nettoie le prefixe
   const nav = useNavigate();
 
   const [data, setData] = useState(null);
@@ -20,7 +21,7 @@ export default function Title() {
     let alive = true;
     (async () => {
       try {
-        const j = await getJson(`/media/${kind}/${id}`);
+        const j = await getJson(`/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}`);
         if (alive) setData(j);
       } catch {
         if (alive) setData(null);
@@ -29,14 +30,14 @@ export default function Title() {
       }
     })();
     return () => { alive = false; };
-  }, [kind, id]);
+  }, [kind, xid]);
 
   useEffect(() => {
     setPlaying(false);
     setResolvingSrc(false);
     setSrc("");
     setPlayErr("");
-  }, [kind, id]);
+  }, [kind, xid]);
 
   async function startPlayback() {
     if (kind !== "movie") return;
@@ -44,11 +45,10 @@ export default function Title() {
     setResolvingSrc(true);
     setPlayErr("");
     setSrc("");
-
     try {
-      // Force HLS servi par l’API (cookies inclus via Shaka)
-      setSrc(`/api/media/movie/${encodeURIComponent(id)}/hls.m3u8`);
-    } catch (e) {
+      // Lecture via HLS proxifié (cookies inclus via Shaka)
+      setSrc(`/api/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}/hls.m3u8`);
+    } catch {
       setPlayErr("Aucune source de lecture fournie par le serveur.");
     } finally {
       setResolvingSrc(false);
@@ -71,7 +71,7 @@ export default function Title() {
 
   const posterSrc = data.poster_url || data.backdrop_url || "";
   const hasTrailer = Boolean(data?.trailer?.embed_url);
-  const resumeKey = kind === "movie" ? `movie:${id}` : undefined;
+  const resumeKey = kind === "movie" ? `movie:${xid}` : undefined;
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
