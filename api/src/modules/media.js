@@ -1,5 +1,5 @@
 // api/src/modules/media.js
-// Métadonnées TMDB + /media/play-src qui résout une source Xtream sans exposer user/pass.
+// TMDB + résolution play-src. Ajoute /media/resolve-by-title pour mapper un titre Xtream vers TMDB.
 
 import { Router } from "express";
 import { Pool } from "pg";
@@ -11,7 +11,7 @@ pool.on("error", (e) => console.error("[PG ERROR]", e));
 
 const TMDB_KEY = process.env.TMDB_API_KEY;
 
-/* ================= Crypto ================= */
+/* ===== Crypto ===== */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY doit faire 64 hex chars");
@@ -30,7 +30,7 @@ function dec(blob) {
   return pt.toString("utf8");
 }
 
-/* ================= Xtream helpers ================= */
+/* ===== Xtream helpers ===== */
 function normalizeBaseUrl(u) {
   let s = (u || "").toString().trim();
   if (!/^https?:\/\//i.test(s)) s = `http://${s}`;
@@ -72,7 +72,7 @@ async function fetchJson(url) {
   try { return JSON.parse(t); } catch { const e = new Error("BAD_JSON"); e.body = t; throw e; }
 }
 
-/* ================= Matching helpers ================= */
+/* ===== Matching helpers ===== */
 const LANG_TAGS = [
   "FR","VF","VO","VOSTFR","VOST","STFR","TRUEFRENCH","FRENCH","SUBFRENCH","SUBFR","SUB","SUBS",
   "EN","ENG","DE","ES","IT","PT","NL","RU","PL","TR","TURK","AR","ARAB","ARABIC","LAT","LATINO","DUAL","MULTI"
@@ -120,8 +120,26 @@ function yearPenalty(yearCand, dateStr) {
   return Math.min(d * 0.03, 0.3);
 }
 
-/* ================= TMDB ================= */
+/* ===== TMDB ===== */
 const TMDB_BASE = "https://api.themoviedb.org/3";
+async function tmdbSearchMovie(q, year) {
+  const u = new URL(`${TMDB_BASE}/search/movie`);
+  u.searchParams.set("api_key", TMDB_KEY);
+  u.searchParams.set("query", q);
+  u.searchParams.set("include_adult", "true");
+  u.searchParams.set("language", "fr-FR");
+  if (year) u.searchParams.set("year", String(year));
+  return fetchJson(u.toString());
+}
+async function tmdbSearchTV(q, year) {
+  const u = new URL(`${TMDB_BASE}/search/tv`);
+  u.searchParams.set("api_key", TMDB_KEY);
+  u.searchParams.set("query", q);
+  u.searchParams.set("include_adult", "true");
+  u.searchParams.set("language", "fr-FR");
+  if (year) u.searchParams.set("first_air_date_year", String(year));
+  return fetchJson(u.toString());
+}
 async function tmdbDetails(kind, id) {
   const u = new URL(`${TMDB_BASE}/${kind === "movie" ? "movie" : "tv"}/${id}`);
   u.searchParams.set("api_key", TMDB_KEY);
@@ -188,7 +206,7 @@ function formatSeries(det) {
   };
 }
 
-/* ================= Meta endpoints ================= */
+/* ===== Meta endpoints (TMDB id direct) ===== */
 router.get("/movie/:id", async (req, res, next) => {
   try {
     const det = await tmdbDetails("movie", req.params.id);
@@ -202,7 +220,47 @@ router.get("/series/:id", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-/* ================= play-src ================= */
+/* ===== Resolver par titre+année (pour flux Xtream sans tmdb_id) ===== */
+// GET /media/resolve-by-title?kind=movie|series&title=...&year=YYYY
+router.get("/resolve-by-title", async (req, res, next) => {
+  try {
+    const kind = String(req.query.kind || "").toLowerCase();
+    const titleRaw = String(req.query.title || "");
+    const year = Number(req.query.year || 0) || undefined;
+    if (!kind || !titleRaw) return res.status(400).json({ error: "missing_params" });
+
+    const q = stripTitle(titleRaw);
+    if (!q) return res.status(404).json({ error: "no_match" });
+
+    if (kind === "movie") {
+      const sr = await tmdbSearchMovie(q, year);
+      let best = null;
+      for (const r of (sr?.results || []).slice(0, 10)) {
+        const score = similarity(q, r.title || r.original_title || "") - yearPenalty(year, r.release_date);
+        if (!best || score > best.score) best = { score, r };
+      }
+      if (!best || best.score <= 0.15) return res.status(404).json({ error: "no_match" });
+      const det = await tmdbDetails("movie", best.r.id);
+      return res.json(formatMovie(det));
+    }
+
+    if (kind === "series") {
+      const sr = await tmdbSearchTV(q, year);
+      let best = null;
+      for (const r of (sr?.results || []).slice(0, 10)) {
+        const score = similarity(q, r.name || r.original_name || "") - yearPenalty(year, r.first_air_date);
+        if (!best || score > best.score) best = { score, r };
+      }
+      if (!best || best.score <= 0.12) return res.status(404).json({ error: "no_match" });
+      const det = await tmdbDetails("tv", best.r.id);
+      return res.json(formatSeries(det));
+    }
+
+    return res.status(400).json({ error: "bad_kind" });
+  } catch (e) { next(e); }
+});
+
+/* ===== play-src: choisit l’URL de lecture locale ===== */
 // GET /media/play-src?kind=movie|series|live&xid=<streamId>&title=<t>&year=<yyyy>&url=<direct>
 router.get("/play-src", async (req, res, next) => {
   try {
@@ -215,10 +273,8 @@ router.get("/play-src", async (req, res, next) => {
     const year  = Number(req.query.year || 0) || undefined;
     const directUrl = req.query.url ? String(req.query.url) : "";
 
-    // URL directe (non proxifiée ici)
     if (directUrl) return res.status(404).json({ error: "direct_url_proxy_not_implemented" });
 
-    // ID Xtream déjà connu
     if (xid && (kind === "movie" || kind === "series")) {
       return res.json({ src: `/api/stream/vodmp4/${encodeURIComponent(xid)}` });
     }
@@ -226,80 +282,10 @@ router.get("/play-src", async (req, res, next) => {
       return res.json({ src: `/api/stream/hls/live/${encodeURIComponent(xid)}.m3u8` });
     }
 
-    // Fallback par titre/année
-    const creds = await getCreds(uid);
-    if (!creds) return res.status(404).json({ error: "no-xtream" });
+    // fallback: on n’essaie pas de déduire automatiquement un stream_id ici
     if (!title) return res.status(404).json({ error: "no_source" });
 
-    if (kind === "movie") {
-      const list = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_streams"));
-      if (!Array.isArray(list) || !list.length) return res.status(404).json({ error: "vod_list_empty" });
-
-      const want = stripTitle(title);
-      let best = null;
-      for (const r of list) {
-        const cand = r.name || r.title || r.stream_display_name || "";
-        let score = similarity(want, cand);
-        const yCand = yearFromStrings(r.name, r.title, r.stream_display_name, r.year);
-        if (year) score -= yearPenalty(year, yCand ? `${yCand}-01-01` : null);
-        if (!best || score > best.score) best = { score, r };
-      }
-      if (best && best.score > 0.15 && best.r.stream_id) {
-        return res.json({ src: `/api/stream/vodmp4/${encodeURIComponent(best.r.stream_id)}` });
-      }
-      return res.status(404).json({ error: "vod_not_found" });
-    }
-
-    if (kind === "live") {
-      const list = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_live_streams"));
-      if (!Array.isArray(list) || !list.length) return res.status(404).json({ error: "live_list_empty" });
-
-      const want = stripTitle(title);
-      let best = null;
-      for (const r of list) {
-        const cand = r.name || r.title || r.stream_display_name || "";
-        const score = similarity(want, cand);
-        if (!best || score > best.score) best = { score, r };
-      }
-      if (best && best.score > 0.15 && best.r.stream_id) {
-        return res.json({ src: `/api/stream/hls/live/${encodeURIComponent(best.r.stream_id)}.m3u8` });
-      }
-      return res.status(404).json({ error: "live_not_found" });
-    }
-
-    if (kind === "series") {
-      // Recherche la série, puis prend S01E01 par défaut
-      const list = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series"));
-      if (!Array.isArray(list) || !list.length) return res.status(404).json({ error: "series_list_empty" });
-
-      const want = stripTitle(title);
-      let best = null;
-      for (const r of list) {
-        const cand = r.name || r.title || r.stream_display_name || "";
-        let score = similarity(want, cand);
-        const yCand = yearFromStrings(r.name, r.title, r.stream_display_name, r.year);
-        if (year) score -= yearPenalty(year, yCand ? `${yCand}-01-01` : null);
-        if (!best || score > best.score) best = { score, r };
-      }
-      const seriesId = best?.r?.series_id;
-      if (!seriesId) return res.status(404).json({ error: "series_not_found" });
-
-      const info = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series_info", { series_id: seriesId }));
-      const epsBySeason = info?.episodes || {};
-      const seasons = Object.keys(epsBySeason).map(n => Number(n)).filter(n => Number.isFinite(n)).sort((a,b)=>a-b);
-      for (const s of seasons) {
-        const eps = Array.isArray(epsBySeason[String(s)]) ? epsBySeason[String(s)] : [];
-        if (eps.length) {
-          const ep = eps[0];
-          const epId = ep?.id;
-          if (epId) {
-            return res.json({ src: `/api/stream/hls/series/${encodeURIComponent(epId)}.m3u8` });
-          }
-        }
-      }
-      return res.status(404).json({ error: "series_no_episode" });
-    }
-
+    // si besoin, côté front, utilisez /media/resolve-by-title pour l’affichage uniquement
     return res.status(404).json({ error: "no_source" });
   } catch (e) { next(e); }
 });
