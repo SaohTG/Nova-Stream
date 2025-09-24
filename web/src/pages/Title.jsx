@@ -1,11 +1,11 @@
 // web/src/pages/Title.jsx
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { getJson } from "../lib/api";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
 export default function Title() {
-  const { kind, id } = useParams(); // "movie" | "series"
+  const { kind, id } = useParams(); // "movie" | "series" ; id = TMDB id
   const nav = useNavigate();
   const loc = useLocation();
   const [qs] = useSearchParams();
@@ -17,6 +17,10 @@ export default function Title() {
   const [resolvingSrc, setResolvingSrc] = useState(false);
   const [src, setSrc] = useState("");
   const [playErr, setPlayErr] = useState("");
+
+  // params fournis par ton serveur: xid = stream_id Xtream, url = lien direct éventuel
+  const xidQS = qs.get("xid") || loc.state?.xtreamId || null;
+  const directUrlQS = qs.get("url") || loc.state?.playUrl || null;
 
   useEffect(() => {
     let alive = true;
@@ -35,15 +39,13 @@ export default function Title() {
   }, [kind, id]);
 
   useEffect(() => {
-    setPlaying(false); setResolvingSrc(false); setSrc(""); setPlayErr("");
+    setPlaying(false);
+    setResolvingSrc(false);
+    setSrc("");
+    setPlayErr("");
   }, [kind, id]);
 
   const resumeKey = useMemo(() => (kind === "movie" ? `movie:${id}` : loc.state?.resumeKey), [kind, id, loc.state]);
-
-  // paramètres facultatifs fournis par TON serveur via la navigation
-  const accQS = qs.get("acc") || loc.state?.accId || null;   // accountId Xtream si tu as
-  const xidQS = qs.get("xid") || loc.state?.xtreamId || null; // stream_id/episode_id si tu as
-  const directUrlQS = qs.get("url") || loc.state?.playUrl || null; // URL directe si tu as
 
   async function startPlayback() {
     setPlaying(true);
@@ -52,9 +54,8 @@ export default function Title() {
     setSrc("");
 
     try {
-      // Appelle TON serveur pour obtenir la source finale, jamais de secrets
-      const u = `/media/play-src?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}` +
-                (accQS ? `&acc=${encodeURIComponent(accQS)}` : "") +
+      // On ne passe ni user ni pass. Uniquement xid ou url.
+      const u = `/media/play-src?kind=${encodeURIComponent(kind)}` +
                 (xidQS ? `&xid=${encodeURIComponent(xidQS)}` : "") +
                 (directUrlQS ? `&url=${encodeURIComponent(directUrlQS)}` : "");
       const r = await getJson(u);
