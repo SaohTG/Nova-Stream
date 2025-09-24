@@ -13,7 +13,7 @@ pool.on("error", (e) => console.error("[PG ERROR]", e));
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600);
 
-/* ================= Auth minimale ================= */
+/* ========== Auth minimale ========== */
 function parseCookies(req) {
   if (req.cookies) return req.cookies;
   const h = req.headers.cookie;
@@ -34,7 +34,7 @@ function getUserId(req) {
   catch { return null; }
 }
 
-/* ================= Crypto (tolère clair) ================= */
+/* ========== Crypto (tolère clair) ========== */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY doit faire 64 hex chars");
@@ -55,7 +55,7 @@ function decMaybe(blob) {
   } catch { return s; }
 }
 
-/* ================= DB cache ================= */
+/* ========== DB cache ========== */
 async function ensureTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS media_cache (
@@ -92,7 +92,7 @@ async function putCache(kind, xtreamId, tmdbId, title, data) {
   );
 }
 
-/* ================= Xtream helpers ================= */
+/* ========== Xtream helpers ========== */
 async function getCreds(userId) {
   const q = `
     SELECT base_url, username_enc, password_enc FROM xtream_accounts WHERE user_id=$1
@@ -131,7 +131,7 @@ function buildPlayerApi(baseUrl, username, password, action, extra = {}) {
 async function fetchWithTimeout(url, ms = 12000, headers = {}, init = {}) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), ms);
-  try { return await fetch(url, { signal: ctrl.signal, headers, ...init }); }
+  try { return await fetch(url, { signal: ctrl.signal, headers, redirect: "follow", ...init }); }
   finally { clearTimeout(t); }
 }
 async function fetchJson(url) {
@@ -141,7 +141,7 @@ async function fetchJson(url) {
   try { return JSON.parse(txt); } catch { const e = new Error("BAD_JSON"); e.body = txt; throw e; }
 }
 
-/* ================= Matching helpers ================= */
+/* ========== Matching helpers ========== */
 const LANG_TAGS = [
   "FR","VF","VO","VOSTFR","VOST","STFR","TRUEFRENCH","FRENCH","SUBFRENCH","SUBFR","SUB","SUBS",
   "EN","ENG","DE","ES","IT","PT","NL","RU","PL","TR","TURK","AR","ARAB","ARABIC","LAT","LATINO","DUAL","MULTI"
@@ -188,7 +188,7 @@ function yearPenalty(yearCand, dateStr) {
   return Math.min(d * 0.03, 0.3);
 }
 
-/* ================= TMDB ================= */
+/* ========== TMDB ========== */
 const TMDB_BASE = "https://api.themoviedb.org/3";
 async function tmdbDetails(kind, id) {
   const u = new URL(`${TMDB_BASE}/${kind === "movie" ? "movie" : "tv"}/${id}`);
@@ -197,7 +197,7 @@ async function tmdbDetails(kind, id) {
   return fetchJson(u.toString());
 }
 
-/* ================= Resolvers (light) ================= */
+/* ========== Resolvers (light) ========== */
 async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
   if (!refresh) {
     const cached = await getCache("movie", vodId);
@@ -233,36 +233,46 @@ async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
   return payload;
 }
 
-/* ================= Streaming helpers ================= */
+/* ========== Streaming helpers ========== */
 function streamCandidates(baseUrl, username, password, kind, id) {
   const root = baseUrl;
-  if (kind === "live") return [
-    `${root}/live/${username}/${password}/${id}.m3u8`,
-    `${root}/live/${username}/${password}/${id}.ts`,
-  ];
-  if (kind === "movie") return [
-    `${root}/movie/${username}/${password}/${id}.mp4`,
-    `${root}/movie/${username}/${password}/${id}.ts`,
-    `${root}/movie/${username}/${password}/${id}.mkv`,
-  ];
+  if (kind === "live") {
+    return [
+      `${root}/live/${username}/${password}/${id}.m3u8`,
+      `${root}/live/${username}/${password}/${id}.ts`,
+      `${root}/live/${username}/${password}/${id}`,       // sans extension
+    ];
+  }
+  const base = kind === "movie" ? "movie" : "series";
   return [
-    `${root}/series/${username}/${password}/${id}.mp4`,
-    `${root}/series/${username}/${password}/${id}.ts`,
-    `${root}/series/${username}/${password}/${id}.mkv`,
+    `${root}/${base}/${username}/${password}/${id}.mkv`,
+    `${root}/${base}/${username}/${password}/${id}.mp4`,
+    `${root}/${base}/${username}/${password}/${id}.ts`,
+    `${root}/${base}/${username}/${password}/${id}.m3u8`, // certains VOD en HLS
+    `${root}/${base}/${username}/${password}/${id}`,       // sans extension
   ];
 }
 async function firstReachable(urls, headers = {}) {
   for (const u of urls) {
     try {
+      // 1) HEAD
       let r = await fetchWithTimeout(u, 6000, { ...headers }, { method: "HEAD" });
-      if (!r.ok) r = await fetchWithTimeout(u, 6000, { Range: "bytes=0-0", ...headers }, { method: "GET" });
+      if (r.ok) return u;
+      // 2) GET Range 0-0
+      r = await fetchWithTimeout(u, 7000, { Range: "bytes=0-0", ...headers }, { method: "GET" });
+      if (r.ok) return u;
+      // 3) GET Range 0-1023
+      r = await fetchWithTimeout(u, 7000, { Range: "bytes=0-1023", ...headers }, { method: "GET" });
+      if (r.ok) return u;
+      // 4) GET simple
+      r = await fetchWithTimeout(u, 7000, { ...headers }, { method: "GET" });
       if (r.ok) return u;
     } catch {}
   }
   return null;
 }
 
-/* ================= Upstream policy (strict|public|off) ================= */
+/* ========== Upstream policy (strict|public|off) ========== */
 function isPrivateIPv4(ip) {
   const o = ip.split(".").map(Number);
   if (o.length !== 4 || o.some(n => Number.isNaN(n))) return false;
@@ -282,7 +292,7 @@ function isPrivateIPv6(ip) {
   return s === "::1" || s.startsWith("fc") || s.startsWith("fd") || s.startsWith("fe80") || s.startsWith("ff");
 }
 async function assertAllowedUpstream(targetUrl, baseUrl) {
-  const mode = (process.env.SECURE_PROXY_MODE || "strict").toLowerCase(); // strict|public|off
+  const mode = (process.env.SECURE_PROXY_MODE || "public").toLowerCase(); // default public
   const u = new URL(targetUrl);
   if (!/^https?:$/.test(u.protocol)) throw Object.assign(new Error("bad-scheme"), { status: 400 });
   if (u.username || u.password) throw Object.assign(new Error("bad-auth"), { status: 400 });
@@ -308,7 +318,7 @@ async function assertAllowedUpstream(targetUrl, baseUrl) {
   }
 }
 
-/* ================= TMDB → Xtream ================= */
+/* ========== TMDB → Xtream ========== */
 async function getVodStreamIdByTmdb(userId, tmdbId) {
   const creds = await getCreds(userId);
   if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
@@ -331,14 +341,14 @@ async function getVodStreamIdByTmdb(userId, tmdbId) {
   return { streamId: String(cand.stream_id) };
 }
 
-/* ================= Routes ================= */
+/* ========== Routes ========== */
 
-// URL directe désactivée
+// Pas d’URL directe
 router.get("/:kind(movie|series|live)/:id/stream-url", (_req, res) =>
   res.status(410).json({ error: "direct-url-disabled" })
 );
 
-// HLS: live → réécriture playlist; VOD → redir /file
+// HLS: live réécrit, VOD redirigé vers /file
 router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -361,7 +371,6 @@ router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
 
     const origin = new URL(m3u8Url);
     const text = await up.text();
-
     const rewrite = (line) => {
       if (line.startsWith("#EXT-X-KEY")) {
         return line.replace(/URI="([^"]+)"/, (_m, uri) => {
@@ -373,7 +382,6 @@ router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
       const abs = new URL(line, origin).toString();
       return `/api/media/proxy?url=${encodeURIComponent(abs)}`;
     };
-
     const body = text.split(/\r?\n/).map(rewrite).join("\n");
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
     res.setHeader("Cache-Control", "no-store");
@@ -381,7 +389,7 @@ router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Proxy générique (segments, clés HLS, fichiers directs)
+// Proxy générique
 router.get("/proxy", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -413,7 +421,7 @@ router.get("/proxy", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Fallback progressif MP4/TS/MKV avec résolutions stream_id | vod_id | tmdb
+// Fallback VOD/Live: stream_id → vod_id → tmdb, avec debug
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -439,7 +447,7 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
     notes.push("try: stream_id");
     fileUrl = await tryCandidates(kind, id);
 
-    // 2) si movie et échec, supposer id = vod_id → player_api:get_vod_info → stream_id
+    // 2) si movie et échec, supposer id = vod_id → get_vod_info → stream_id
     if (!fileUrl && kind === "movie" && /^\d+$/.test(id)) {
       try {
         notes.push("try: vod_id→get_vod_info");
@@ -458,7 +466,7 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
       }
     }
 
-    // 3) si toujours rien et id ressemble à TMDB → map TMDB → stream_id via get_vod_streams
+    // 3) fallback TMDB
     if (!fileUrl && kind === "movie" && /^\d+$/.test(id)) {
       try {
         notes.push("try: tmdb→stream_id");
@@ -491,7 +499,7 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-/* ================= Metadata (min) ================= */
+/* ========== Metadata (min) ========== */
 router.get("/movie/:id", async (req, res, next) => {
   try { res.json(await resolveMovie(getUserId(req), req.params.id, { refresh: req.query.refresh === "1" })); }
   catch (e) { e.status = e.status || 500; next(e); }
