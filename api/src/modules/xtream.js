@@ -89,8 +89,7 @@ async function fetchJson(url) {
   if (!r.ok) { const err = new Error(`XTREAM_HTTP_${r.status}`); err.status = r.status; err.body = txt; throw err; }
   try { return JSON.parse(txt); } catch { const err = new Error("XTREAM_BAD_JSON"); err.body = txt; throw err; }
 }
-// version “budget temps” pour la recherche
-async function fetchJsonBudget(url, budgetMs = 1200) {
+async function fetchJsonBudget(url, _budgetMs = 1200) {
   try { return await fetchJson(url); }
   catch (e) { if (e.name === "AbortError") return []; throw e; }
 }
@@ -139,7 +138,6 @@ async function getCreds(userId) {
 /* ============== Images helpers ============== */
 function proxyUrl(rawUrl) {
   if (!rawUrl) return "";
-  // IMPORTANT: via reverse proxy NPM en /api
   return `/api/xtream/image?url=${encodeURIComponent(rawUrl)}`;
 }
 function resolveIcon(raw, creds) {
@@ -349,6 +347,69 @@ router.get("/image", ah(async (req, res) => {
   res.setHeader("Cache-Control", "public, max-age=86400");
   const buf = Buffer.from(await r.arrayBuffer());
   res.end(buf);
+}));
+
+/* ============== NEW: /xtream/stream-url (résolution URL de lecture) ============== */
+/**
+ * GET /xtream/stream-url?kind=movie|series|live&id=<tmdbId>&title=<opt>&year=<opt>
+ * Réponse: { src }
+ * - Pour movie/series: renvoie une URL *chemin Xtream* (ex: /movie/<user>/<pass>/<stream_id>.<ext>)
+ *   qui sera mappée en proxy /api/stream/... par le VideoPlayer.jsx.
+ * - Live non implémenté ici (retour 404).
+ */
+router.get("/stream-url", ah(async (req, res) => {
+  const uid = req.user?.sub;
+  if (!uid) return res.status(401).json({ error: "unauthorized" });
+
+  const kind = String(req.query.kind || "").toLowerCase();
+  const tmdbId = String(req.query.id || "").trim();
+  const qTitle = String(req.query.title || "").trim();
+  const qYear  = String(req.query.year  || "").trim();
+
+  if (!kind || !tmdbId) return res.status(400).json({ error: "missing_params" });
+
+  const c = await getCreds(uid);
+  if (!c) return res.status(404).json({ error: "xtream_account_not_found" });
+
+  if (kind === "live") {
+    return res.status(404).json({ error: "live_resolution_not_implemented" });
+  }
+
+  // VOD/Series: lister les VOD puis matcher
+  const list = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams")).catch(() => []);
+  if (!Array.isArray(list) || !list.length) return res.status(404).json({ error: "vod_list_empty" });
+
+  const nrm = (s) => String(s || "")
+    .toLowerCase()
+    .normalize("NFD").replace(/\p{Diacritic}/gu, "")
+    .replace(/[^\w\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  let hit = list.find((x) => String(x.tmdb_id || "").trim() === tmdbId);
+  if (!hit && (qTitle || qYear)) {
+    const want = nrm(qTitle);
+    let cands = want ? list.filter((x) => nrm(x.name || x.title) === want) : [];
+    if (qYear) {
+      const y = cands.filter((x) => String(x.year || "") === String(qYear));
+      if (y.length) cands = y;
+    }
+    hit = cands[0];
+  }
+  if (!hit?.stream_id) return res.status(404).json({ error: "vod_not_found" });
+
+  // Récupérer l’extension
+  let ext = "mp4";
+  try {
+    const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_info", { vod_id: hit.stream_id }));
+    ext = (info?.info?.container_extension || info?.movie_data?.container_extension || "mp4").toLowerCase();
+  } catch { /* fallback mp4 */ }
+
+  // IMPORTANT: on renvoie un *chemin* Xtream, pas l’hôte → le lecteur le mappe vers /api/stream/...
+  const src =
+    `/${(kind === "series" ? "series" : "movie")}/${encodeURIComponent(c.username)}/${encodeURIComponent(c.password)}/${encodeURIComponent(hit.stream_id)}.${ext}`;
+
+  res.json({ src });
 }));
 
 export default router;
