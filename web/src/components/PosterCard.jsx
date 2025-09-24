@@ -4,29 +4,68 @@ import { useCallback } from "react";
 import { useMyListStatus, toggleMyList } from "../lib/mylist";
 
 export default function PosterCard({ item, kind = "vod", showTitle = true }) {
-  const isSeries = kind === "series" || !!item?.series_id || item?.media_type === "tv" || item?.type === "tv";
-  const detKind = isSeries ? "series" : "movie";
-  const detId = isSeries ? (item?.series_id ?? null) : (item?.stream_id ?? null);
+  const isLive =
+    kind === "live" ||
+    String(item?.stream_type || "").toLowerCase() === "live";
+  const isSeries =
+    (!isLive && (kind === "series")) ||
+    !!item?.series_id ||
+    item?.media_type === "tv" ||
+    item?.type === "tv";
+
+  const detKind = isLive ? "live" : (isSeries ? "series" : "movie");
+
+  // IDs possibles
+  const xtId = isLive
+    ? (item?.stream_id ?? null)
+    : (isSeries ? (item?.series_id ?? null) : (item?.stream_id ?? null));
+  const tmdbId = item?.tmdb_id ?? item?.id ?? null;
 
   const title =
-    item?.name || item?.title || item?.stream_display_name || item?.stream_name || item?.movie_name || "";
+    item?.name ||
+    item?.title ||
+    item?.stream_display_name ||
+    item?.stream_name ||
+    item?.movie_name ||
+    "";
   const img =
-    item?.cover_big || item?.poster || item?.image || item?.logo || item?.icon || item?.stream_icon || item?.cover || item?.poster_path || "";
+    item?.cover_big ||
+    item?.poster ||
+    item?.image ||
+    item?.logo ||
+    item?.icon ||
+    item?.stream_icon ||
+    item?.cover ||
+    item?.poster_path ||
+    "";
 
-  const aspect = kind === "live" ? "aspect-video" : "aspect-[2/3]";
-  const clickable = !!detId;
+  const aspect = isLive ? "aspect-video" : "aspect-[2/3]";
 
-  const saved = useMyListStatus(detKind, detId || "__nil__");
-  const onToggle = useCallback((e) => {
-    e.preventDefault(); e.stopPropagation();
-    if (!detId) return;
-    toggleMyList(detKind, detId, { title, img, raw: item });
-  }, [detKind, detId, title, img, item]);
+  // Sauvegarde "Ma Liste" : utilise l'ID dispo (Xtream prioritaire)
+  const saveId = xtId || tmdbId || "__nil__";
+  const saved = useMyListStatus(detKind, saveId);
+  const onToggle = useCallback(
+    (e) => {
+      e.preventDefault(); e.stopPropagation();
+      if (!saveId || saveId === "__nil__") return;
+      toggleMyList(detKind, String(saveId), { title, img, raw: item });
+    },
+    [detKind, saveId, title, img, item]
+  );
+
+  const clickable = Boolean(xtId || tmdbId);
+
+  // Lien:
+  // - Xtream → /title/<kind>/xid-<stream_id|series_id>
+  // - TMDB   → /title/<kind>/<tmdb_id>
+  const href = xtId
+    ? `/title/${detKind}/xid-${encodeURIComponent(String(xtId))}`
+    : (tmdbId ? `/title/${detKind}/${encodeURIComponent(String(tmdbId))}` : "#");
 
   const content = (
     <>
       <div className={`relative ${aspect} w-full overflow-hidden rounded-xl bg-zinc-800`}>
-        {detId && (
+        {(xtId || tmdbId) && (
           <button
             type="button"
             aria-label={saved ? "Retirer de Ma Liste" : "Ajouter à Ma Liste"}
@@ -43,22 +82,34 @@ export default function PosterCard({ item, kind = "vod", showTitle = true }) {
             </svg>
           </button>
         )}
-        {img ? <img src={img} alt={title || "Affiche"} className="h-full w-full object-cover" draggable={false} loading="lazy" /> : null}
+        {img ? (
+          <img
+            src={img}
+            alt={title || "Affiche"}
+            className="h-full w-full object-cover"
+            draggable={false}
+            loading="lazy"
+          />
+        ) : null}
       </div>
-      {showTitle ? <div className="mt-2 line-clamp-2 text-sm text-zinc-200">{title}</div> : null}
+      {showTitle ? (
+        <div className="mt-2 line-clamp-2 text-sm text-zinc-200">{title}</div>
+      ) : null}
     </>
   );
 
   return clickable ? (
     <Link
-      to={`/title/${detKind}/${encodeURIComponent(detId)}`}
+      to={href}
+      state={{ title, poster: img }}
       className="block focus:outline-none focus:ring-2 focus:ring-white/40 rounded-xl"
       onDragStart={(e) => e.preventDefault()}
     >
       {content}
     </Link>
   ) : (
-    <div className="block" onDragStart={(e) => e.preventDefault()}>{content}</div>
+    <div className="block" onDragStart={(e) => e.preventDefault()}>
+      {content}
+    </div>
   );
 }
-
