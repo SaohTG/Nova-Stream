@@ -48,9 +48,7 @@ export default function VideoPlayer({
 
   const resolvedSrc = useMemo(() => (src || null), [src]);
 
-  useEffect(() => {
-    console.log("[Video src]", resolvedSrc);
-  }, [resolvedSrc]);
+  useEffect(() => { console.log("[Video src]", resolvedSrc); }, [resolvedSrc]);
 
   useEffect(() => {
     let destroyed = false;
@@ -59,6 +57,7 @@ export default function VideoPlayer({
       const v = videoRef.current;
       if (!v || !resolvedSrc) return;
 
+      // Nettoyage
       if (playerRef.current) {
         try { await playerRef.current.destroy(); } catch {}
         playerRef.current = null;
@@ -69,19 +68,18 @@ export default function VideoPlayer({
           const shaka = await loadShakaOnce();
           shaka.polyfill.installAll?.();
           if (!shaka.Player.isBrowserSupported()) throw new Error("Shaka unsupported");
-          const player = new shaka.Player(v);
+
+          // Crée le player sans mediaElement puis attache (évite l’avertissement deprecation)
+          const player = new shaka.Player();
+          await player.attach(v);
           playerRef.current = player;
 
-          // cookies sur /api/...
+          // Cookies/crédentials pour toutes les requêtes (m3u8, clés, segments)
           const ne = player.getNetworkingEngine?.();
           if (ne && ne.registerRequestFilter) {
             ne.registerRequestFilter((_type, req) => {
-              try {
-                const uri = (req.uris && req.uris[0]) || "";
-                if (uri.startsWith("/") || uri.startsWith(window.location.origin)) {
-                  req.allowCrossSiteCredentials = true;
-                }
-              } catch {}
+              // Activer l’envoi de cookies même si l’URI est absolue, relative, ou mal normalisée
+              req.allowCrossSiteCredentials = true;
             });
           }
 
