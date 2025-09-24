@@ -4,15 +4,18 @@ import { Pool } from "pg";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { Readable } from "node:stream";
+import dns from "node:dns/promises";
 
 const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
 const TMDB_KEY = process.env.TMDB_API_KEY;
-const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600);
+const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600); // 7 jours
+const IS_PROD = process.env.NODE_ENV === "production";
+const ACCESS_TTL = Number(process.env.API_JWT_ACCESS_TTL || 900);
 
-/* ===== Auth minimale ===== */
+/* ================= Auth minimale ================= */
 function parseCookies(req) {
   if (req.cookies) return req.cookies;
   const h = req.headers.cookie;
@@ -33,7 +36,7 @@ function getUserId(req) {
   catch { return null; }
 }
 
-/* ===== Crypto ===== */
+/* ================= Crypto (tolère clair) ================= */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY doit faire 64 hex chars");
@@ -54,7 +57,7 @@ function decMaybe(blob) {
   } catch { return s; }
 }
 
-/* ===== DB cache ===== */
+/* ================= DB cache ================= */
 async function ensureTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS media_cache (
@@ -91,7 +94,7 @@ async function putCache(kind, xtreamId, tmdbId, title, data) {
   );
 }
 
-/* ===== Xtream helpers ===== */
+/* ================= Xtream helpers ================= */
 async function getCreds(userId) {
   const q = `
     SELECT base_url, username_enc, password_enc FROM xtream_accounts WHERE user_id=$1
@@ -140,8 +143,11 @@ async function fetchJson(url) {
   try { return JSON.parse(txt); } catch { const e = new Error("BAD_JSON"); e.body = txt; throw e; }
 }
 
-/* ===== Matching helpers ===== */
-const LANG_TAGS = ["FR","VF","VO","VOSTFR","VOST","STFR","TRUEFRENCH","FRENCH","SUBFRENCH","SUBFR","SUB","SUBS","EN","ENG","DE","ES","IT","PT","NL","RU","PL","TR","TURK","AR","ARAB","ARABIC","LAT","LATINO","DUAL","MULTI"];
+/* ================= Matching helpers ================= */
+const LANG_TAGS = [
+  "FR","VF","VO","VOSTFR","VOST","STFR","TRUEFRENCH","FRENCH","SUBFRENCH","SUBFR","SUB","SUBS",
+  "EN","ENG","DE","ES","IT","PT","NL","RU","PL","TR","TURK","AR","ARAB","ARABIC","LAT","LATINO","DUAL","MULTI"
+];
 function dropLeadingTags(raw = "") {
   let s = String(raw).trim();
   s = s.replace(/^(?:\s*(?:\|[^|]*\||\[[^\]]*\]|\([^\)]*\)))+\s*/i, "");
@@ -162,15 +168,19 @@ function stripTitle(raw = "") {
   s = s.replace(/\s+/g, " ").trim();
   return s;
 }
-function yearFromStrings(...c) {
-  for (const x of c) { const m = String(x || "").match(/\b(19|20)\d{2}\b/); if (m) return Number(m[0]); }
+function yearFromStrings(...cands) {
+  for (const c of cands) {
+    const m = String(c || "").match(/\b(19|20)\d{2}\b/);
+    if (m) return Number(m[0]);
+  }
   return undefined;
 }
 function similarity(a, b) {
   const A = new Set(stripTitle(a).toLowerCase().split(" ").filter(Boolean));
   const B = new Set(stripTitle(b).toLowerCase().split(" ").filter(Boolean));
   if (!A.size || !B.size) return 0;
-  let inter = 0; for (const t of A) if (B.has(t)) inter++;
+  let inter = 0;
+  for (const t of A) if (B.has(t)) inter++;
   return inter / Math.max(A.size, B.size);
 }
 function yearPenalty(yearCand, dateStr) {
@@ -181,7 +191,7 @@ function yearPenalty(yearCand, dateStr) {
   return Math.min(d * 0.03, 0.3);
 }
 
-/* ===== TMDB ===== */
+/* ================= TMDB ================= */
 const TMDB_BASE = "https://api.themoviedb.org/3";
 async function tmdbDetails(kind, id) {
   const u = new URL(`${TMDB_BASE}/${kind === "movie" ? "movie" : "tv"}/${id}`);
@@ -190,7 +200,7 @@ async function tmdbDetails(kind, id) {
   return fetchJson(u.toString());
 }
 
-/* ===== Resolvers (abrégés) ===== */
+/* ================= Resolvers (light) ================= */
 async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
   if (!refresh) {
     const cached = await getCache("movie", vodId);
@@ -198,9 +208,19 @@ async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
   }
   const creds = await getCreds(reqUser);
   if (!creds) throw Object.assign(new Error("No Xtream creds"), { status: 404 });
-  const info = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_info", { vod_id: vodId }));
+
+  const info = await fetchJson(
+    buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_info", { vod_id: vodId })
+  );
+
   const tmdbId = Number(info?.info?.tmdb_id || info?.movie_data?.tmdb_id || 0) || null;
-  if (!tmdbId) return { kind:"movie", xtream_id:String(vodId), title:String(info?.info?.name || info?.movie_data?.name || "").trim() || null, source:{xtream_only:true, info} };
+  if (!tmdbId) {
+    const title = String(info?.info?.name || info?.movie_data?.name || "").trim() || null;
+    const payload = { kind: "movie", xtream_id: String(vodId), title, overview: null, data: { info } };
+    await putCache("movie", vodId, null, title, payload);
+    return payload;
+  }
+
   const det = await tmdbDetails("movie", tmdbId);
   const payload = {
     kind: "movie",
@@ -210,13 +230,13 @@ async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
     poster_url: det.poster_path ? `https://image.tmdb.org/t/p/w500${det.poster_path}` : null,
     backdrop_url: det.backdrop_path ? `https://image.tmdb.org/t/p/w1280${det.backdrop_path}` : null,
     overview: det.overview || null,
-    data: det
+    data: det,
   };
   await putCache("movie", vodId, tmdbId, payload.title, payload);
   return payload;
 }
 
-/* ===== Streaming helpers ===== */
+/* ================= Streaming helpers ================= */
 function streamCandidates(baseUrl, username, password, kind, id) {
   const root = baseUrl;
   if (kind === "live") return [
@@ -244,17 +264,54 @@ async function firstReachable(urls, headers = {}) {
   }
   return null;
 }
-function assertSameHost(url, baseUrl) {
-  const want = new URL(baseUrl);
-  const got = new URL(url);
-  const wantPort = Number(want.port || (want.protocol === "https:" ? 443 : 80));
-  const gotPort = Number(got.port || (got.protocol === "https:" ? 443 : 80));
-  if (want.hostname !== got.hostname || wantPort !== gotPort || want.protocol !== got.protocol) {
-    const e = new Error("forbidden host"); e.status = 400; throw e;
+
+/* ================= Upstream policy (strict|public|off) ================= */
+function isPrivateIPv4(ip) {
+  const o = ip.split(".").map(Number);
+  if (o.length !== 4 || o.some(n => Number.isNaN(n))) return false;
+  const [a, b] = o;
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 0) return true;
+  if (a >= 224) return true;
+  return false;
+}
+function isPrivateIPv6(ip) {
+  const s = ip.toLowerCase();
+  return s === "::1" || s.startsWith("fc") || s.startsWith("fd") || s.startsWith("fe80") || s.startsWith("ff");
+}
+async function assertAllowedUpstream(targetUrl, baseUrl) {
+  const mode = (process.env.SECURE_PROXY_MODE || "strict").toLowerCase(); // strict|public|off
+  const u = new URL(targetUrl);
+  if (!/^https?:$/.test(u.protocol)) throw Object.assign(new Error("bad-scheme"), { status: 400 });
+  if (u.username || u.password) throw Object.assign(new Error("bad-auth"), { status: 400 });
+
+  if (mode === "off") return;
+
+  if (mode === "strict") {
+    const b = new URL(baseUrl);
+    const bPort = Number(b.port || (b.protocol === "https:" ? 443 : 80));
+    const uPort = Number(u.port || (u.protocol === "https:" ? 443 : 80));
+    if (b.hostname !== u.hostname || bPort !== uPort || b.protocol !== u.protocol) {
+      const e = new Error("forbidden host"); e.status = 400; throw e;
+    }
+    return;
+  }
+
+  // mode === "public"
+  const addrs = await dns.lookup(u.hostname, { all: true });
+  if (!addrs.length) { const e = new Error("dns-failed"); e.status = 400; throw e; }
+  for (const a of addrs) {
+    if (a.family === 4 && isPrivateIPv4(a.address)) { const e = new Error("private-ipv4"); e.status = 400; throw e; }
+    if (a.family === 6 && isPrivateIPv6(a.address)) { const e = new Error("private-ipv6"); e.status = 400; throw e; }
   }
 }
 
-/* ===== TMDB → Xtream ===== */
+/* ================= TMDB → Xtream ================= */
 async function getVodStreamIdByTmdb(userId, tmdbId) {
   const creds = await getCreds(userId);
   if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
@@ -277,9 +334,9 @@ async function getVodStreamIdByTmdb(userId, tmdbId) {
   return { streamId: String(cand.stream_id) };
 }
 
-/* ===== Routes ===== */
+/* ================= Routes ================= */
 
-// direct-url désactivé
+// URL directe désactivée
 router.get("/:kind(movie|series|live)/:id/stream-url", (_req, res) =>
   res.status(410).json({ error: "direct-url-disabled" })
 );
@@ -288,20 +345,22 @@ router.get("/:kind(movie|series|live)/:id/stream-url", (_req, res) =>
 router.get("/:kind(movie|series|live)/:id/hls.m3u8", (req, res) => {
   const { kind, id } = req.params;
   if (kind !== "live") return res.redirect(302, `/api/media/${kind}/${id}/file`);
-  return res.redirect(302, `/api/media/${kind}/${id}/file`); // on passe par /file+proxy même pour ts si besoin
+  // On pourrait réécrire la playlist ici si nécessaire.
+  return res.redirect(302, `/api/media/${kind}/${id}/file`);
 });
 
-// Proxy générique
+// Proxy générique (segments, clés HLS, fichiers directs)
 router.get("/proxy", async (req, res, next) => {
   try {
     const userId = getUserId(req);
     if (!userId) return res.sendStatus(401);
+
     const creds = await getCreds(userId);
     if (!creds) return res.status(404).json({ error: "no-xtream" });
 
     const url = (req.query.url || "").toString();
     if (!url) { const e = new Error("missing url"); e.status = 400; throw e; }
-    assertSameHost(url, creds.baseUrl);
+    await assertAllowedUpstream(url, creds.baseUrl);
 
     const headers = { "User-Agent": "VLC/3.0", "Referer": creds.baseUrl + "/" };
     if (req.headers.range) headers.Range = req.headers.range;
@@ -322,7 +381,7 @@ router.get("/proxy", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// VOD/Live → fichier direct via proxy
+// VOD/Live → fichier direct via proxy (VOD: mp4/ts/mkv; Live: ts)
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -332,7 +391,7 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
     const creds = await getCreds(userId);
     if (!creds) return res.status(404).json({ error: "no-xtream" });
 
-    // 1) tenter avec l’id tel quel (stream_id)
+    // 1) tenter l’id tel quel (stream_id)
     let fileUrl = await firstReachable(
       streamCandidates(creds.baseUrl, creds.username, creds.password, kind, id),
       { "User-Agent": "VLC/3.0" }
@@ -356,7 +415,7 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-/* Meta light */
+/* ================= Metadata (min) ================= */
 router.get("/movie/:id", async (req, res, next) => {
   try { res.json(await resolveMovie(getUserId(req), req.params.id, { refresh: req.query.refresh === "1" })); }
   catch (e) { e.status = e.status || 500; next(e); }
