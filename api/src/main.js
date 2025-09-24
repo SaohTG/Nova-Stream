@@ -23,7 +23,7 @@ app.disable("x-powered-by");
 /* Sécurité HTTP */
 app.use(
   helmet({
-    hsts: false, // HSTS via Nginx Proxy Manager
+    hsts: false, // géré par le reverse proxy
     crossOriginEmbedderPolicy: false,
     crossOriginOpenerPolicy: { policy: "same-origin" },
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -71,8 +71,8 @@ app.use("/user/mylist", ensureAuth, mylistRouter);
 app.use("/user/watch", ensureAuth, watchRouter);
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
-app.use("/media", ensureAuthOrRefresh, mediaRouter);   // important
-app.use("/stream", ensureAuthOrRefresh, streamRouter); // important
+app.use("/media", ensureAuthOrRefresh, mediaRouter);
+app.use("/stream", ensureAuthOrRefresh, streamRouter);
 
 /* Routes prefix /api */
 app.use("/api/auth", authRouter);
@@ -81,8 +81,8 @@ app.use("/api/user/mylist", ensureAuth, mylistRouter);
 app.use("/api/user/watch", ensureAuth, watchRouter);
 app.use("/api/xtream", ensureAuth, xtreamRouter);
 app.use("/api/tmdb", ensureAuth, tmdbRouter);
-app.use("/api/media", ensureAuthOrRefresh, mediaRouter);   // important
-app.use("/api/stream", ensureAuthOrRefresh, streamRouter); // important
+app.use("/api/media", ensureAuthOrRefresh, mediaRouter);
+app.use("/api/stream", ensureAuthOrRefresh, streamRouter);
 
 /* Debug */
 app.get("/debug/whoami", ensureAuthOrRefresh, (req, res) => res.json({ user: req.user }));
@@ -104,7 +104,7 @@ app.use((err, req, res, _next) => {
   if (!res.headersSent) res.status(status).json({ error: message, detail: err.detail });
 });
 
-/* Boot + DB retry non bloquant */
+/* Boot */
 const port = Number(process.env.API_PORT || 4000);
 
 async function waitForDb(maxTries = 40, delayMs = 3000) {
