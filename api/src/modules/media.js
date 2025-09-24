@@ -141,53 +141,6 @@ async function fetchJson(url) {
   try { return JSON.parse(txt); } catch { const e = new Error("BAD_JSON"); e.body = txt; throw e; }
 }
 
-/* ========== Matching helpers (pour TMDB éventuel) ========== */
-const LANG_TAGS = [
-  "FR","VF","VO","VOSTFR","VOST","STFR","TRUEFRENCH","FRENCH","SUBFRENCH","SUBFR","SUB","SUBS",
-  "EN","ENG","DE","ES","IT","PT","NL","RU","PL","TR","TURK","AR","ARAB","ARABIC","LAT","LATINO","DUAL","MULTI"
-];
-function dropLeadingTags(raw = "") {
-  let s = String(raw).trim();
-  s = s.replace(/^(?:\s*(?:\|[^|]*\||\[[^\]]*\]|\([^\)]*\)))+\s*/i, "");
-  const tag = `(?:${LANG_TAGS.join("|")})`;
-  const sep = `(?:\\s*[|:/\\\\\\-·•]\\s*|\\s+)`;
-  const seq = new RegExp(`^(?:${tag})(?:${sep}(?:${tag}))*${sep}*`, "i");
-  s = s.replace(seq, "");
-  return s.trimStart();
-}
-function stripTitle(raw = "") {
-  let s = dropLeadingTags(raw);
-  s = s.replace(/[|._]/g, " ");
-  s = s.replace(/\s-\s/g, " ");
-  s = s.replace(/\[[^\]]*\]|\([^\)]*\)/g, " ");
-  s = s.replace(/\b(19|20)\d{2}\b/g, " ");
-  s = s.replace(/\bS\d{1,2}E\d{1,2}\b/gi, " ");
-  s = s.replace(/\b(2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|hdr|webrip|b[dr]rip|dvdrip|cam|ts|multi|truefrench|french|vostfr|vost|stfr|vf|vo)\b/gi, " ");
-  s = s.replace(/\s+/g, " ").trim();
-  return s;
-}
-function yearFromStrings(...cands) {
-  for (const c of cands) {
-    const m = String(c || "").match(/\b(19|20)\d{2}\b/);
-    if (m) return Number(m[0]);
-  }
-  return undefined;
-}
-function similarity(a, b) {
-  const A = new Set(stripTitle(a).toLowerCase().split(" ").filter(Boolean));
-  const B = new Set(stripTitle(b).toLowerCase().split(" ").filter(Boolean));
-  if (!A.size || !B.size) return 0;
-  let inter = 0; for (const t of A) if (B.has(t)) inter++;
-  return inter / Math.max(A.size, B.size);
-}
-function yearPenalty(yearCand, dateStr) {
-  if (!yearCand || !dateStr) return 0;
-  const y = Number(String(dateStr).slice(0, 4));
-  if (!y) return 0;
-  const d = Math.abs(yearCand - y);
-  return Math.min(d * 0.03, 0.3);
-}
-
 /* ========== TMDB minimal (métadonnées) ========== */
 const TMDB_BASE = "https://api.themoviedb.org/3";
 async function tmdbDetails(kind, id) {
@@ -253,13 +206,11 @@ function isPrivateIPv6(ip) {
   return s === "::1" || s.startsWith("fc") || s.startsWith("fd") || s.startsWith("fe80") || s.startsWith("ff");
 }
 async function assertAllowedUpstream(targetUrl, baseUrl) {
-  const mode = (process.env.SECURE_PROXY_MODE || "public").toLowerCase(); // default public
+  const mode = (process.env.SECURE_PROXY_MODE || "public").toLowerCase();
   const u = new URL(targetUrl);
   if (!/^https?:$/.test(u.protocol)) throw Object.assign(new Error("bad-scheme"), { status: 400 });
   if (u.username || u.password) throw Object.assign(new Error("bad-auth"), { status: 400 });
-
   if (mode === "off") return;
-
   if (mode === "strict") {
     const b = new URL(baseUrl);
     const bPort = Number(b.port || (b.protocol === "https:" ? 443 : 80));
@@ -269,8 +220,6 @@ async function assertAllowedUpstream(targetUrl, baseUrl) {
     }
     return;
   }
-
-  // mode === "public"
   const addrs = await dns.lookup(u.hostname, { all: true });
   if (!addrs.length) { const e = new Error("dns-failed"); e.status = 400; throw e; }
   for (const a of addrs) {
@@ -426,7 +375,7 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
       const seg = k === "movie" ? "movie" : k === "series" ? "series" : "live";
       const list = [];
       for (const ext of exts) list.push(`${root}/${seg}/${username}/${password}/${sid}${ext}`);
-      list.push(`${root}/${seg}/${username}/${password}/${sid}`); // sans extension
+      list.push(`${root}/${seg}/${username}/${password}/${sid}`);
       return list;
     };
 
@@ -469,7 +418,8 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
 
     try { await assertAllowedUpstream(fileUrl, creds0.baseUrl); } catch (e) { if (debug) notes.push(String(e)); }
 
-    req.url = `/api/media/proxy?url=${encodeURIComponent(fileUrl)}`;
+    // IMPORTANT: chemin interne sans préfixe /api/media
+    req.url = `/proxy?url=${encodeURIComponent(fileUrl)}`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
