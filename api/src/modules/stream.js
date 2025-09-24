@@ -7,7 +7,7 @@ const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 pool.on("error", (e) => console.error("[PG ERROR]", e));
 
-/* ===== crypto (même schéma que xtream/media) ===== */
+/* ===== crypto (compatible xtream/media) ===== */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY must be 64 hex chars");
@@ -62,11 +62,11 @@ async function fetchWithTimeout(url, ms = 8000, headers = {}, init = {}) {
     return await fetch(url, { signal: ctrl.signal, headers, ...init });
   } finally { clearTimeout(t); }
 }
-async function reachable(u) {
+async function reachable(u, headers = {}) {
   try {
-    let r = await fetchWithTimeout(u, 6000, { "User-Agent": "VLC/3.0" }, { method: "HEAD" });
+    let r = await fetchWithTimeout(u, 6000, { "User-Agent": "VLC/3.0", ...headers }, { method: "HEAD" });
     if (r.ok) return true;
-    r = await fetchWithTimeout(u, 6000, { "User-Agent": "VLC/3.0", Range: "bytes=0-0" }, { method: "GET" });
+    r = await fetchWithTimeout(u, 6000, { "User-Agent": "VLC/3.0", Range: "bytes=0-0", ...headers }, { method: "GET" });
     return r.ok;
   } catch { return false; }
 }
@@ -85,22 +85,33 @@ router.get("/vodmp4/:id", async (req, res, next) => {
     const user = encodeURIComponent(creds.username);
     const pass = encodeURIComponent(creds.password);
 
-    // 1) tenter HLS en priorité (meilleure compat navigateur via Shaka)
+    // 1) HLS en priorité (meilleure compat via media.hls réécrit)
     const m3u8 = `${base}/movie/${user}/${pass}/${id}.m3u8`;
-    if (await reachable(m3u8)) {
-      // playlist proxifiée (réécrit les segments) par media.js
+    if (await reachable(m3u8, { Referer: base + "/" })) {
       return res.redirect(302, `/api/media/movie/${encodeURIComponent(id)}/hls.m3u8`);
     }
 
-    // 2) sinon, tenter fichiers progressifs
+    // 2) fichiers progressifs
     const files = [".mp4", ".ts", ".mkv"].map(ext => `${base}/movie/${user}/${pass}/${id}${ext}`);
-    let hit = null;
-    for (const u of files) { if (await reachable(u)) { hit = u; break; } }
-    if (!hit) return res.status(404).json({ error: "no-source" });
+    for (const u of files) {
+      if (await reachable(u, { Referer: base + "/" })) {
+        return res.redirect(302, `/api/media/proxy?url=${encodeURIComponent(u)}`);
+      }
+    }
 
-    // proxy avec en-têtes Range/Referer gérés par /api/media/proxy
-    return res.redirect(302, `/api/media/proxy?url=${encodeURIComponent(hit)}`);
+    return res.status(404).json({ error: "no-source" });
   } catch (e) { next(e); }
+});
+
+/* ===== pass-thru vers media pour HLS live/séries (chemins stables côté front) ===== */
+router.get("/hls/live/:id.m3u8", (req, res) => {
+  return res.redirect(302, `/api/media/live/${encodeURIComponent(String(req.params.id))}/hls.m3u8`);
+});
+router.get("/hls/series/:id.m3u8", (req, res) => {
+  return res.redirect(302, `/api/media/series/${encodeURIComponent(String(req.params.id))}/hls.m3u8`);
+});
+router.get("/hls/movie/:id.m3u8", (req, res) => {
+  return res.redirect(302, `/api/media/movie/${encodeURIComponent(String(req.params.id))}/hls.m3u8`);
 });
 
 export default router;
