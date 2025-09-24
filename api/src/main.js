@@ -23,7 +23,7 @@ app.disable("x-powered-by");
 /* Sécurité HTTP */
 app.use(
   helmet({
-    hsts: false, // géré par le reverse proxy
+    hsts: false,
     crossOriginEmbedderPolicy: false,
     crossOriginOpenerPolicy: { policy: "same-origin" },
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -118,7 +118,7 @@ async function waitForDb(maxTries = 40, delayMs = 3000) {
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
-  console.error("[db] still not ready after retries");
+  console.error("[db] still not ready after retries]");
 }
 
 process.on("unhandledRejection", (e) => console.error("[UNHANDLED_REJECTION]", e));
