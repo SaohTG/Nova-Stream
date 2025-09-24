@@ -20,6 +20,8 @@ async function ensure() {
     );
     CREATE INDEX IF NOT EXISTS user_mylist_user_updated_idx
       ON user_mylist(user_id, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS user_mylist_user_item_idx
+      ON user_mylist(user_id, xtream_id);
   `);
 }
 router.use(async (_req, _res, next) => { await ensure(); next(); });
@@ -113,16 +115,15 @@ router.post("/:kind/:id", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// DELETE /user/mylist/:kind/:id
+// DELETE /user/mylist/:kind/:id  → supprime par user_id + xtream_id uniquement
 router.delete("/:kind/:id", async (req, res, next) => {
   try {
     const uid = req.user?.sub;
     if (!uid) return res.status(401).json({ error: "unauthorized" });
-    const kind = req.params.kind === "series" ? "series" : "movie";
     const id = String(req.params.id);
     await pool.query(
-      `DELETE FROM user_mylist WHERE user_id=$1 AND kind=$2 AND xtream_id=$3`,
-      [uid, kind, id]
+      `DELETE FROM user_mylist WHERE user_id=$1 AND xtream_id=$2`,
+      [uid, id]
     );
     res.status(204).end();
   } catch (e) { next(e); }
