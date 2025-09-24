@@ -10,6 +10,9 @@ export default function Title() {
   const loc = useLocation();
   const [qs] = useSearchParams();
 
+  const isXid = typeof id === "string" && id.startsWith("xid-");
+  const xid = isXid ? id.slice(4) : null;
+
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -18,44 +21,58 @@ export default function Title() {
   const [src, setSrc] = useState("");
   const [playErr, setPlayErr] = useState("");
 
-  // stream_id Xtream éventuel + lien direct optionnel
-  const xidQS = qs.get("xid") || loc.state?.xtreamId || null;
+  // optionnels
   const directUrlQS = qs.get("url") || loc.state?.playUrl || null;
 
   // Charge les métadonnées:
-  // - si xid présent → résout via Xtream puis TMDB par titre+année
-  // - sinon → TMDB par id (id = TMDB id)
+  // - si xid-… → récup Xtream, puis map TMDB par titre(+année)
+  // - sinon    → TMDB direct via id (TMDB)
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        if (xidQS && kind === "movie") {
-          // 1) infos Xtream (titre, année, cover)
-          const xi = await getJson(`/xtream/vod-info/${encodeURIComponent(xidQS)}`);
-          const title =
+        if (isXid && kind === "movie") {
+          const xi = await getJson(`/xtream/vod-info/${encodeURIComponent(xid)}`);
+          const xtTitle =
             xi?.movie_data?.name ||
             xi?.info?.name ||
             xi?.movie_data?.movie_name ||
-            xi?.info?.o_name ||
-            "";
-          const year =
-            (xi?.movie_data?.releasedate && String(xi.movie_data.releasedate).slice(0, 4)) ||
-            (xi?.info?.releasedate && String(xi.info.releasedate).slice(0, 4)) ||
-            "";
-
-          // 2) mapping TMDB côté API par titre+année
+            xi?.info?.o_name || "";
+          const xtYear =
+            (xi?.movie_data?.releasedate && String(xi.movie_data.releasedate).slice(0,4)) ||
+            (xi?.info?.releasedate && String(xi.info.releasedate).slice(0,4)) || "";
           let meta = null;
           try {
-            meta = await getJson(
-              `/media/resolve-by-title?kind=movie&title=${encodeURIComponent(title)}${year ? `&year=${encodeURIComponent(year)}` : ""}`
-            );
+            const url = `/media/resolve-by-title?kind=movie&title=${encodeURIComponent(xtTitle)}${xtYear ? `&year=${xtYear}` : ""}`;
+            meta = await getJson(url);
           } catch {}
-
-          // Fallback affichage si TMDB non trouvé
           const cover = xi?.movie_data?.cover_big || xi?.movie_data?.movie_image || "";
           const payload = meta || {
             kind: "movie",
-            title,
+            title: xtTitle || "(sans titre)",
+            overview: null,
+            vote_average: null,
+            poster_url: cover || null,
+            backdrop_url: cover || null,
+            data: { xtream_only: true },
+          };
+          if (alive) setData(payload);
+        } else if (isXid && kind === "series") {
+          const si = await getJson(`/xtream/series-info/${encodeURIComponent(xid)}`);
+          const xtTitle =
+            si?.info?.name || si?.info?.o_name || si?.info?.title || "";
+          const xtYear =
+            (si?.info?.releasedate && String(si.info.releasedate).slice(0,4)) ||
+            (si?.info?.first_air_date && String(si.info.first_air_date).slice(0,4)) || "";
+          let meta = null;
+          try {
+            const url = `/media/resolve-by-title?kind=series&title=${encodeURIComponent(xtTitle)}${xtYear ? `&year=${xtYear}` : ""}`;
+            meta = await getJson(url);
+          } catch {}
+          const cover = si?.info?.cover || si?.info?.backdrop_path || "";
+          const payload = meta || {
+            kind: "series",
+            title: xtTitle || "(sans titre)",
             overview: null,
             vote_average: null,
             poster_url: cover || null,
@@ -64,7 +81,7 @@ export default function Title() {
           };
           if (alive) setData(payload);
         } else {
-          // Chemin TMDB natif
+          // chemin TMDB natif
           const url = kind === "series" ? `/media/${kind}/${id}?refresh=1` : `/media/${kind}/${id}`;
           const j = await getJson(url);
           if (alive) setData(j);
@@ -76,19 +93,20 @@ export default function Title() {
       }
     })();
     return () => { alive = false; };
-  }, [kind, id, xidQS]);
+  }, [kind, id, isXid, xid]);
 
   useEffect(() => {
     setPlaying(false);
     setResolvingSrc(false);
     setSrc("");
     setPlayErr("");
-  }, [kind, id, xidQS]);
+  }, [kind, id, isXid, xid]);
 
-  const resumeKey = useMemo(
-    () => (kind === "movie" ? `movie:${id}` : loc.state?.resumeKey),
-    [kind, id, loc.state]
-  );
+  const resumeKey = useMemo(() => {
+    if (kind === "movie") return isXid ? `movie:xid:${xid}` : `movie:${id}`;
+    if (kind === "series") return isXid ? `series:xid:${xid}` : `series:${id}`;
+    return undefined;
+  }, [kind, id, isXid, xid]);
 
   async function startPlayback() {
     setPlaying(true);
@@ -98,15 +116,10 @@ export default function Title() {
 
     try {
       const title = loc.state?.title || data?.title || "";
-      const year =
-        (data?.release_date && String(data.release_date).slice(0, 4)) ||
-        (data?.first_air_date && String(data.first_air_date).slice(0, 4)) ||
-        (data?.year && String(data.year)) || "";
 
+      // si on a un XID, on passe direct par lui
       const u = `/media/play-src?kind=${encodeURIComponent(kind)}` +
-                (title ? `&title=${encodeURIComponent(title)}` : "") +
-                (year ? `&year=${encodeURIComponent(year)}` : "") +
-                (xidQS ? `&xid=${encodeURIComponent(xidQS)}` : "") +
+                (isXid ? `&xid=${encodeURIComponent(xid)}` : (title ? `&title=${encodeURIComponent(title)}` : "")) +
                 (directUrlQS ? `&url=${encodeURIComponent(directUrlQS)}` : "");
 
       const r = await getJson(u);
@@ -188,10 +201,7 @@ export default function Title() {
             <p className="mt-4 leading-relaxed text-zinc-200">{data.overview}</p>
           )}
           <div className="mt-6 flex flex-wrap items-center gap-3">
-            <button
-              className="btn bg-emerald-600 text-white hover:bg-emerald-500"
-              onClick={startPlayback}
-            >
+            <button className="btn bg-emerald-600 text-white hover:bg-emerald-500" onClick={startPlayback}>
               ▶ Regarder
             </button>
             <button
