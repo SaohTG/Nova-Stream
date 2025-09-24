@@ -13,7 +13,7 @@ import tmdbRouter from "./modules/tmdb.js";
 import mediaRouter from "./modules/media.js";
 import mylistRouter from "./modules/mylist.js";
 import watchRouter from "./modules/watch.js";
-import streamRouter from "./modules/stream.js"; // ← proxy VOD/HLS
+import streamRouter from "./modules/stream.js"; // proxy multi-host Xtream (HLS/VOD)
 
 const app = express();
 app.set("trust proxy", 1);
@@ -35,8 +35,8 @@ const corsOptions = {
     "Range",
     "If-Range",
     "If-None-Match",
-    "Accept",
-    "Origin"
+    "Origin",
+    "Accept"
   ],
   exposedHeaders: [
     "Accept-Ranges",
@@ -69,10 +69,10 @@ app.use("/user/watch", ensureAuth, watchRouter);
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
 app.use("/media", ensureAuth, mediaRouter);
-/* Proxy streaming (VOD/HLS) */
+/* Proxy streaming (multi-host Xtream) */
 app.use("/stream", ensureAuth, streamRouter);
 
-/* Routes avec prefix /api (utile si le proxy ne strip pas /api) */
+/* Routes avec prefix /api (si le proxy ne strip pas /api) */
 app.use("/api/auth", authRouter);
 app.use("/api/user", ensureAuth, userRouter);
 app.use("/api/user/mylist", ensureAuth, mylistRouter);
@@ -80,7 +80,6 @@ app.use("/api/user/watch", ensureAuth, watchRouter);
 app.use("/api/xtream", ensureAuth, xtreamRouter);
 app.use("/api/tmdb", ensureAuth, tmdbRouter);
 app.use("/api/media", ensureAuth, mediaRouter);
-/* Proxy streaming (VOD/HLS) avec /api */
 app.use("/api/stream", ensureAuth, streamRouter);
 
 /* Debug */
