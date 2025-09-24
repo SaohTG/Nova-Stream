@@ -2,13 +2,14 @@ version: "3.9"
 
 services:
   db:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: nova
       POSTGRES_PASSWORD: changeme
       POSTGRES_DB: novastream
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
+      TZ: Europe/Brussels
     volumes:
       - db_data_ns6:/var/lib/postgresql/data
     healthcheck:
@@ -18,38 +19,45 @@ services:
       retries: 10
       start_period: 10s
     networks: [webnet]
+    pull_policy: if_not_present
 
   api:
-    image: node:20-alpine
+    image: docker.io/library/node:20-alpine
     init: true
     working_dir: /app
     environment:
       DATABASE_URL: postgresql://nova:changeme@db:5432/novastream
+      PORT: 4000
       API_PORT: 4000
-      NODE_ENV: production
-      CORS_ORIGINS: https://app.lorna.tv
+      HOST: 0.0.0.0
+      CORS_ORIGIN: https://app.lorna.tv
       COOKIE_DOMAIN: .lorna.tv
       COOKIE_SECURE: "true"
       COOKIE_SAMESITE: none
+      TZ: Europe/Brussels
       TMDB_API_KEY: d8175301037c00f3c719478998396539
+      NODE_ENV: production
+      NPM_CONFIG_PRODUCTION: "false"
       API_JWT_SECRET: Y7dD6Vh2mC4pQ8tR1sX9zK3wL5aN0fB2gU4hJ6iO8lT1qP3dV
       API_REFRESH_SECRET: 9uU6sT4rQ2pO0nM7lK5jH3gF1dC9bA7Z5X3V1T
       API_JWT_ACCESS_TTL: "900"
       API_JWT_REFRESH_TTL: "1209600"
-      API_ENCRYPTION_KEY: "a1b2c3d4e5f60718293a4bc5de6f70819a2b3c4d5e6f7a801f2e3d4c9b8a7c6d"
+      API_ENCRYPTION_KEY: a1b2c3d4e5f60718293a4bc5de6f70819a2b3c4d5e6f7a801f2e3d4c9b8a7c6d
+      SECURE_PROXY_MODE: public
     command:
       - sh
       - -lc
       - |
         set -e
-        apk add --no-cache unzip curl
+        apk add --no-cache unzip curl netcat-openbsd
+        until nc -z db 5432; do echo 'waiting for db...'; sleep 2; done
         rm -rf /tmp/Nova-Stream-main /tmp/src.zip
         curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
         unzip -o -q /tmp/src.zip -d /tmp
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/api/. /app
-        npm ci || npm i
-        npm run build || true
+        npm install --include=dev --no-audit --no-fund
+        npm run build
         node dist/main.js
     depends_on:
       db:
@@ -58,22 +66,27 @@ services:
       - "4000:4000"
     healthcheck:
       test:
-        ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:'+(process.env.API_PORT||4000)+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+        [
+          "CMD-SHELL",
+          "for i in $(seq 1 120); do if wget -qO- http://127.0.0.1:4000/health >/dev/null 2>&1 || wget -qO- http://127.0.0.1:4000/api/health >/dev/null 2>&1; then exit 0; fi; sleep 5; done; exit 1"
+        ]
       interval: 10s
       timeout: 5s
-      retries: 60
-      start_period: 600s   # 10 min pour laisser le temps au build + init
+      retries: 120
+      start_period: 600s
     networks: [webnet]
     restart: unless-stopped
+    pull_policy: if_not_present
 
   web:
-    image: node:20-alpine
+    image: docker.io/library/node:20-alpine
     init: true
     working_dir: /app
     environment:
       VITE_API_BASE: /api
       NODE_ENV: production
       NPM_CONFIG_PRODUCTION: "false"
+      TZ: Europe/Brussels
     command:
       - sh
       - -lc
@@ -90,17 +103,18 @@ services:
         npx serve -s dist -l 8081
     depends_on:
       api:
-        condition: service_started   # ne bloque plus sur "healthy"
+        condition: service_healthy
     ports:
       - "8081:8081"
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8081/ >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/ >/dev/null 2>&1 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 20
       start_period: 20s
     networks: [webnet]
     restart: unless-stopped
+    pull_policy: if_not_present
 
 volumes:
   db_data_ns6: {}
