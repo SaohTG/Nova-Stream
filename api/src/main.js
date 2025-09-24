@@ -4,6 +4,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import morgan from "morgan";
+import helmet from "helmet";
 
 import { initDatabase } from "./db/init.js";
 import authRouter, { ensureAuth } from "./modules/auth.js";
@@ -20,21 +21,30 @@ const app = express();
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
-/* CORS */
-const ORIGINS = (process.env.CORS_ORIGIN || "http://localhost:5173")
-  .split(",")
-  .map(s => s.trim())
-  .filter(Boolean);
+/* Sécurité HTTP de base */
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: { policy: "same-origin" },
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+}));
+// Ne pas envoyer de Permissions-Policy (NPM le gère côté proxy)
+app.use((_req, res, next) => { res.removeHeader("Permissions-Policy"); next(); });
+
+/* CORS strict + credentials */
+const ORIGINS = String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || "http://localhost:5173")
+  .split(",").map(s => s.trim()).filter(Boolean);
 
 const corsOptions = {
-  origin: (origin, cb) => (!origin || ORIGINS.includes(origin) ? cb(null, true) : cb(null, false)),
+  origin(origin, cb) {
+    if (!origin) return cb(null, true); // same-origin / curl
+    return cb(ORIGINS.includes(origin) ? null : new Error("CORS blocked"), ORIGINS.includes(origin));
+  },
   credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "Range", "If-Range"],
-  exposedHeaders: ["Accept-Ranges", "Content-Range", "Content-Length", "Content-Type"],
+  methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization","Range","If-Range"],
+  exposedHeaders: ["Accept-Ranges","Content-Range","Content-Length","Content-Type"],
   optionsSuccessStatus: 204,
 };
-
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
@@ -46,7 +56,7 @@ app.use(morgan("dev"));
 
 /* Health */
 app.get("/health", (_req, res) => res.json({ ok: true }));
-app.get("/api/health", (_req, res) => res.json({ ok: true })); // support prefix
+app.get("/api/health", (_req, res) => res.json({ ok: true }));
 
 /* Routes sans prefix */
 app.use("/auth", authRouter);
@@ -55,11 +65,10 @@ app.use("/user/mylist", ensureAuth, mylistRouter);
 app.use("/user/watch", ensureAuth, watchRouter);
 app.use("/xtream", ensureAuth, xtreamRouter);
 app.use("/tmdb", ensureAuth, tmdbRouter);
-// Utiliser requireAccess pour les flux pour gérer refresh→access automatiquement
 app.use("/media", requireAccess, mediaRouter);
 app.use("/stream", requireAccess, streamRouter);
 
-/* Routes avec prefix /api */
+/* Routes prefix /api */
 app.use("/api/auth", authRouter);
 app.use("/api/user", ensureAuth, userRouter);
 app.use("/api/user/mylist", ensureAuth, mylistRouter);
@@ -75,18 +84,17 @@ app.get("/debug/whoami", ensureAuth, (req, res) => res.json({ user: req.user }))
 /* 404 */
 app.use((req, res, next) => {
   if (res.headersSent) return next();
-  res.status(404).json({ error: "Not Found", path: req.path });
+  res.status(404).json({ error: "not_found", path: req.path });
 });
 
 /* Error handler */
-// eslint-disable-next-line no-unused-vars
-app.use((err, req, res, _next) => {
+app.use((err, _req, res, _next) => {
   const status = err.status || err.statusCode || 500;
-  const message = err.message || "Internal Server Error";
+  const message = err.message || "internal_error";
   if (process.env.NODE_ENV !== "production") {
     console.error("[API ERROR]", status, message, err.stack || err);
   }
-  if (!res.headersSent) res.status(status).json({ message, detail: err.detail, error: "unauthorized" });
+  if (!res.headersSent) res.status(status).json({ error: message, detail: err.detail });
 });
 
 /* Boot */
