@@ -1,70 +1,133 @@
 // api/src/modules/stream.js
+// Proxy streaming Xtream sécurisé (multi-fournisseurs), sans exposer server/user/pass au front.
+// - VOD passthrough:        GET /api/stream/vod/:vodId
+// - VOD remux MP4 (MKV ok): GET /api/stream/vodmp4/:vodId
+// - HLS playlist rewrite:   GET /api/stream/hls/:type/:id.m3u8   (type = live|movie|series)
+// - HLS segments proxy:     GET /api/stream/seg?u=<absolute-segment-url>
+//
+// Back-compat (facultatif): mêmes routes avec un accId inutile au milieu
+//   /vodmp4/:accId/:vodId, /hls/:accId/:type/:id.m3u8, /seg/:accId → accId ignoré.
+//
+// Prérequis: ffmpeg dans l’image Docker (voir Dockerfile fourni).
+
 import { Router } from "express";
 import { Pool } from "pg";
+import crypto from "crypto";
 import { spawn } from "child_process";
+import { Readable } from "node:stream";
 
 const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const APP_ORIGIN = process.env.APP_ORIGIN || "*";
+pool.on("error", (e) => console.error("[PG]", e));
 
-/* helpers */
-function normBase(u) {
-  const url = new URL(u);
-  if (!/^https?:$/.test(url.protocol)) throw new Error("invalid_scheme");
-  url.pathname = url.pathname.replace(/\/+$/, "");
-  return url.toString();
+const APP_ORIGIN = process.env.APP_ORIGIN || "*";
+const ALLOW_PROXY_HOSTS = (process.env.ALLOW_PROXY_HOSTS || "")
+  .split(",").map(s => s.trim().toLowerCase()).filter(Boolean);
+
+/* -------------------- Crypto (même schéma que xtream.js/media.js) -------------------- */
+function getKey() {
+  const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY must be 64 hex chars");
+  return Buffer.from(hex, "hex");
 }
-async function getAccount(userId, accountId) {
-  const { rows } = await pool.query(
-    `SELECT id, user_id, base_url, username, password
-     FROM xtream_accounts
-     WHERE id=$1 AND user_id=$2 LIMIT 1`,
-    [accountId, userId]
-  );
-  if (!rows[0]) throw Object.assign(new Error("xtream_account_not_found"), { status: 404 });
-  const base = normBase(rows[0].base_url);
-  return { base, user: rows[0].username, pass: rows[0].password };
+function dec(blob) {
+  const [v, ivb64, tagb64, ctb64] = String(blob).split(":");
+  if (v !== "v1") throw new Error("Unsupported enc version");
+  const key = getKey();
+  const iv = Buffer.from(ivb64, "base64");
+  const tag = Buffer.from(tagb64, "base64");
+  const ct = Buffer.from(ctb64, "base64");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+  decipher.setAuthTag(tag);
+  const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+  return pt.toString("utf8");
 }
-async function resolveVodExt(base, user, pass, id) {
-  const u = `${base}/player_api.php?username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}&action=get_vod_info&vod_id=${encodeURIComponent(id)}`;
-  const r = await fetch(u);
-  if (!r.ok) return "mp4";
-  const j = await r.json().catch(() => null);
-  return j?.info?.container_extension || "mp4";
+
+/* -------------------- Creds Xtream (1 compte par user) -------------------- */
+function normalizeBaseUrl(u) {
+  let s = (u || "").toString().trim();
+  if (!/^https?:\/\//i.test(s)) s = `http://${s}`;
+  // retire suffixes courants
+  s = s.replace(/\/player_api\.php.*$/i, "")
+       .replace(/\/portal\.php.*$/i, "")
+       .replace(/\/stalker_portal.*$/i, "")
+       .replace(/\/(?:series|movie|live)\/.*$/i, "");
+  while (s.endsWith("/")) s = s.slice(0, -1);
+  return s;
 }
+async function getCreds(userId) {
+  // compatible avec xtream_accounts OU user_xtream (clé = user_id)
+  const q = `
+    SELECT base_url, username_enc, password_enc FROM xtream_accounts WHERE user_id=$1
+    UNION ALL
+    SELECT base_url, username_enc, password_enc FROM user_xtream   WHERE user_id=$1
+    LIMIT 1
+  `;
+  const { rows } = await pool.query(q, [userId]);
+  const row = rows[0];
+  if (!row) throw Object.assign(new Error("xtream_account_not_found"), { status: 404 });
+  return {
+    base: normalizeBaseUrl(row.base_url),
+    user: dec(row.username_enc),
+    pass: dec(row.password_enc),
+  };
+}
+
+/* -------------------- URL helpers -------------------- */
 const vodURL = (base, user, pass, id, ext) =>
   `${base}/movie/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${encodeURIComponent(id)}.${ext}`;
 const hlsURL = (base, type, user, pass, id) =>
   `${base}/${type}/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${encodeURIComponent(id)}.m3u8`;
 
-/* VOD passthrough MP4 si possible */
-router.get("/vod/:accId/:vodId", async (req, res) => {
+async function resolveVodExt(base, user, pass, id) {
   try {
-    const uid = req.user?.sub; if (!uid) return res.status(401).json({ error: "unauthorized" });
-    const { accId, vodId } = req.params;
-    const acc = await getAccount(uid, accId);
-    const ext = (req.query.ext && String(req.query.ext)) || await resolveVodExt(acc.base, acc.user, acc.pass, vodId);
-    const upstream = vodURL(acc.base, acc.user, acc.pass, vodId, ext);
-    const hdrs = req.headers.range ? { Range: req.headers.range } : {};
-    const up = await fetch(upstream, { headers: hdrs, redirect: "follow" });
-    res.setHeader("Access-Control-Allow-Origin", APP_ORIGIN);
-    for (const [k, v] of up.headers) res.setHeader(k, v);
-    res.status(up.status);
-    if (up.body) up.body.pipe(res); else res.end();
-  } catch (e) {
-    res.status(e.status || 502).json({ error: "vod_upstream_error" });
+    const u = new URL(`${base}/player_api.php`);
+    u.searchParams.set("username", user);
+    u.searchParams.set("password", pass);
+    u.searchParams.set("action", "get_vod_info");
+    u.searchParams.set("vod_id", String(id));
+    const r = await fetch(u.toString(), { redirect: "follow" });
+    const j = await r.json().catch(() => null);
+    return (j?.info?.container_extension || j?.movie_data?.container_extension || "mp4").toLowerCase();
+  } catch { return "mp4"; }
+}
+
+function assertAllowedHost(absUrl, base) {
+  const want = new URL(base);
+  const got = new URL(absUrl);
+  const wantHost = `${want.protocol}//${want.hostname}:${want.port || (want.protocol === "https:" ? 443 : 80)}`.toLowerCase();
+  const gotHost  = `${got.protocol}//${got.hostname}:${got.port  || (got.protocol === "https:" ? 443 : 80)}`.toLowerCase();
+  const allowSet = new Set([wantHost, ...ALLOW_PROXY_HOSTS.map(h => h.includes("://") ? h : `${want.protocol}//${h}`)]);
+  if (!allowSet.has(gotHost)) {
+    const e = new Error("forbidden_host"); e.status = 400; throw e;
   }
-});
+}
 
-/* VOD remux MKV→MP4 streaming */
-router.get("/vodmp4/:accId/:vodId", async (req, res) => {
+/* -------------------- Core handlers -------------------- */
+async function handleVod(req, res, remuxMp4) {
+  const uid = req.user?.sub;
+  if (!uid) return res.status(401).json({ error: "unauthorized" });
+  const vodId = req.params.vodId;
+
   try {
-    const uid = req.user?.sub; if (!uid) return res.status(401).json({ error: "unauthorized" });
-    const { accId, vodId } = req.params;
-    const acc = await getAccount(uid, accId);
-    const ext = (req.query.ext && String(req.query.ext)) || await resolveVodExt(acc.base, acc.user, acc.pass, vodId);
-    const upstream = vodURL(acc.base, acc.user, acc.pass, vodId, ext);
+    const { base, user, pass } = await getCreds(uid);
+    const ext = await resolveVodExt(base, user, pass, vodId);
+    const upstream = vodURL(base, user, pass, vodId, ext);
 
+    if (!remuxMp4) {
+      const hdrs = {};
+      if (req.headers.range) hdrs.Range = req.headers.range;
+      if (req.headers["if-range"]) hdrs["If-Range"] = req.headers["if-range"];
+      const up = await fetch(upstream, { headers: hdrs, redirect: "follow" });
+
+      res.setHeader("Access-Control-Allow-Origin", APP_ORIGIN);
+      for (const [k, v] of up.headers) res.setHeader(k, v);
+      res.status(up.status);
+      if (up.body) Readable.fromWeb(up.body).pipe(res); else res.end();
+      return;
+    }
+
+    // Remux en MP4 fragmenté pour lecture progressive
     res.setHeader("Access-Control-Allow-Origin", APP_ORIGIN);
     res.setHeader("Content-Type", "video/mp4");
     res.setHeader("Cache-Control", "no-store");
@@ -87,47 +150,89 @@ router.get("/vodmp4/:accId/:vodId", async (req, res) => {
     const endAll = () => { try { ff.kill("SIGKILL"); } catch {} if (!res.writableEnded) res.end(); };
     ff.on("close", endAll); ff.on("error", endAll); req.on("close", endAll);
   } catch (e) {
-    res.status(e.status || 502).json({ error: "vod_remux_error" });
+    const status = e.status || 502;
+    res.status(status).json({ error: remuxMp4 ? "vod_remux_error" : "vod_upstream_error" });
   }
-});
+}
 
-/* HLS live: playlist + réécriture segments */
-router.get("/hls/:accId/:type/:id.m3u8", async (req, res) => {
+async function handleHlsPlaylist(req, res) {
+  const uid = req.user?.sub;
+  if (!uid) return res.status(401).json({ error: "unauthorized" });
+  const { type, id } = req.params; // live|movie|series
+
   try {
-    const uid = req.user?.sub; if (!uid) return res.status(401).json({ error: "unauthorized" });
-    const { accId, type, id } = req.params;
-    const acc = await getAccount(uid, accId);
-    const up = await fetch(hlsURL(acc.base, type, acc.user, acc.pass, id), { redirect: "follow" });
+    const { base, user, pass } = await getCreds(uid);
+    const src = hlsURL(base, type, user, pass, id);
+    const up = await fetch(src, { redirect: "follow" });
     if (!up.ok) return res.sendStatus(up.status);
+
+    const origin = new URL(src);
     let text = await up.text();
-    text = text.replace(/([^\s#]+\.ts)/g,
-      (m) => `/api/stream/seg/${encodeURIComponent(accId)}/${encodeURIComponent(type)}/${encodeURIComponent(m)}`);
+
+    const rewrite = (line) => {
+      if (line.startsWith("#EXT-X-KEY")) {
+        return line.replace(/URI="([^"]+)"/, (_m, uri) => {
+          const abs = new URL(uri, origin).toString();
+          try { assertAllowedHost(abs, base); } catch { /* ignore → bloquera au /seg */ }
+          return `URI="/api/stream/seg?u=${encodeURIComponent(abs)}"`;
+        });
+      }
+      if (!line || line.startsWith("#")) return line;
+      const abs = new URL(line, origin).toString();
+      try { assertAllowedHost(abs, base); } catch { /* ignore */ }
+      return `/api/stream/seg?u=${encodeURIComponent(abs)}`;
+    };
+
+    const body = text.split(/\r?\n/).map(rewrite).join("\n");
     res.setHeader("Access-Control-Allow-Origin", APP_ORIGIN);
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
     res.setHeader("Cache-Control", "no-store");
-    res.send(text);
+    res.send(body);
   } catch (e) {
     res.status(e.status || 502).json({ error: "hls_playlist_error" });
   }
-});
+}
 
-/* HLS live: segments avec Range */
-router.get("/seg/:accId/:type/*", async (req, res) => {
+async function handleSegment(req, res) {
+  const uid = req.user?.sub;
+  if (!uid) return res.status(401).json({ error: "unauthorized" });
+  const url = String(req.query.u || "");
+  if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: "bad_url" });
+
   try {
-    const uid = req.user?.sub; if (!uid) return res.status(401).json({ error: "unauthorized" });
-    const { accId, type } = req.params;
-    const segRel = req.params[0];
-    const acc = await getAccount(uid, accId);
-    const upstream = `${acc.base}/${type}/${encodeURIComponent(acc.user)}/${encodeURIComponent(acc.pass)}/${segRel}`;
-    const hdrs = req.headers.range ? { Range: req.headers.range } : {};
-    const up = await fetch(upstream, { headers: hdrs, redirect: "follow" });
+    const { base } = await getCreds(uid);
+    assertAllowedHost(url, base);
+
+    const headers = {};
+    if (req.headers.range) headers.Range = req.headers.range;
+    if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
+    const up = await fetch(url, { headers, redirect: "follow" });
+
     res.setHeader("Access-Control-Allow-Origin", APP_ORIGIN);
     for (const [k, v] of up.headers) res.setHeader(k, v);
     res.status(up.status);
-    if (up.body) up.body.pipe(res); else res.end();
+    if (up.body) Readable.fromWeb(up.body).pipe(res); else res.end();
   } catch (e) {
     res.status(e.status || 502).json({ error: "hls_segment_error" });
   }
-});
+}
+
+/* -------------------- Routes sans accId -------------------- */
+// VOD passthrough
+router.get("/vod/:vodId", (req, res) => handleVod(req, res, false));
+// VOD remux MP4
+router.get("/vodmp4/:vodId", (req, res) => handleVod(req, res, true));
+// HLS playlist rewrite
+router.get("/hls/:type(live|movie|series)/:id.m3u8", (req, res) => handleHlsPlaylist(req, res));
+// HLS segments proxy
+router.get("/seg", (req, res) => handleSegment(req, res));
+
+/* -------------------- Back-compat: routes avec accId (ignoré) -------------------- */
+// Remux MP4 avec accId ignoré
+router.get("/vodmp4/:accId/:vodId", (req, res) => handleVod(req, res, true));
+// HLS playlist avec accId ignoré
+router.get("/hls/:accId/:type(live|movie|series)/:id.m3u8", (req, res) => handleHlsPlaylist(req, res));
+// Segments avec accId ignoré via query
+router.get("/seg/:accId", (req, res) => handleSegment(req, res));
 
 export default router;
