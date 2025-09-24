@@ -1,3 +1,4 @@
+// api/src/modules/mylist.js
 import { Router } from "express";
 import { Pool } from "pg";
 
@@ -10,12 +11,12 @@ async function ensure() {
     CREATE TABLE IF NOT EXISTS user_mylist (
       user_id uuid NOT NULL,
       kind text NOT NULL CHECK (kind IN ('movie','series')),
-      item_id text NOT NULL,
+      xtream_id text NOT NULL,
       title text DEFAULT '',
       img text DEFAULT '',
       payload jsonb DEFAULT '{}'::jsonb,
       updated_at timestamptz NOT NULL DEFAULT now(),
-      PRIMARY KEY (user_id, kind, item_id)
+      PRIMARY KEY (user_id, kind, xtream_id)
     );
     CREATE INDEX IF NOT EXISTS user_mylist_user_updated_idx
       ON user_mylist(user_id, updated_at DESC);
@@ -29,7 +30,7 @@ router.get("/", async (req, res, next) => {
     const uid = req.user?.sub;
     if (!uid) return res.status(401).json({ error: "unauthorized" });
     const { rows } = await pool.query(
-      `SELECT kind, item_id AS id, title, img, payload,
+      `SELECT kind, xtream_id AS id, title, img, payload,
               EXTRACT(EPOCH FROM updated_at)*1000 AS "updatedAt"
        FROM user_mylist
        WHERE user_id=$1
@@ -50,25 +51,38 @@ router.post("/merge", async (req, res, next) => {
     try {
       await client.query("BEGIN");
       for (const it of items) {
-        const kind = (it.kind === "series") ? "series" : "movie";
+        const kind = it?.kind === "series" ? "series" : "movie";
+        const id = String(it?.id ?? "");
+        if (!id) continue;
         await client.query(
-          `INSERT INTO user_mylist (user_id, kind, item_id, title, img, payload, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6, to_timestamp($7/1000.0))
-           ON CONFLICT (user_id,kind,item_id) DO UPDATE
-             SET title=EXCLUDED.title, img=EXCLUDED.img, payload=EXCLUDED.payload,
+          `INSERT INTO user_mylist (user_id, kind, xtream_id, title, img, payload, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,to_timestamp($7/1000.0))
+           ON CONFLICT (user_id,kind,xtream_id) DO UPDATE
+             SET title=EXCLUDED.title,
+                 img=EXCLUDED.img,
+                 payload=EXCLUDED.payload,
                  updated_at=GREATEST(user_mylist.updated_at, EXCLUDED.updated_at)`,
-          [uid, kind, String(it.id), it.title||"", it.img||"", it.payload||{}, Number(it.updatedAt)||Date.now()]
+          [
+            uid,
+            kind,
+            id,
+            it?.title || "",
+            it?.img || "",
+            it?.payload ?? {},
+            Number(it?.updatedAt) || Date.now(),
+          ]
         );
       }
       await client.query("COMMIT");
     } catch (e) { await client.query("ROLLBACK"); throw e; }
     finally { client.release(); }
 
-    // renvoyer l’état serveur
     const { rows } = await pool.query(
-      `SELECT kind, item_id AS id, title, img, payload,
+      `SELECT kind, xtream_id AS id, title, img, payload,
               EXTRACT(EPOCH FROM updated_at)*1000 AS "updatedAt"
-       FROM user_mylist WHERE user_id=$1 ORDER BY updated_at DESC`,
+       FROM user_mylist
+       WHERE user_id=$1
+       ORDER BY updated_at DESC`,
       [uid]
     );
     res.json(rows);
@@ -82,13 +96,17 @@ router.post("/:kind/:id", async (req, res, next) => {
     if (!uid) return res.status(401).json({ error: "unauthorized" });
     const kind = req.params.kind === "series" ? "series" : "movie";
     const id = String(req.params.id);
-    const { title="", img="", payload=null } = req.body || {};
+    const { title = "", img = "", payload = null } = req.body || {};
     const { rows } = await pool.query(
-      `INSERT INTO user_mylist (user_id, kind, item_id, title, img, payload, updated_at)
+      `INSERT INTO user_mylist (user_id, kind, xtream_id, title, img, payload, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6, now())
-       ON CONFLICT (user_id,kind,item_id) DO UPDATE
-         SET title=EXCLUDED.title, img=EXCLUDED.img, payload=EXCLUDED.payload, updated_at=now()
-       RETURNING kind, item_id AS id, title, img, payload, EXTRACT(EPOCH FROM updated_at)*1000 AS "updatedAt"`,
+       ON CONFLICT (user_id,kind,xtream_id) DO UPDATE
+         SET title=EXCLUDED.title,
+             img=EXCLUDED.img,
+             payload=EXCLUDED.payload,
+             updated_at=now()
+       RETURNING kind, xtream_id AS id, title, img, payload,
+                 EXTRACT(EPOCH FROM updated_at)*1000 AS "updatedAt"`,
       [uid, kind, id, title, img, payload]
     );
     res.status(201).json(rows[0]);
@@ -103,7 +121,7 @@ router.delete("/:kind/:id", async (req, res, next) => {
     const kind = req.params.kind === "series" ? "series" : "movie";
     const id = String(req.params.id);
     await pool.query(
-      `DELETE FROM user_mylist WHERE user_id=$1 AND kind=$2 AND item_id=$3`,
+      `DELETE FROM user_mylist WHERE user_id=$1 AND kind=$2 AND xtream_id=$3`,
       [uid, kind, id]
     );
     res.status(204).end();
