@@ -18,17 +18,57 @@ export default function Title() {
   const [src, setSrc] = useState("");
   const [playErr, setPlayErr] = useState("");
 
-  // fournis par ton serveur: xid = stream_id Xtream, url = lien direct éventuel
+  // stream_id Xtream éventuel + lien direct optionnel
   const xidQS = qs.get("xid") || loc.state?.xtreamId || null;
   const directUrlQS = qs.get("url") || loc.state?.playUrl || null;
 
+  // Charge les métadonnées:
+  // - si xid présent → résout via Xtream puis TMDB par titre+année
+  // - sinon → TMDB par id (id = TMDB id)
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const url = kind === "series" ? `/media/${kind}/${id}?refresh=1` : `/media/${kind}/${id}`;
-        const j = await getJson(url);
-        if (alive) setData(j);
+        if (xidQS && kind === "movie") {
+          // 1) infos Xtream (titre, année, cover)
+          const xi = await getJson(`/xtream/vod-info/${encodeURIComponent(xidQS)}`);
+          const title =
+            xi?.movie_data?.name ||
+            xi?.info?.name ||
+            xi?.movie_data?.movie_name ||
+            xi?.info?.o_name ||
+            "";
+          const year =
+            (xi?.movie_data?.releasedate && String(xi.movie_data.releasedate).slice(0, 4)) ||
+            (xi?.info?.releasedate && String(xi.info.releasedate).slice(0, 4)) ||
+            "";
+
+          // 2) mapping TMDB côté API par titre+année
+          let meta = null;
+          try {
+            meta = await getJson(
+              `/media/resolve-by-title?kind=movie&title=${encodeURIComponent(title)}${year ? `&year=${encodeURIComponent(year)}` : ""}`
+            );
+          } catch {}
+
+          // Fallback affichage si TMDB non trouvé
+          const cover = xi?.movie_data?.cover_big || xi?.movie_data?.movie_image || "";
+          const payload = meta || {
+            kind: "movie",
+            title,
+            overview: null,
+            vote_average: null,
+            poster_url: cover || null,
+            backdrop_url: cover || null,
+            data: { xtream_only: true },
+          };
+          if (alive) setData(payload);
+        } else {
+          // Chemin TMDB natif
+          const url = kind === "series" ? `/media/${kind}/${id}?refresh=1` : `/media/${kind}/${id}`;
+          const j = await getJson(url);
+          if (alive) setData(j);
+        }
       } catch {
         if (alive) setData(null);
       } finally {
@@ -36,14 +76,14 @@ export default function Title() {
       }
     })();
     return () => { alive = false; };
-  }, [kind, id]);
+  }, [kind, id, xidQS]);
 
   useEffect(() => {
     setPlaying(false);
     setResolvingSrc(false);
     setSrc("");
     setPlayErr("");
-  }, [kind, id]);
+  }, [kind, id, xidQS]);
 
   const resumeKey = useMemo(
     () => (kind === "movie" ? `movie:${id}` : loc.state?.resumeKey),
