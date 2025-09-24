@@ -1,12 +1,15 @@
 // web/src/pages/Title.jsx
-import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useEffect, useState, useMemo } from "react";
+import { useParams, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { getJson } from "../lib/api";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
 export default function Title() {
-  const { kind, id } = useParams(); // "movie" | "series" ; id = TMDB id côté app
+  const { kind, id } = useParams(); // "movie" | "series" ; id = TMDB id
   const nav = useNavigate();
+  const loc = useLocation();
+  const [qs] = useSearchParams();
+
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -15,6 +18,10 @@ export default function Title() {
   const [resolvingSrc, setResolvingSrc] = useState(false);
   const [src, setSrc] = useState("");
   const [playErr, setPlayErr] = useState("");
+
+  // title/poster éventuels passés via state
+  const titleFromState = loc.state?.title || "";
+  const posterFromState = loc.state?.poster || "";
 
   useEffect(() => {
     let alive = true;
@@ -39,87 +46,75 @@ export default function Title() {
     setPlayErr("");
   }, [kind, id]);
 
-  // --------- helpers Xtream ----------
-  const stripBase = (raw) =>
-    (raw || "")
-      .replace(/\/player_api\.php.*$/i, "")
-      .replace(/\/portal\.php.*$/i, "")
-      .replace(/\/stalker_portal.*$/i, "")
-      .replace(/\/(?:series|movie|live)\/.*$/i, "")
-      .replace(/\/+$/g, "");
+  const resumeKey = useMemo(() => {
+    if (kind === "movie") return `movie:${id}`;
+    // séries: si tu joues un épisode ici, passe éventuellement un resumeKey via loc.state
+    return loc.state?.resumeKey || undefined;
+  }, [kind, id, loc.state]);
 
-  const norm = (s) =>
-    (s || "")
-      .toLowerCase()
-      .normalize("NFD").replace(/\p{Diacritic}/gu, "")
-      .replace(/[^\w\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+  // -------- helpers côté front --------
+  const accQS = qs.get("acc") || loc.state?.accId || null;   // accountId Xtream
+  const xidQS = qs.get("xid") || loc.state?.xtreamId || null; // xtreamId (vod/episode/live)
 
-  async function resolveFromXtreamAccount() {
-    if (kind !== "movie") return "";
-    // 1) récupère les creds Xtream
-    const st = await getJson("/xtream/status").catch(() => null);
-    if (!st?.linked) return "";
-
-    const base = stripBase(st.base_url || st.portal_url || st.url || st.server || st.api_url || "");
-    const user = st.username || st.user || st.login;
-    const pass = st.password || st.pass || st.pwd;
-    if (!base || !user || !pass) return "";
-
-    const api = `${base}/player_api.php?username=${encodeURIComponent(user)}&password=${encodeURIComponent(pass)}`;
-
-    // 2) récupère la liste des VOD
-    let rows = [];
+  async function getDefaultAccId() {
+    // Tente d’obtenir un accountId depuis /xtream/status
     try {
-      const res = await fetch(`${api}&action=get_vod_streams`, { mode: "cors" });
-      rows = (await res.json()) || [];
-    } catch (e) {
-      // Portail sans CORS → côté serveur, prévoir un proxy /xtream/proxy
-      return "";
-    }
-    if (!Array.isArray(rows) || rows.length === 0) return "";
-
-    // 3) match par tmdb_id puis par titre+année
-    const tmdbId = String(data?.tmdb_id || id || "").trim();
-    let hit =
-      rows.find((r) => String(r.tmdb_id || "").trim() === tmdbId) ||
-      (() => {
-        const wantTitle = norm(data?.title);
-        const wantYear =
-          (data?.release_date && String(data.release_date).slice(0, 4)) ||
-          String(data?.year || "");
-        // filtre titres identiques
-        let cands = rows.filter((r) => norm(r.name) === wantTitle);
-        // si possible, garde même année
-        if (wantYear) {
-          const yCands = cands.filter((r) => String(r.year || "") === String(wantYear));
-          if (yCands.length) cands = yCands;
-        }
-        return cands[0];
-      })();
-
-    if (!hit?.stream_id) return "";
-
-    // 4) construit l’URL HLS (forcée en .m3u8)
-    return `${base}/movie/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${hit.stream_id}.m3u8`;
+      const st = await getJson("/xtream/status");
+      // accepte plusieurs formats possibles
+      return (
+        st?.account_id ||
+        st?.acc_id ||
+        st?.id ||
+        st?.account?.id ||
+        null
+      );
+    } catch { return null; }
   }
 
+  function buildProxySrc(accId, knd, xtreamId) {
+    if (!accId || !xtreamId) return null;
+    if (String(knd).toLowerCase() === "live") {
+      return `/api/stream/hls/${encodeURIComponent(accId)}/live/${encodeURIComponent(xtreamId)}.m3u8`;
+    }
+    // VOD/series → remux MP4 sûr (MKV compatible)
+    return `/api/stream/vodmp4/${encodeURIComponent(accId)}/${encodeURIComponent(xtreamId)}`;
+  }
+
+  // -------- résolution serveur, pas de secrets en front --------
   async function startPlayback() {
-    if (kind !== "movie") return;
     setPlaying(true);
     setResolvingSrc(true);
     setPlayErr("");
     setSrc("");
 
     try {
-      // Toujours prioriser Xtream (compte utilisateur)
-      const u = await resolveFromXtreamAccount();
-      if (!u) throw new Error("no-src");
-      setSrc(u);
-    } catch (e) {
+      // 1) chemin rapide si acc/xid déjà fournis
+      const acc = accQS || (await getDefaultAccId());
+      if (acc && xidQS) {
+        const direct = buildProxySrc(acc, kind || "movie", xidQS);
+        if (direct) { setSrc(direct); return; }
+      }
+
+      // 2) fallback: demande au serveur une URL proxy prête
+      // Endpoint à implémenter côté API si pas déjà présent
+      // Il doit renvoyer { src, accId?, xtreamId? } pour ce TMDB id
+      const url = `/xtream/stream-url?kind=${encodeURIComponent(kind || "")}&id=${encodeURIComponent(id || "")}` +
+                  (acc ? `&acc=${encodeURIComponent(acc)}` : "");
+      const r = await getJson(url).catch(() => null);
+
+      if (r?.src) {
+        setSrc(r.src);
+        return;
+      }
+      if (r?.accId && r?.xtreamId) {
+        const s2 = buildProxySrc(r.accId, kind || "movie", r.xtreamId);
+        if (s2) { setSrc(s2); return; }
+      }
+
+      throw new Error("no-src");
+    } catch {
       setPlayErr(
-        "Impossible d’obtenir l’URL du flux via votre compte Xtream. Vérifiez le lien Xtream et, si besoin, activez un proxy côté serveur pour contourner CORS."
+        "Flux introuvable via le compte Xtream. Vérifie que le compte est lié et ajoute l’endpoint /xtream/stream-url côté API."
       );
     } finally {
       setResolvingSrc(false);
@@ -141,9 +136,8 @@ export default function Title() {
     );
   }
 
-  const posterSrc = data.poster_url || data.backdrop_url || "";
-  const hasTrailer = Boolean(data?.trailer?.embed_url);
-  const resumeKey = kind === "movie" ? `movie:${id}` : undefined;
+  const posterSrc = posterFromState || data.poster_url || data.backdrop_url || "";
+  const title = titleFromState || data.title || "";
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
@@ -159,7 +153,7 @@ export default function Title() {
             <VideoPlayer
               src={src}
               poster={posterSrc}
-              title={data.title}
+              title={title}
               resumeKey={resumeKey}
               resumeApi
             />
@@ -178,29 +172,26 @@ export default function Title() {
           type="button"
           className="relative w-[220px] rounded-xl overflow-hidden group"
           onClick={startPlayback}
-          disabled={kind !== "movie"}
-          title={kind === "movie" ? "Regarder" : "Lecture non disponible ici"}
+          title="Regarder"
         >
           <img
             src={posterSrc}
-            alt={data.title || ""}
+            alt={title}
             className="w-[220px] h-full object-cover"
             draggable={false}
           />
-          {kind === "movie" && (
-            <div className="absolute inset-0 grid place-items-center bg-black/0 group-hover:bg-black/40 transition">
-              <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-black text-sm">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-                Regarder
-              </div>
+          <div className="absolute inset-0 grid place-items-center bg-black/0 group-hover:bg-black/40 transition">
+            <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-black text-sm">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+              Regarder
             </div>
-          )}
+          </div>
         </button>
 
         <div>
-          <h1 className="text-2xl font-bold">{data.title}</h1>
+          <h1 className="text-2xl font-bold">{title}</h1>
           {data.vote_average != null && (
             <div className="mt-1 text-sm text-zinc-300">
               Note TMDB&nbsp;: {Number(data.vote_average).toFixed(1)}/10
@@ -211,18 +202,16 @@ export default function Title() {
           )}
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
-            {kind === "movie" && (
-              <button
-                className="btn bg-emerald-600 text-white hover:bg-emerald-500"
-                onClick={startPlayback}
-              >
-                ▶ Regarder
-              </button>
-            )}
+            <button
+              className="btn bg-emerald-600 text-white hover:bg-emerald-500"
+              onClick={startPlayback}
+            >
+              ▶ Regarder
+            </button>
             <button
               className="btn disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={() => hasTrailer && window.open(data?.trailer?.url, "_blank")}
-              disabled={!hasTrailer}
+              onClick={() => data?.trailer?.url && window.open(data.trailer.url, "_blank")}
+              disabled={!data?.trailer?.url}
             >
               ▶ Bande-annonce
             </button>
