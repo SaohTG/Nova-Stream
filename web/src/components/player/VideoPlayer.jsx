@@ -4,7 +4,6 @@ import { postJson } from "../../lib/api";
 
 function fmt(t){ if(!Number.isFinite(t)) return "--:--"; const s=Math.floor(t%60).toString().padStart(2,"0"); const m=Math.floor((t/60)%60).toString().padStart(2,"0"); const h=Math.floor(t/3600); return h?`${h}:${m}:${s}`:`${m}:${s}`; }
 
-/* -------- HLS loader (Shaka) -------- */
 async function loadShakaOnce() {
   if (window.shaka) return window.shaka;
   await new Promise((res, rej) => {
@@ -21,30 +20,7 @@ async function loadShakaOnce() {
   return window.shaka;
 }
 
-/* -------- Helpers -------- */
 const isHls = (u) => /\.m3u8(\?|$)/i.test(String(u));
-
-/** Mappe une URL Xtream (movie|series) -> proxy API sécurisé.
- *  - MKV (ou autre) -> remux MP4 via /api/stream/vodmp4
- *  - MP4 -> passthrough via /api/stream/vod?ext=mp4
- *  - Autres URLs non-Xtream → inchangées
- */
-function mapXtreamVodToProxy(src) {
-  try {
-    const url = new URL(src, window.location.origin);
-    const m = url.pathname.match(/^\/(movie|series)\/([^/]+)\/([^/]+)\/([^/.]+)\.([a-z0-9]+)$/i);
-    if (!m) return null;
-    const user = decodeURIComponent(m[2]);
-    const pass = decodeURIComponent(m[3]);
-    const id   = decodeURIComponent(m[4]);
-    const ext  = m[5].toLowerCase();
-    if (ext === "mp4") {
-      return `/api/stream/vod/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${encodeURIComponent(id)}?ext=mp4`;
-    }
-    // défaut: remux en MP4 pour MKV et co.
-    return `/api/stream/vodmp4/${encodeURIComponent(user)}/${encodeURIComponent(pass)}/${encodeURIComponent(id)}`;
-  } catch { return null; }
-}
 
 export default function VideoPlayer({
   src, poster, title, resumeKey, resumeApi = true, startAt = 0, onEnded,
@@ -70,20 +46,12 @@ export default function VideoPlayer({
     return startAt || 0;
   }, [lsKey, startAt]);
 
-  // Résolution de la source: HLS inchangé. VOD Xtream -> proxy API.
-  const resolvedSrc = useMemo(() => {
-    if (!src) return null;
-    if (isHls(src)) return src;
-    const proxied = mapXtreamVodToProxy(src);
-    return proxied || src; // si pas Xtream, on laisse tel quel
-  }, [src]);
+  const resolvedSrc = useMemo(() => (src || null), [src]);
 
-  // Debug source
   useEffect(() => {
     console.log("[Video src]", resolvedSrc);
   }, [resolvedSrc]);
 
-  // Chargement selon le type: HLS via Shaka, sinon <video src=...>
   useEffect(() => {
     let destroyed = false;
 
@@ -91,7 +59,6 @@ export default function VideoPlayer({
       const v = videoRef.current;
       if (!v || !resolvedSrc) return;
 
-      // Nettoie un éventuel lecteur Shaka existant
       if (playerRef.current) {
         try { await playerRef.current.destroy(); } catch {}
         playerRef.current = null;
@@ -105,7 +72,7 @@ export default function VideoPlayer({
           const player = new shaka.Player(v);
           playerRef.current = player;
 
-          // Inclure les cookies sur les requêtes /api/... (même origine)
+          // cookies sur /api/...
           const ne = player.getNetworkingEngine?.();
           if (ne && ne.registerRequestFilter) {
             ne.registerRequestFilter((_type, req) => {
@@ -143,7 +110,6 @@ export default function VideoPlayer({
           console.error("[Player/HLS]", e);
         }
       } else {
-        // VOD MP4 (via proxy) ou autre source directe
         v.src = resolvedSrc;
         const onMeta = () => {
           try { if (initialTime > 0 && Number.isFinite(v.duration)) v.currentTime = Math.min(initialTime, v.duration - 1); } catch {}
@@ -156,7 +122,6 @@ export default function VideoPlayer({
     return () => { destroyed = true; };
   }, [resolvedSrc, initialTime]);
 
-  // Progress save + fin
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
