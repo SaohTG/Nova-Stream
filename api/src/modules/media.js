@@ -41,7 +41,6 @@ function setAccessCookie(res, sub, email) {
   return tok;
 }
 function ensureAuthLocal(req, res, next) {
-  // déjà posé par un middleware amont
   if (req.user?.id || req.user?.sub) return next();
 
   const ck = parseCookies(req);
@@ -71,23 +70,29 @@ function getUserId(req) {
 }
 router.use(ensureAuthLocal);
 
-/* ================= Crypto (compatible xtream.js) ================= */
+/* ================= Crypto (plaintext toléré) ================= */
 function getKey() {
   const hex = (process.env.API_ENCRYPTION_KEY || "").trim();
   if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error("API_ENCRYPTION_KEY doit faire 64 hex chars");
   return Buffer.from(hex, "hex");
 }
-function dec(blob) {
-  const [v, ivb64, tagb64, ctb64] = String(blob).split(":");
-  if (v !== "v1") throw new Error("Bad enc version");
-  const key = getKey();
-  const iv = Buffer.from(ivb64, "base64");
-  const tag = Buffer.from(tagb64, "base64");
-  const ct = Buffer.from(ctb64, "base64");
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-  decipher.setAuthTag(tag);
-  const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
-  return pt.toString("utf8");
+function decMaybe(blob) {
+  const s = String(blob || "");
+  if (!s.startsWith("v1:")) return s;
+  const [v, ivb64, tagb64, ctb64] = s.split(":");
+  if (v !== "v1") return s;
+  try {
+    const key = getKey();
+    const iv = Buffer.from(ivb64, "base64");
+    const tag = Buffer.from(tagb64, "base64");
+    const ct = Buffer.from(ctb64, "base64");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    const pt = Buffer.concat([decipher.update(ct), decipher.final()]);
+    return pt.toString("utf8");
+  } catch {
+    return s;
+  }
 }
 
 /* ================= DB cache ================= */
@@ -139,7 +144,10 @@ async function getCreds(userId) {
   const row = rows[0];
   if (!row) return null;
   const baseUrl = normalizeBaseUrl(row.base_url);
-  return { baseUrl, username: dec(row.username_enc), password: dec(row.password_enc) };
+  const username = decMaybe(row.username_enc);
+  const password = decMaybe(row.password_enc);
+  if (!username || !password) return null;
+  return { baseUrl, username, password };
 }
 function normalizeBaseUrl(u) {
   let s = (u || "").toString().trim();
@@ -524,6 +532,78 @@ function assertSameHost(url, baseUrl) {
   }
 }
 
+/* ================= TMDB → Xtream mappers ================= */
+async function getVodStreamId(userId, vodId) {
+  const creds = await getCreds(userId);
+  if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
+  const info = await fetchJson(
+    buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_info", { vod_id: vodId })
+  );
+  const sid = Number(info?.movie_data?.stream_id || info?.info?.stream_id || 0);
+  if (!sid) throw Object.assign(new Error("no-stream-id"), { status: 404 });
+  return { streamId: String(sid) };
+}
+async function getVodStreamIdByTmdb(userId, tmdbId) {
+  const creds = await getCreds(userId);
+  if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
+  const list = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_streams"));
+  const arr = Array.isArray(list) ? list : (list?.movie_streams || []);
+  const T = Number(tmdbId);
+  let cand = arr.find(v =>
+    Number(v?.tmdb || v?.tmdb_id || v?.tmdbid || v?.info?.tmdb_id) === T
+  );
+  if (!cand) {
+    const det = await tmdbDetails("movie", T).catch(() => null);
+    const title = det?.title || det?.original_title || "";
+    const year = Number((det?.release_date || "").slice(0,4)) || undefined;
+    const scored = arr.map(v => {
+      const name = v?.name || v?.title || v?.stream_display_name || "";
+      const score = similarity(title, name) - yearPenalty(year, v?.release_date || v?.year);
+      return { v, score };
+    }).sort((a,b)=>b.score-a.score);
+    if (scored[0]?.score > 0.25) cand = scored[0].v;
+  }
+  if (!cand?.stream_id) throw Object.assign(new Error("tmdb-not-mapped"), { status: 404 });
+  return { streamId: String(cand.stream_id) };
+}
+async function getEpisodeStreamId(userId, seriesId, seasonNum, episodeNum) {
+  const creds = await getCreds(userId);
+  if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
+  const info = await fetchJson(
+    buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series_info", { series_id: seriesId })
+  );
+  const seasons = info?.episodes || {};
+  const key = String(seasonNum);
+  const arr = Array.isArray(seasons[key]) ? seasons[key] : [];
+  const ep = arr.find(e => Number(e.episode_num) === Number(episodeNum)) || arr[Number(episodeNum) - 1];
+  const sid = Number(ep?.id || 0);
+  if (!sid) throw Object.assign(new Error("no-episode"), { status: 404 });
+  return { streamId: String(sid) };
+}
+async function getSeriesIdByTmdb(userId, tmdbId) {
+  const creds = await getCreds(userId);
+  if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
+  const list = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series"));
+  const arr = Array.isArray(list) ? list : (list?.series || []);
+  const T = Number(tmdbId);
+  let cand = arr.find(s =>
+    Number(s?.tmdb || s?.tmdb_id || s?.tmdbid || s?.info?.tmdb_id) === T
+  );
+  if (!cand) {
+    const det = await tmdbDetails("tv", T).catch(() => null);
+    const title = det?.name || det?.original_name || "";
+    const year = Number((det?.first_air_date || "").slice(0,4)) || undefined;
+    const scored = arr.map(s => {
+      const name = s?.name || s?.title || s?.series_name || "";
+      const score = similarity(title, name) - yearPenalty(year, s?.releaseDate || s?.first_air_date);
+      return { s, score };
+    }).sort((a,b)=>b.score-a.score);
+    if (scored[0]?.score > 0.25) cand = scored[0].s;
+  }
+  if (!cand?.series_id) throw Object.assign(new Error("tmdb-not-mapped"), { status: 404 });
+  return { seriesId: String(cand.series_id) };
+}
+
 /* ================= Routes API (streaming) ================= */
 
 router.get("/:kind(movie|series|live)/:id/stream-url", (_req, res) => {
@@ -629,7 +709,7 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-/* ================= Routes metadata ================= */
+/* ====== Routes metadata ====== */
 router.get("/movie/:id", async (req, res, next) => {
   try {
     const out = await resolveMovie(getUserId(req), req.params.id, { refresh: req.query.refresh === "1" });
@@ -643,32 +723,8 @@ router.get("/series/:id", async (req, res, next) => {
   } catch (e) { e.status = e.status || 500; next(e); }
 });
 
-/* ================= ID-less routes ================= */
-async function getVodStreamId(userId, vodId) {
-  const creds = await getCreds(userId);
-  if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
-  const info = await fetchJson(
-    buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_info", { vod_id: vodId })
-  );
-  const sid = Number(info?.movie_data?.stream_id || info?.info?.stream_id || 0);
-  if (!sid) throw Object.assign(new Error("no-stream-id"), { status: 404 });
-  return { streamId: String(sid) };
-}
-async function getEpisodeStreamId(userId, seriesId, seasonNum, episodeNum) {
-  const creds = await getCreds(userId);
-  if (!creds) throw Object.assign(new Error("no-xtream"), { status: 404 });
-  const info = await fetchJson(
-    buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series_info", { series_id: seriesId })
-  );
-  const seasons = info?.episodes || {};
-  const key = String(seasonNum);
-  const arr = Array.isArray(seasons[key]) ? seasons[key] : [];
-  const ep = arr.find(e => Number(e.episode_num) === Number(episodeNum)) || arr[Number(episodeNum) - 1];
-  const sid = Number(ep?.id || 0);
-  if (!sid) throw Object.assign(new Error("no-episode"), { status: 404 });
-  return { streamId: String(sid) };
-}
-
+/* ====== ID-less and TMDB routes ====== */
+// VOD via vod_id → stream_id → HLS
 router.get("/movie/vod/:vodId/hls.m3u8", async (req, res, next) => {
   try {
     const { streamId } = await getVodStreamId(getUserId(req), req.params.vodId);
@@ -683,26 +739,30 @@ router.get("/movie/vod/:vodId/file", async (req, res, next) => {
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
-router.get("/movie/vod/:vodId/stream-url", async (_req, res) => {
-  return res.status(410).json({ error: "direct-url-disabled" });
+
+// Film par TMDB id
+router.get("/movie/tmdb/:tmdbId/hls.m3u8", async (req, res, next) => {
+  try {
+    const userId = getUserId(req); if (!userId) return res.sendStatus(401);
+    const { streamId } = await getVodStreamIdByTmdb(userId, req.params.tmdbId);
+    req.url = `/api/media/movie/${streamId}/hls.m3u8`;
+    return router.handle(req, res, next);
+  } catch (e) { next(e); }
 });
 
-router.get("/series/:seriesId/season/:s/episode/:e/hls.m3u8", async (req, res, next) => {
+// Série par TMDB id + S/E
+router.get("/series/tmdb/:tmdbId/season/:s/episode/:e/hls.m3u8", async (req, res, next) => {
   try {
-    const { streamId } = await getEpisodeStreamId(getUserId(req), req.params.seriesId, req.params.s, req.params.e);
+    const userId = getUserId(req); if (!userId) return res.sendStatus(401);
+    const { seriesId } = await getSeriesIdByTmdb(userId, req.params.tmdbId);
+    const { streamId } = await getEpisodeStreamId(userId, seriesId, req.params.s, req.params.e);
     req.url = `/api/media/series/${streamId}/hls.m3u8`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
-router.get("/series/:seriesId/season/:s/episode/:e/file", async (req, res, next) => {
-  try {
-    const { streamId } = await getEpisodeStreamId(getUserId(req), req.params.seriesId, req.params.s, req.params.e);
-    req.url = `/api/media/series/${streamId}/file`;
-    return router.handle(req, res, next);
-  } catch (e) { next(e); }
-});
-router.get("/series/:seriesId/season/:s/episode/:e/stream-url", async (_req, res) => {
-  return res.status(410).json({ error: "direct-url-disabled" });
-});
+
+// direct-url: désactivé
+router.get("/movie/vod/:vodId/stream-url", async (_req, res) => res.status(410).json({ error: "direct-url-disabled" }));
+router.get("/series/:seriesId/season/:s/episode/:e/stream-url", async (_req, res) => res.status(410).json({ error: "direct-url-disabled" }));
 
 export default router;
