@@ -2,6 +2,7 @@
 import { Router } from "express";
 import { Pool } from "pg";
 import crypto from "crypto";
+import jwt from "jsonwebtoken";
 import { Readable } from "node:stream";
 
 const router = Router();
@@ -10,6 +11,31 @@ pool.on("error", (e) => console.error("[PG ERROR]", e));
 
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600); // 7 jours
+
+/* ================= Auth minimale (cookie httpOnly ou req.user) ================= */
+function parseCookies(req) {
+  const h = req.headers.cookie;
+  if (!h) return {};
+  return h.split(";").reduce((a, p) => {
+    const [k, v] = p.split("=");
+    if (!k) return a;
+    a[k.trim()] = decodeURIComponent((v || "").trim());
+    return a;
+  }, {});
+}
+function getUserId(req) {
+  // 1) middleware amont
+  if (req?.user?.id || req?.user?.sub) return String(req.user.id || req.user.sub);
+  // 2) cookie httpOnly "access"
+  const token = parseCookies(req)["access"];
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, process.env.API_JWT_SECRET);
+    return String(payload.sub || payload.userId || payload.id);
+  } catch {
+    return null;
+  }
+}
 
 /* ================= Crypto (compatible xtream.js) ================= */
 function getKey() {
@@ -330,7 +356,7 @@ async function resolveSeries(reqUser, seriesId, { refresh = false } = {}) {
   if (!refresh) {
     const cached = await getCache("series", seriesId);
     if (cached && cached.data && !(cached.data.tmdb_id) && !(cached.data.vote_average) && !(cached.data.overview)) {
-      // essayer upgrade
+      // essayer upgrade plus tard
     } else if (cached && cached.data) {
       return cached.data;
     }
@@ -471,25 +497,19 @@ function assertSameHost(url, baseUrl) {
 
 /* ================= Routes API (streaming) ================= */
 
-// URL directe (debug)
-router.get("/:kind(movie|series|live)/:id/stream-url", async (req, res, next) => {
-  try {
-    const creds = await getCreds(req.user?.sub);
-    if (!creds) return res.status(404).json({ error: "no-xtream" });
-    const url = await firstReachable(
-      streamCandidates(creds.baseUrl, creds.username, creds.password, req.params.kind, req.params.id),
-      { "User-Agent": "VLC/3.0" }
-    );
-    if (!url) return res.status(404).json({ error: "no-src" });
-    res.json({ url });
-  } catch (e) { next(e); }
+// Désactivé pour sécurité: on ne retourne plus d’URL directe
+router.get("/:kind(movie|series|live)/:id/stream-url", (_req, res) => {
+  return res.status(410).json({ error: "direct-url-disabled" });
 });
 
-// Playlist HLS réécrite; fallback sur fichier si HLS indisponible
+// Playlist HLS réécrite; fallback fichier si HLS indispo
 router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
   try {
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+
     const { kind, id } = req.params;
-    const creds = await getCreds(req.user?.sub);
+    const creds = await getCreds(userId);
     if (!creds) return res.status(404).json({ error: "no-xtream" });
 
     const m3u8Url = await firstReachable(
@@ -530,8 +550,12 @@ router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
 // Proxy générique sécurisé (segments .ts, clés, variantes, mp4/mkv)
 router.get("/proxy", async (req, res, next) => {
   try {
-    const creds = await getCreds(req.user?.sub);
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+
+    const creds = await getCreds(userId);
     if (!creds) return res.status(404).json({ error: "no-xtream" });
+
     const url = (req.query.url || "").toString();
     if (!url) { const e = new Error("missing url"); e.status = 400; throw e; }
     assertSameHost(url, creds.baseUrl);
@@ -560,8 +584,11 @@ router.get("/proxy", async (req, res, next) => {
 // Fallback progressif MP4/TS/MKV
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+
     const { kind, id } = req.params;
-    const creds = await getCreds(req.user?.sub);
+    const creds = await getCreds(userId);
     if (!creds) return res.status(404).json({ error: "no-xtream" });
 
     const fileUrl = await firstReachable(
@@ -581,53 +608,15 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
 // support ?refresh=1 pour forcer une MAJ
 router.get("/movie/:id", async (req, res, next) => {
   try {
-    const out = await resolveMovie(req.user?.sub, req.params.id, { refresh: req.query.refresh === "1" });
+    const out = await resolveMovie(getUserId(req), req.params.id, { refresh: req.query.refresh === "1" });
     res.json(out);
   } catch (e) { e.status = e.status || 500; next(e); }
 });
 router.get("/series/:id", async (req, res, next) => {
   try {
-    const out = await resolveSeries(req.user?.sub, req.params.id, { refresh: req.query.refresh === "1" });
+    const out = await resolveSeries(getUserId(req), req.params.id, { refresh: req.query.refresh === "1" });
     res.json(out);
   } catch (e) { e.status = e.status || 500; next(e); }
-});
-
-/* ================= Résolution par titre (pour lier TMDB) ================= */
-router.get("/resolve-by-title", async (req, res, next) => {
-  try {
-    const kind = String(req.query.kind || "movie").toLowerCase();
-    const title = String(req.query.title || "").trim();
-    const year = Number(req.query.year || 0) || undefined;
-    if (!TMDB_KEY || !title) return res.status(400).json({ error: "missing title or TMDB key" });
-
-    if (kind === "series" || kind === "tv") {
-      let best = null;
-      const queries = Array.from(new Set([title, stripTitle(title)])).filter(Boolean);
-      for (const q of queries) {
-        const sr = await tmdbSearchTV(q, year);
-        for (const r of (sr?.results || []).slice(0, 10)) {
-          const score = similarity(q, r.name || r.original_name || "") - yearPenalty(year, r.first_air_date);
-          if (!best || score > best.score) best = { score, r };
-        }
-      }
-      if (!best) return res.status(404).json({ error: "not-found" });
-      const det = await tmdbDetails("tv", best.r.id);
-      return res.json(formatSeriesPayload(null, det));
-    } else {
-      let best = null;
-      const queries = Array.from(new Set([title, stripTitle(title)])).filter(Boolean);
-      for (const q of queries) {
-        const sr = await tmdbSearchMovie(q, year);
-        for (const r of (sr?.results || []).slice(0, 10)) {
-          const score = similarity(q, r.title || r.original_title || "") - yearPenalty(year, r.release_date);
-          if (!best || score > best.score) best = { score, r };
-        }
-      }
-      if (!best) return res.status(404).json({ error: "not-found" });
-      const det = await tmdbDetails("movie", best.r.id);
-      return res.json(formatMoviePayload(null, det));
-    }
-  } catch (e) { next(e); }
 });
 
 /* ================= ID-less routes (résolvent stream_id) ================= */
@@ -659,47 +648,39 @@ async function getEpisodeStreamId(userId, seriesId, seasonNum, episodeNum) {
 // VOD via vod_id
 router.get("/movie/vod/:vodId/hls.m3u8", async (req, res, next) => {
   try {
-    const { streamId } = await getVodStreamId(req.user?.sub, req.params.vodId);
+    const { streamId } = await getVodStreamId(getUserId(req), req.params.vodId);
     req.url = `/api/media/movie/${streamId}/hls.m3u8`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
 router.get("/movie/vod/:vodId/file", async (req, res, next) => {
   try {
-    const { streamId } = await getVodStreamId(req.user?.sub, req.params.vodId);
+    const { streamId } = await getVodStreamId(getUserId(req), req.params.vodId);
     req.url = `/api/media/movie/${streamId}/file`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
-router.get("/movie/vod/:vodId/stream-url", async (req, res, next) => {
-  try {
-    const { streamId } = await getVodStreamId(req.user?.sub, req.params.vodId);
-    req.url = `/api/media/movie/${streamId}/stream-url`;
-    return router.handle(req, res, next);
-  } catch (e) { next(e); }
+router.get("/movie/vod/:vodId/stream-url", async (_req, res) => {
+  return res.status(410).json({ error: "direct-url-disabled" });
 });
 
 // Série via (series_id, saison, épisode)
 router.get("/series/:seriesId/season/:s/episode/:e/hls.m3u8", async (req, res, next) => {
   try {
-    const { streamId } = await getEpisodeStreamId(req.user?.sub, req.params.seriesId, req.params.s, req.params.e);
+    const { streamId } = await getEpisodeStreamId(getUserId(req), req.params.seriesId, req.params.s, req.params.e);
     req.url = `/api/media/series/${streamId}/hls.m3u8`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
 router.get("/series/:seriesId/season/:s/episode/:e/file", async (req, res, next) => {
   try {
-    const { streamId } = await getEpisodeStreamId(req.user?.sub, req.params.seriesId, req.params.s, req.params.e);
+    const { streamId } = await getEpisodeStreamId(getUserId(req), req.params.seriesId, req.params.s, req.params.e);
     req.url = `/api/media/series/${streamId}/file`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
-router.get("/series/:seriesId/season/:s/episode/:e/stream-url", async (req, res, next) => {
-  try {
-    const { streamId } = await getEpisodeStreamId(req.user?.sub, req.params.seriesId, req.params.s, req.params.e);
-    req.url = `/api/media/series/${streamId}/stream-url`;
-    return router.handle(req, res, next);
-  } catch (e) { next(e); }
+router.get("/series/:seriesId/season/:s/episode/:e/stream-url", async (_req, res) => {
+  return res.status(410).json({ error: "direct-url-disabled" });
 });
 
 export default router;
