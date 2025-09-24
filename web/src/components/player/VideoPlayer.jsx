@@ -105,6 +105,21 @@ export default function VideoPlayer({
           const player = new shaka.Player(v);
           playerRef.current = player;
 
+          // Inclure les cookies sur les requêtes /api/... (même origine)
+          const ne = player.getNetworkingEngine?.();
+          if (ne && ne.registerRequestFilter) {
+            ne.registerRequestFilter((_type, req) => {
+              try {
+                const uri = (req.uris && req.uris[0]) || "";
+                if (uri.startsWith("/") || uri.startsWith(window.location.origin)) {
+                  req.allowCrossSiteCredentials = true;
+                }
+              } catch {}
+            });
+          }
+
+          player.addEventListener("error", (e) => console.error("[Shaka error]", e.detail));
+
           const refreshTracks = () => {
             const a = player.getAudioLanguagesAndRoles();
             const tks = player.getTextLanguages();
@@ -194,7 +209,7 @@ export default function VideoPlayer({
         controls
         playsInline
         preload="metadata"
-        crossOrigin="anonymous"
+        crossOrigin="use-credentials"
       />
       <div className="absolute right-3 top-3 flex gap-2">
         <select
