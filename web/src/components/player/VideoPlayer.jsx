@@ -24,7 +24,14 @@ const isHls = (u) => /\.m3u8(\?|$)/i.test(String(u));
 const hlsToFile = (u) => String(u).replace(/\/hls\.m3u8(\?.*)?$/i, "/file$1");
 
 export default function VideoPlayer({
-  src, poster, title, resumeKey, resumeApi = true, startAt = 0, onEnded,
+  src,
+  poster,
+  title,
+  resumeKey,
+  resumeApi = true,
+  startAt = 0,
+  onEnded,
+  showPoster = true, // ← nouveau
 }) {
   const videoRef = useRef(null);
   const playerRef = useRef(null);
@@ -91,7 +98,6 @@ export default function VideoPlayer({
         playerRef.current = null;
       }
 
-      // events → état “loading”
       const onWaiting = () => setLoading(true);
       const onPlaying = () => setLoading(false);
       const onCanPlay = () => setLoading(false);
@@ -203,7 +209,7 @@ export default function VideoPlayer({
       <video
         ref={videoRef}
         className="w-full h-auto bg-black rounded-xl"
-        poster={poster}
+        poster={showPoster && poster ? poster : undefined} {/* ← conditionnel */}
         controls
         playsInline
         preload="metadata"
