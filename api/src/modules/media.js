@@ -5,6 +5,7 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 import { Readable } from "node:stream";
 import dns from "node:dns/promises";
+import { spawn } from "node:child_process";
 
 const router = Router();
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -373,6 +374,44 @@ router.get("/proxy", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+/* ======== Transcode audio→AAC pour VOD MKV ======== */
+router.get("/:kind(movie|series)/:id/transcode.mp4", async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+
+    const creds = await getCreds(userId);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const srcParam = req.query.u || req.query.src || "";
+    const src = String(srcParam).includes(".") ? fromB64u(String(srcParam)) : String(srcParam);
+    if (!/^https?:\/\//i.test(src)) return res.status(400).json({ error: "missing src" });
+
+    await assertAllowedUpstream(src, creds.baseUrl);
+
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Cache-Control", "no-store");
+
+    const args = [
+      "-loglevel","error",
+      "-nostdin",
+      "-reconnect","1","-reconnect_streamed","1","-reconnect_at_eof","1",
+      "-i", src,
+      "-map","0:v:0","-c:v","copy",
+      "-map","0:a:0?","-c:a","aac","-b:a","160k","-ac","2",
+      "-movflags","+frag_keyframe+empty_moov",
+      "-f","mp4","pipe:1"
+    ];
+    const ff = spawn("ffmpeg", args, { stdio: ["ignore","pipe","inherit"] });
+
+    ff.on("error", () => { if (!res.headersSent) res.status(500).end(); });
+    ff.stdout.pipe(res);
+    const kill = () => { try { ff.kill("SIGKILL"); } catch {} };
+    req.on("close", kill);
+    ff.on("close", (code) => { if (code !== 0 && !res.headersSent) res.status(502).end(); });
+  } catch (e) { next(e); }
+});
+
 // Fallback fichiers (VOD/Live)
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
@@ -451,6 +490,12 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
         const hit = await tryUrls(buildCandidates(b, kind, streamId, extOrder));
         if (hit) { fileUrl = hit; break; }
       }
+
+      // Si MKV (souvent AC3/DTS), redirige vers transcodage audio→AAC
+      if (fileUrl && (/\.mkv(\?|$)/i.test(fileUrl) || (containerExt && containerExt.toLowerCase() === ".mkv"))) {
+        const u = `/api/media/${kind}/${id}/transcode.mp4?u=${encodeURIComponent(b64u(fileUrl))}`;
+        return res.redirect(302, u);
+      }
     }
 
     if (!fileUrl) {
@@ -460,7 +505,6 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
 
     try { await assertAllowedUpstream(fileUrl, creds0.baseUrl); } catch (e) { if (debug) notes.push(String(e)); }
 
-    // reroute interne (sans préfixe)
     req.url = `/proxy/u/${b64u(fileUrl)}`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
