@@ -16,6 +16,7 @@
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.26.2",
     "shaka-player": "^4.16.2"
+    "serve": "14.2.5"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.2.0",
