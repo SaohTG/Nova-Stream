@@ -36,7 +36,7 @@ function Spinner({ label = "Chargement…" }) {
 }
 
 export default function Title() {
-  const { kind, id } = useParams();
+  const { kind, id } = useParams(); // "movie" | "series"
   const xid = useMemo(() => String(id || "").replace(/^xid-/, ""), [id]);
   const nav = useNavigate();
 
@@ -127,7 +127,7 @@ export default function Title() {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
-      {/* Overlay bande-annonce en premier plan */}
+      {/* Bande-annonce en overlay plein écran */}
       {showTrailer && hasTrailer && (
         <div
           className="fixed inset-0 z-[1000] bg-black/80 backdrop-blur-sm grid place-items-center p-4"
@@ -159,30 +159,29 @@ export default function Title() {
       {/* Lecteur principal film */}
       {!showTrailer && playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
-          {resolvingSrc && (
+          {resolvingSrc ? (
             <div className="flex h-full w-full items-center justify-center">
               <Spinner label="Préparation du flux…" />
             </div>
-          )}
-          {!resolvingSrc && src && (
+          ) : src ? (
             <VideoPlayer
               src={src}
               poster={posterSrc}
               title={data.title}
               resumeKey={resumeKey}
               resumeApi
+              showPoster={false} // pas d’affiche en arrière-plan
             />
-          )}
-          {!resolvingSrc && !src && playErr && (
+          ) : playErr ? (
             <div className="flex h-full w-full items-center justify-center p-4 text-center text-red-300">
               {playErr}
             </div>
-          )}
+          ) : null}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
-        {/* Carte affiche: montre un loader au lieu de l'image pendant la résolution */}
+        {/* Carte affiche avec loader pendant la résolution */}
         <button
           type="button"
           className={`relative w-[220px] rounded-xl overflow-hidden group ${resolvingSrc ? "cursor-wait" : ""}`}
@@ -229,7 +228,7 @@ export default function Title() {
           )}
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
-            {/* Bouton “Regarder” supprimé. Clic affiche = lecture. */}
+            {/* Bouton “Regarder” retiré. Clic affiche = lecture. */}
             <button
               className="btn disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={() => hasTrailer && (setPlaying(false), setShowTrailer(true))}
