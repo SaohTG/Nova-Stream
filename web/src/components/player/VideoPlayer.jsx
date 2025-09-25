@@ -35,6 +35,9 @@ export default function VideoPlayer({
   const [audioSel, setAudioSel] = useState({ lang: null, role: null });
   const [textSel, setTextSel] = useState({ lang: null, enabled: false });
 
+  const [loading, setLoading] = useState(false);
+  const [autoBlocked, setAutoBlocked] = useState(false);
+
   const lsKey = useMemo(() => (resumeKey ? `ns_watch_${resumeKey}` : null), [resumeKey]);
   const initialTime = useMemo(() => {
     if (!lsKey) return startAt || 0;
@@ -51,10 +54,22 @@ export default function VideoPlayer({
 
   useEffect(() => { console.log("[Video src]", resolvedSrc); }, [resolvedSrc]);
 
+  async function tryPlay(v) {
+    v.muted = false;
+    v.volume = 1;
+    try {
+      await v.play();
+      setAutoBlocked(false);
+    } catch {
+      setAutoBlocked(true);
+    }
+  }
+
   useEffect(() => {
     let destroyed = false;
 
-    const playFile = (v, fileUrl) => {
+    const attachFile = (v, fileUrl) => {
+      setLoading(true);
       v.src = fileUrl;
       const onMeta = () => {
         try {
@@ -62,10 +77,9 @@ export default function VideoPlayer({
             v.currentTime = Math.min(initialTime, Math.max(0, (v.duration || 1) - 1));
           }
         } catch {}
-        v.play?.().catch(()=>{});
+        tryPlay(v);
       };
       v.addEventListener("loadedmetadata", onMeta, { once: true });
-      // si erreur vidéo, on n’insiste pas ici
     };
 
     (async () => {
@@ -77,8 +91,17 @@ export default function VideoPlayer({
         playerRef.current = null;
       }
 
+      // events → état “loading”
+      const onWaiting = () => setLoading(true);
+      const onPlaying = () => setLoading(false);
+      const onCanPlay = () => setLoading(false);
+      v.addEventListener("waiting", onWaiting);
+      v.addEventListener("playing", onPlaying);
+      v.addEventListener("canplay", onCanPlay);
+
       if (isHls(resolvedSrc)) {
         try {
+          setLoading(true);
           const shaka = await loadShakaOnce();
           shaka.polyfill.installAll?.();
           if (!shaka.Player.isBrowserSupported()) throw new Error("Shaka unsupported");
@@ -89,9 +112,7 @@ export default function VideoPlayer({
 
           const ne = player.getNetworkingEngine?.();
           if (ne && ne.registerRequestFilter) {
-            ne.registerRequestFilter((_type, req) => {
-              req.allowCrossSiteCredentials = true; // cookies si besoin
-            });
+            ne.registerRequestFilter((_type, req) => { req.allowCrossSiteCredentials = true; });
           }
 
           player.addEventListener("error", (e) => console.error("[Shaka error]", e.detail));
@@ -105,7 +126,6 @@ export default function VideoPlayer({
             setAudioSel({ lang: cfg.preferredAudioLanguage || null, role: cfg.preferredAudioRole || null });
             setTextSel(s => ({ ...s, lang: cfg.preferredTextLanguage || s.lang || null }));
           };
-
           player.addEventListener("trackschanged", refreshTracks);
           player.addEventListener("variantchanged", refreshTracks);
           player.addEventListener("textchanged", refreshTracks);
@@ -114,18 +134,22 @@ export default function VideoPlayer({
           if (destroyed) return;
           setDur(v.duration || NaN);
           refreshTracks();
-          v.play?.().catch(()=>{});
+          await tryPlay(v);
         } catch (e) {
           console.error("[Player/HLS]", e);
-          // Fallback automatique vers /file
           try { await playerRef.current?.destroy(); } catch {}
           playerRef.current = null;
-          playFile(v, hlsToFile(resolvedSrc));
+          attachFile(v, hlsToFile(resolvedSrc));
         }
       } else {
-        // src direct (ex: /api/media/.../file)
-        playFile(v, resolvedSrc);
+        attachFile(v, resolvedSrc);
       }
+
+      return () => {
+        v.removeEventListener("waiting", onWaiting);
+        v.removeEventListener("playing", onPlaying);
+        v.removeEventListener("canplay", onCanPlay);
+      };
     })();
 
     return () => { destroyed = true; };
@@ -185,6 +209,27 @@ export default function VideoPlayer({
         preload="metadata"
         crossOrigin="use-credentials"
       />
+      {/* overlay chargement */}
+      {loading && (
+        <div className="absolute inset-0 grid place-items-center bg-black/40 pointer-events-none">
+          <svg className="animate-spin h-10 w-10 text-white" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.25"/>
+            <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" strokeWidth="4" fill="none"/>
+          </svg>
+        </div>
+      )}
+      {/* overlay autoplay bloqué */}
+      {autoBlocked && (
+        <div className="absolute inset-0 grid place-items-center bg-black/50">
+          <button
+            className="px-4 py-2 text-sm rounded-full bg-white text-black"
+            onClick={() => videoRef.current && videoRef.current.play().then(()=>setAutoBlocked(false)).catch(()=>{})}
+          >
+            Lire
+          </button>
+        </div>
+      )}
+      {/* sélecteurs */}
       <div className="absolute right-3 top-3 flex gap-2">
         <select
           className="rounded bg-black/60 text-white text-xs px-2 py-1"
