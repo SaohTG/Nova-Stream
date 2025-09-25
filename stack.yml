@@ -44,6 +44,7 @@ services:
       API_JWT_REFRESH_TTL: "1209600"
       API_ENCRYPTION_KEY: a1b2c3d4e5f60718293a4bc5de6f70819a2b3c4d5e6f7a801f2e3d4c9b8a7c6d
       SECURE_PROXY_MODE: public
+      TRANSCODE_MKV: "1"   # <-- active le transcodage audio MKV -> AAC
     command:
       - sh
       - -lc
