@@ -4,9 +4,31 @@ import { useParams, useNavigate } from "react-router-dom";
 import { getJson } from "../lib/api";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
+function toYoutubeEmbed(urlOrId = "") {
+  if (!urlOrId) return "";
+  // Déjà un embed complet
+  if (/^https?:\/\/(www\.)?youtube\.com\/embed\//.test(urlOrId)) return urlOrId;
+  // URL watch ou youtu.be → extrait l'id
+  try {
+    if (/^https?:\/\//i.test(urlOrId)) {
+      const u = new URL(urlOrId);
+      if (u.hostname.includes("youtu.be")) {
+        const id = u.pathname.replace(/^\//, "");
+        return id ? `https://www.youtube.com/embed/${id}` : "";
+      }
+      if (u.hostname.includes("youtube.com")) {
+        const id = u.searchParams.get("v");
+        return id ? `https://www.youtube.com/embed/${id}` : "";
+      }
+    }
+  } catch {}
+  // Sinon on suppose que c’est déjà un id
+  return `https://www.youtube.com/embed/${urlOrId}`;
+}
+
 export default function Title() {
-  const { kind, id } = useParams();              // kind: "movie" | "series" ; id peut être "xid-123" ou "123"
-  const xid = useMemo(() => String(id || "").replace(/^xid-/, ""), [id]); // ← nettoie le prefixe
+  const { kind, id } = useParams();                           // kind: "movie" | "series"
+  const xid = useMemo(() => String(id || "").replace(/^xid-/, ""), [id]);
   const nav = useNavigate();
 
   const [data, setData] = useState(null);
@@ -16,6 +38,8 @@ export default function Title() {
   const [resolvingSrc, setResolvingSrc] = useState(false);
   const [src, setSrc] = useState("");
   const [playErr, setPlayErr] = useState("");
+
+  const [showTrailer, setShowTrailer] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -37,16 +61,17 @@ export default function Title() {
     setResolvingSrc(false);
     setSrc("");
     setPlayErr("");
+    setShowTrailer(false);
   }, [kind, xid]);
 
   async function startPlayback() {
     if (kind !== "movie") return;
+    setShowTrailer(false);
     setPlaying(true);
     setResolvingSrc(true);
     setPlayErr("");
     setSrc("");
     try {
-      // Lecture via HLS proxifié (cookies inclus via Shaka)
       setSrc(`/api/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}/hls.m3u8`);
     } catch {
       setPlayErr("Aucune source de lecture fournie par le serveur.");
@@ -54,6 +79,14 @@ export default function Title() {
       setResolvingSrc(false);
     }
   }
+
+  const trailerEmbed = useMemo(() => {
+    const e = data?.trailer?.embed_url;
+    const u = data?.trailer?.url;
+    return toYoutubeEmbed(e || u || "");
+  }, [data]);
+
+  const hasTrailer = Boolean(trailerEmbed);
 
   if (loading) {
     return <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">Chargement…</div>;
@@ -70,12 +103,32 @@ export default function Title() {
   }
 
   const posterSrc = data.poster_url || data.backdrop_url || "";
-  const hasTrailer = Boolean(data?.trailer?.embed_url);
   const resumeKey = kind === "movie" ? `movie:${xid}` : undefined;
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
-      {playing && (
+      {/* Bloc lecteur principal: film OU bande-annonce */}
+      {showTrailer && hasTrailer && (
+        <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video relative">
+          <iframe
+            className="h-full w-full"
+            src={`${trailerEmbed}?autoplay=1&rel=0`}
+            title="Bande-annonce"
+            allow="autoplay; encrypted-media; picture-in-picture"
+            allowFullScreen
+          />
+          <button
+            type="button"
+            onClick={() => setShowTrailer(false)}
+            className="absolute top-3 right-3 rounded-full bg-white/90 px-3 py-1 text-black text-sm hover:bg-white"
+            title="Fermer"
+          >
+            Fermer
+          </button>
+        </div>
+      )}
+
+      {!showTrailer && playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
           {resolvingSrc && (
             <div className="flex h-full w-full items-center justify-center text-zinc-300">
@@ -139,17 +192,10 @@ export default function Title() {
           )}
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
-            {kind === "movie" && (
-              <button
-                className="btn bg-emerald-600 text-white hover:bg-emerald-500"
-                onClick={startPlayback}
-              >
-                ▶ Regarder
-              </button>
-            )}
+            {/* Bouton “Regarder” retiré volontairement */}
             <button
               className="btn disabled:opacity-50 disabled:cursor-not-allowed"
-              onClick={() => hasTrailer && window.open(data?.trailer?.url, "_blank")}
+              onClick={() => hasTrailer && (setPlaying(false), setShowTrailer(true))}
               disabled={!hasTrailer}
             >
               ▶ Bande-annonce
