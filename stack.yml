@@ -98,7 +98,7 @@ services:
         unzip -o -q /tmp/src.zip -d /tmp
         rm -rf /app/*
         cp -r /tmp/Nova-Stream-main/web/. /app
-        npm ci || npm i
+        npm install --no-audit --no-fund
         npm run build
         npx serve -s dist -l 8081
     depends_on:
