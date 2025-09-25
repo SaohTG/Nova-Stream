@@ -31,7 +31,7 @@ export default function VideoPlayer({
   resumeApi = true,
   startAt = 0,
   onEnded,
-  showPoster = true, // ← nouveau
+  showPoster = true, // nouveau
 }) {
   const videoRef = useRef(null);
   const playerRef = useRef(null);
@@ -209,13 +209,12 @@ export default function VideoPlayer({
       <video
         ref={videoRef}
         className="w-full h-auto bg-black rounded-xl"
-        poster={showPoster && poster ? poster : undefined} {/* ← conditionnel */}
+        poster={showPoster && poster ? poster : undefined}
         controls
         playsInline
         preload="metadata"
         crossOrigin="use-credentials"
       />
-      {/* overlay chargement */}
       {loading && (
         <div className="absolute inset-0 grid place-items-center bg-black/40 pointer-events-none">
           <svg className="animate-spin h-10 w-10 text-white" viewBox="0 0 24 24">
@@ -224,7 +223,6 @@ export default function VideoPlayer({
           </svg>
         </div>
       )}
-      {/* overlay autoplay bloqué */}
       {autoBlocked && (
         <div className="absolute inset-0 grid place-items-center bg-black/50">
           <button
@@ -235,7 +233,6 @@ export default function VideoPlayer({
           </button>
         </div>
       )}
-      {/* sélecteurs */}
       <div className="absolute right-3 top-3 flex gap-2">
         <select
           className="rounded bg-black/60 text-white text-xs px-2 py-1"
