@@ -13,6 +13,17 @@ pool.on("error", (e) => console.error("[PG ERROR]", e));
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600);
 
+/* ========== Utils ========== */
+const b64u = (s) =>
+  Buffer.from(String(s), "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+const fromB64u = (s) => {
+  let t = String(s).replace(/-/g, "+").replace(/_/g, "/");
+  while (t.length % 4) t += "=";
+  return Buffer.from(t, "base64").toString("utf8");
+};
+
 /* ========== Auth minimale ========== */
 function parseCookies(req) {
   if (req.cookies) return req.cookies;
@@ -21,8 +32,7 @@ function parseCookies(req) {
   return h.split(";").reduce((a, p) => {
     const i = p.indexOf("="); if (i < 0) return a;
     const k = p.slice(0, i).trim(); const v = p.slice(i + 1).trim();
-    a[k] = decodeURIComponent(v);
-    return a;
+    a[k] = decodeURIComponent(v); return a;
   }, {});
 }
 function getUserId(req) {
@@ -141,7 +151,7 @@ async function fetchJson(url) {
   try { return JSON.parse(txt); } catch { const e = new Error("BAD_JSON"); e.body = txt; throw e; }
 }
 
-/* ========== TMDB minimal (métadonnées) ========== */
+/* ========== TMDB minimal ========== */
 const TMDB_BASE = "https://api.themoviedb.org/3";
 async function tmdbDetails(kind, id) {
   const u = new URL(`${TMDB_BASE}/${kind === "movie" ? "movie" : "tv"}/${id}`);
@@ -285,12 +295,12 @@ router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
       if (line.startsWith("#EXT-X-KEY")) {
         return line.replace(/URI="([^"]+)"/, (_m, uri) => {
           const abs = new URL(uri, origin).toString();
-          return `URI="/api/media/proxy?url=${encodeURIComponent(abs)}"`;
+          return `URI="/api/media/proxy/u/${b64u(abs)}"`;
         });
       }
       if (!line || line.startsWith("#")) return line;
       const abs = new URL(line, origin).toString();
-      return `/api/media/proxy?url=${encodeURIComponent(abs)}`;
+      return `/api/media/proxy/u/${b64u(abs)}`;
     };
     const body = text.split(/\r?\n/).map(rewrite).join("\n");
     res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -299,8 +309,8 @@ router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Proxy générique
-router.get("/proxy", async (req, res, next) => {
+// Proxy via base64url dans le chemin
+router.get("/proxy/u/:b64", async (req, res, next) => {
   try {
     const userId = getUserId(req);
     if (!userId) return res.sendStatus(401);
@@ -308,8 +318,8 @@ router.get("/proxy", async (req, res, next) => {
     const creds = await getCreds(userId);
     if (!creds) return res.status(404).json({ error: "no-xtream" });
 
-    const url = (req.query.url || "").toString();
-    if (!url) { const e = new Error("missing url"); e.status = 400; throw e; }
+    const url = fromB64u(req.params.b64 || "");
+    if (!/^https?:\/\//i.test(url)) { const e = new Error("missing url"); e.status = 400; throw e; }
     await assertAllowedUpstream(url, creds.baseUrl);
 
     const headers = { "User-Agent": "VLC/3.0", "Referer": creds.baseUrl + "/" };
@@ -331,7 +341,39 @@ router.get("/proxy", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Fallback VOD/Live: résout via get_vod_info (extension exacte), essaie http/https, debug
+// Ancienne route query (compat)
+router.get("/proxy", async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+
+    const creds = await getCreds(userId);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const url = (req.query.url || "").toString();
+    if (!/^https?:\/\//i.test(url)) { const e = new Error("missing url"); e.status = 400; throw e; }
+    await assertAllowedUpstream(url, creds.baseUrl);
+
+    const headers = { "User-Agent": "VLC/3.0", "Referer": creds.baseUrl + "/" };
+    if (req.headers.range) headers.Range = req.headers.range;
+    if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
+
+    const up = await fetchWithTimeout(url, 15000, headers);
+    const ct = up.headers.get("content-type");
+    const cr = up.headers.get("content-range");
+    const ar = up.headers.get("accept-ranges");
+    const cl = up.headers.get("content-length");
+    if (ct) res.setHeader("Content-Type", ct);
+    if (cr) res.setHeader("Content-Range", cr);
+    if (ar) res.setHeader("Accept-Ranges", ar);
+    if (cl) res.setHeader("Content-Length", cl);
+    res.setHeader("Cache-Control", "no-store");
+    res.status(up.status);
+    if (up.body) Readable.fromWeb(up.body).pipe(res); else res.end();
+  } catch (e) { next(e); }
+});
+
+// Fallback fichiers (VOD/Live)
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -418,8 +460,8 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
 
     try { await assertAllowedUpstream(fileUrl, creds0.baseUrl); } catch (e) { if (debug) notes.push(String(e)); }
 
-    // IMPORTANT: chemin interne sans préfixe /api/media
-    req.url = `/proxy?url=${encodeURIComponent(fileUrl)}`;
+    // reroute interne (sans préfixe)
+    req.url = `/proxy/u/${b64u(fileUrl)}`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
