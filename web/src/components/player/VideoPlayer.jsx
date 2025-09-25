@@ -21,6 +21,7 @@ async function loadShakaOnce() {
 }
 
 const isHls = (u) => /\.m3u8(\?|$)/i.test(String(u));
+const hlsToFile = (u) => String(u).replace(/\/hls\.m3u8(\?.*)?$/i, "/file$1");
 
 export default function VideoPlayer({
   src, poster, title, resumeKey, resumeApi = true, startAt = 0, onEnded,
@@ -53,6 +54,20 @@ export default function VideoPlayer({
   useEffect(() => {
     let destroyed = false;
 
+    const playFile = (v, fileUrl) => {
+      v.src = fileUrl;
+      const onMeta = () => {
+        try {
+          if (initialTime > 0 && Number.isFinite(v.duration)) {
+            v.currentTime = Math.min(initialTime, Math.max(0, (v.duration || 1) - 1));
+          }
+        } catch {}
+        v.play?.().catch(()=>{});
+      };
+      v.addEventListener("loadedmetadata", onMeta, { once: true });
+      // si erreur vidéo, on n’insiste pas ici
+    };
+
     (async () => {
       const v = videoRef.current;
       if (!v || !resolvedSrc) return;
@@ -75,15 +90,7 @@ export default function VideoPlayer({
           const ne = player.getNetworkingEngine?.();
           if (ne && ne.registerRequestFilter) {
             ne.registerRequestFilter((_type, req) => {
-              req.allowCrossSiteCredentials = true;
-              try {
-                const m = document.cookie.match(/(?:^|;\s*)(nova_access|ns_access|ns_session)=([^;]+)/);
-                const tok = m ? decodeURIComponent(m[2]) : null;
-                if (tok) {
-                  req.headers = req.headers || {};
-                  req.headers["Authorization"] = `Bearer ${tok}`;
-                }
-              } catch {}
+              req.allowCrossSiteCredentials = true; // cookies si besoin
             });
           }
 
@@ -110,14 +117,14 @@ export default function VideoPlayer({
           v.play?.().catch(()=>{});
         } catch (e) {
           console.error("[Player/HLS]", e);
+          // Fallback automatique vers /file
+          try { await playerRef.current?.destroy(); } catch {}
+          playerRef.current = null;
+          playFile(v, hlsToFile(resolvedSrc));
         }
       } else {
-        v.src = resolvedSrc;
-        const onMeta = () => {
-          try { if (initialTime > 0 && Number.isFinite(v.duration)) v.currentTime = Math.min(initialTime, v.duration - 1); } catch {}
-          v.play?.().catch(()=>{});
-        };
-        v.addEventListener("loadedmetadata", onMeta, { once: true });
+        // src direct (ex: /api/media/.../file)
+        playFile(v, resolvedSrc);
       }
     })();
 
