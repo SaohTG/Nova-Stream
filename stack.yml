@@ -49,7 +49,7 @@ services:
       - -lc
       - |
         set -e
-        apk add --no-cache unzip curl netcat-openbsd
+        apk add --no-cache unzip curl netcat-openbsd ffmpeg
         until nc -z db 5432; do echo 'waiting for db...'; sleep 2; done
         rm -rf /tmp/Nova-Stream-main /tmp/src.zip
         curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
