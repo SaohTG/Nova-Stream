@@ -77,6 +77,7 @@ export default function VideoPlayer({
 
     const attachFile = (v, fileUrl) => {
       setLoading(true);
+      v.preload = "auto";
       v.src = fileUrl;
       const onMeta = () => {
         try {
@@ -101,11 +102,22 @@ export default function VideoPlayer({
       const onWaiting = () => setLoading(true);
       const onPlaying = () => setLoading(false);
       const onCanPlay = () => setLoading(false);
+      const onCanPlayThrough = () => setLoading(false);
       v.addEventListener("waiting", onWaiting);
       v.addEventListener("playing", onPlaying);
       v.addEventListener("canplay", onCanPlay);
+      v.addEventListener("canplaythrough", onCanPlayThrough);
 
-      if (isHls(resolvedSrc)) {
+      // Détecte live vs VOD d’après l’URL API
+      const isLiveSrc = /\/api\/media\/live\//i.test(resolvedSrc);
+      const isVodSrc  = /\/api\/media\/(movie|series)\//i.test(resolvedSrc);
+
+      if (isVodSrc) {
+        // VOD: lecture directe fichier (plus rapide)
+        const fileUrl = isHls(resolvedSrc) ? hlsToFile(resolvedSrc) : resolvedSrc;
+        attachFile(v, fileUrl);
+      } else if (isLiveSrc && isHls(resolvedSrc)) {
+        // LIVE: HLS via Shaka
         try {
           setLoading(true);
           const shaka = await loadShakaOnce();
@@ -115,6 +127,12 @@ export default function VideoPlayer({
           const player = new shaka.Player();
           await player.attach(v);
           playerRef.current = player;
+
+          // Buffer initial réduit pour démarrer plus vite en live
+          player.configure({
+            streaming: { bufferingGoal: 2, rebufferingGoal: 1.5, bufferBehind: 30 },
+            abr: { defaultBandwidthEstimate: 5_000_000 }
+          });
 
           const ne = player.getNetworkingEngine?.();
           if (ne && ne.registerRequestFilter) {
@@ -145,9 +163,11 @@ export default function VideoPlayer({
           console.error("[Player/HLS]", e);
           try { await playerRef.current?.destroy(); } catch {}
           playerRef.current = null;
-          attachFile(v, hlsToFile(resolvedSrc));
+          // Live sans HLS non supporté → on ne force pas /file ici
+          setLoading(false);
         }
       } else {
+        // Cas restant: source directe → fichier
         attachFile(v, resolvedSrc);
       }
 
@@ -155,6 +175,7 @@ export default function VideoPlayer({
         v.removeEventListener("waiting", onWaiting);
         v.removeEventListener("playing", onPlaying);
         v.removeEventListener("canplay", onCanPlay);
+        v.removeEventListener("canplaythrough", onCanPlayThrough);
       };
     })();
 
