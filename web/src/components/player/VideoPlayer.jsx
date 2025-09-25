@@ -31,7 +31,7 @@ export default function VideoPlayer({
   resumeApi = true,
   startAt = 0,
   onEnded,
-  showPoster = true, // nouveau
+  showPoster = true,
 }) {
   const videoRef = useRef(null);
   const playerRef = useRef(null);
@@ -205,10 +205,10 @@ export default function VideoPlayer({
   };
 
   return (
-    <div className="relative w-full">
+    <div className="relative w-full h-full">
       <video
         ref={videoRef}
-        className="w-full h-auto bg-black rounded-xl"
+        className="w-full h-full bg-black rounded-xl"
         poster={showPoster && poster ? poster : undefined}
         controls
         playsInline
