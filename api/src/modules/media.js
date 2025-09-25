@@ -14,6 +14,9 @@ pool.on("error", (e) => console.error("[PG ERROR]", e));
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600);
 
+// 0 = pas de transcodage MKV (recommandé si ffmpeg absent). 1 = tenter transcodage MKV→MP4/AAC.
+const TRANSCODE_MKV = String(process.env.TRANSCODE_MKV || "0") === "1";
+
 /* ========== Utils ========== */
 const b64u = (s) =>
   Buffer.from(String(s), "utf8")
@@ -39,7 +42,7 @@ function parseCookies(req) {
 function getUserId(req) {
   if (req?.user?.id || req?.user?.sub) return String(req.user.id || req.user.sub);
   const ck = parseCookies(req);
-  const tok = ck.access || ck.at;
+  const tok = ck.access || ck.at || ck["nova_access"] || ck["ns_access"];
   if (!tok) return null;
   try { const p = jwt.verify(tok, process.env.API_JWT_SECRET); return String(p.sub || p.userId || p.id); }
   catch { return null; }
@@ -374,44 +377,6 @@ router.get("/proxy", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-/* ======== Transcode audio→AAC pour VOD MKV ======== */
-router.get("/:kind(movie|series)/:id/transcode.mp4", async (req, res, next) => {
-  try {
-    const userId = getUserId(req);
-    if (!userId) return res.sendStatus(401);
-
-    const creds = await getCreds(userId);
-    if (!creds) return res.status(404).json({ error: "no-xtream" });
-
-    const srcParam = req.query.u || req.query.src || "";
-    const src = String(srcParam).includes(".") ? fromB64u(String(srcParam)) : String(srcParam);
-    if (!/^https?:\/\//i.test(src)) return res.status(400).json({ error: "missing src" });
-
-    await assertAllowedUpstream(src, creds.baseUrl);
-
-    res.setHeader("Content-Type", "video/mp4");
-    res.setHeader("Cache-Control", "no-store");
-
-    const args = [
-      "-loglevel","error",
-      "-nostdin",
-      "-reconnect","1","-reconnect_streamed","1","-reconnect_at_eof","1",
-      "-i", src,
-      "-map","0:v:0","-c:v","copy",
-      "-map","0:a:0?","-c:a","aac","-b:a","160k","-ac","2",
-      "-movflags","+frag_keyframe+empty_moov",
-      "-f","mp4","pipe:1"
-    ];
-    const ff = spawn("ffmpeg", args, { stdio: ["ignore","pipe","inherit"] });
-
-    ff.on("error", () => { if (!res.headersSent) res.status(500).end(); });
-    ff.stdout.pipe(res);
-    const kill = () => { try { ff.kill("SIGKILL"); } catch {} };
-    req.on("close", kill);
-    ff.on("close", (code) => { if (code !== 0 && !res.headersSent) res.status(502).end(); });
-  } catch (e) { next(e); }
-});
-
 // Fallback fichiers (VOD/Live)
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
@@ -461,6 +426,8 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
     };
 
     let fileUrl = null;
+    let containerExt = null;
+    let streamId = id;
 
     if (kind === "live") {
       const extOrder = [".m3u8", ".ts"];
@@ -469,9 +436,6 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
         if (hit) { fileUrl = hit; break; }
       }
     } else {
-      let containerExt = null;
-      let streamId = id;
-
       if (kind === "movie") {
         try {
           const info = await fetchJson(buildPlayerApi(bases[0], username, password, "get_vod_info", { vod_id: id }));
@@ -490,12 +454,6 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
         const hit = await tryUrls(buildCandidates(b, kind, streamId, extOrder));
         if (hit) { fileUrl = hit; break; }
       }
-
-      // Si MKV (souvent AC3/DTS), redirige vers transcodage audio→AAC
-      if (fileUrl && (/\.mkv(\?|$)/i.test(fileUrl) || (containerExt && containerExt.toLowerCase() === ".mkv"))) {
-        const u = `/api/media/${kind}/${id}/transcode.mp4?u=${encodeURIComponent(b64u(fileUrl))}`;
-        return res.redirect(302, u);
-      }
     }
 
     if (!fileUrl) {
@@ -505,8 +463,63 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
 
     try { await assertAllowedUpstream(fileUrl, creds0.baseUrl); } catch (e) { if (debug) notes.push(String(e)); }
 
+    // Transcodage MKV optionnel
+    if (
+      TRANSCODE_MKV &&
+      ( /\.mkv(\?|$)/i.test(fileUrl) || (containerExt && containerExt.toLowerCase() === ".mkv") ) &&
+      (kind === "movie" || kind === "series")
+    ) {
+      const u = `/api/media/${kind}/${id}/transcode.mp4?u=${encodeURIComponent(b64u(fileUrl))}`;
+      return res.redirect(302, u);
+    }
+
+    // Route interne proxy (sans préfixe)
     req.url = `/proxy/u/${b64u(fileUrl)}`;
     return router.handle(req, res, next);
+  } catch (e) { next(e); }
+});
+
+// Transcodage opportuniste MKV→MP4/AAC avec fallback proxy
+router.get("/:kind(movie|series)/:id/transcode.mp4", async (req, res, next) => {
+  try {
+    if (!TRANSCODE_MKV) return res.status(404).json({ error: "transcode-disabled" });
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+
+    const creds = await getCreds(userId);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const src = fromB64u(String(req.query.u || ""));
+    if (!/^https?:\/\//i.test(src)) return res.status(400).json({ error: "missing src" });
+    try { await assertAllowedUpstream(src, creds.baseUrl); } catch {}
+
+    const args = [
+      "-fflags", "nobuffer",
+      "-rw_timeout", "2000000",
+      "-i", src,
+      "-map", "0:v:0?", "-map", "0:a:0?",
+      "-c:v", "libx264", "-preset", "veryfast", "-tune", "fastdecode", "-crf", "22", "-bf", "0",
+      "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+      "-movflags", "frag_keyframe+empty_moov+faststart",
+      "-f", "mp4", "pipe:1"
+    ];
+
+    res.setHeader("Content-Type", "video/mp4");
+    res.setHeader("Cache-Control", "no-store");
+
+    const ff = spawn("ffmpeg", args, { stdio: ["ignore","pipe","inherit"] });
+
+    const fallback = () => {
+      if (!res.headersSent) {
+        res.setHeader("Cache-Control", "no-store");
+        res.redirect(302, `/api/media/proxy/u/${encodeURIComponent(b64u(src))}`);
+      }
+    };
+
+    ff.on("error", fallback);
+    ff.stdout.pipe(res);
+    req.on("close", () => { try { ff.kill("SIGKILL"); } catch {} });
+    ff.on("close", (code) => { if (code !== 0) fallback(); });
   } catch (e) { next(e); }
 });
 
