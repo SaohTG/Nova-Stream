@@ -6,9 +6,7 @@ import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
 function toYoutubeEmbed(urlOrId = "") {
   if (!urlOrId) return "";
-  // Déjà un embed complet
   if (/^https?:\/\/(www\.)?youtube\.com\/embed\//.test(urlOrId)) return urlOrId;
-  // URL watch ou youtu.be → extrait l'id
   try {
     if (/^https?:\/\//i.test(urlOrId)) {
       const u = new URL(urlOrId);
@@ -22,12 +20,11 @@ function toYoutubeEmbed(urlOrId = "") {
       }
     }
   } catch {}
-  // Sinon on suppose que c’est déjà un id
   return `https://www.youtube.com/embed/${urlOrId}`;
 }
 
 export default function Title() {
-  const { kind, id } = useParams();                           // kind: "movie" | "series"
+  const { kind, id } = useParams();
   const xid = useMemo(() => String(id || "").replace(/^xid-/, ""), [id]);
   const nav = useNavigate();
 
@@ -64,6 +61,19 @@ export default function Title() {
     setShowTrailer(false);
   }, [kind, xid]);
 
+  // Verrouillage du scroll et touche Échap pour l’overlay
+  useEffect(() => {
+    const root = document.documentElement;
+    if (showTrailer) root.style.overflow = "hidden";
+    else root.style.overflow = "";
+    const onKey = (e) => { if (e.key === "Escape") setShowTrailer(false); };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      root.style.overflow = "";
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [showTrailer]);
+
   async function startPlayback() {
     if (kind !== "movie") return;
     setShowTrailer(false);
@@ -85,7 +95,6 @@ export default function Title() {
     const u = data?.trailer?.url;
     return toYoutubeEmbed(e || u || "");
   }, [data]);
-
   const hasTrailer = Boolean(trailerEmbed);
 
   if (loading) {
@@ -107,27 +116,36 @@ export default function Title() {
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-6">
-      {/* Bloc lecteur principal: film OU bande-annonce */}
+      {/* Overlay bande-annonce en premier plan */}
       {showTrailer && hasTrailer && (
-        <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video relative">
-          <iframe
-            className="h-full w-full"
-            src={`${trailerEmbed}?autoplay=1&rel=0`}
-            title="Bande-annonce"
-            allow="autoplay; encrypted-media; picture-in-picture"
-            allowFullScreen
-          />
-          <button
-            type="button"
-            onClick={() => setShowTrailer(false)}
-            className="absolute top-3 right-3 rounded-full bg-white/90 px-3 py-1 text-black text-sm hover:bg-white"
-            title="Fermer"
+        <div
+          className="fixed inset-0 z-[1000] bg-black/80 backdrop-blur-sm grid place-items-center p-4"
+          onClick={() => setShowTrailer(false)}
+        >
+          <div
+            className="relative w-full max-w-5xl aspect-video rounded-xl overflow-hidden bg-black"
+            onClick={(e) => e.stopPropagation()}
           >
-            Fermer
-          </button>
+            <iframe
+              className="h-full w-full"
+              src={`${trailerEmbed}?autoplay=1&rel=0`}
+              title="Bande-annonce"
+              allow="autoplay; encrypted-media; picture-in-picture"
+              allowFullScreen
+            />
+            <button
+              type="button"
+              onClick={() => setShowTrailer(false)}
+              className="absolute top-3 right-3 rounded-full bg-white/90 px-3 py-1 text-black text-sm hover:bg-white"
+              title="Fermer"
+            >
+              Fermer
+            </button>
+          </div>
         </div>
       )}
 
+      {/* Lecteur principal film */}
       {!showTrailer && playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
           {resolvingSrc && (
@@ -192,7 +210,7 @@ export default function Title() {
           )}
 
           <div className="mt-6 flex flex-wrap items-center gap-3">
-            {/* Bouton “Regarder” retiré volontairement */}
+            {/* Bouton “Regarder” supprimé. Clic affiche = lecture. */}
             <button
               className="btn disabled:opacity-50 disabled:cursor-not-allowed"
               onClick={() => hasTrailer && (setPlaying(false), setShowTrailer(true))}
