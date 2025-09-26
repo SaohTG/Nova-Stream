@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { postJson } from "../../lib/api";
 
-function fmt(t){ if(!Number.isFinite(t)) return "--:--"; const s=Math.floor(t%60).toString().padStart(2,"0"); const m=Math.floor((t/60)%60).toString().padStart(2,"0"); const h=Math.floor(t/3600); return h?`${h}:${m}:${s}`:`${m}:${s}`; }
+function fmt(t){ if(!Number.isFinite(t)||t<0) return "--:--"; const s=Math.floor(t%60).toString().padStart(2,"0"); const m=Math.floor((t/60)%60).toString().padStart(2,"0"); const h=Math.floor(t/3600); return h?`${h}:${m}:${s}`:`${m}:${s}`; }
 
 async function loadShakaOnce() {
   if (window.shaka) return window.shaka;
@@ -22,6 +22,18 @@ async function loadShakaOnce() {
 
 const isHls = (u) => /\.m3u8(\?|$)/i.test(String(u));
 const hlsToFile = (u) => String(u).replace(/\/hls\.m3u8(\?.*)?$/i, "/file$1");
+
+// calcule une durée exploitable même si video.duration === Infinity
+const computeDur = (v) => {
+  if (!v) return NaN;
+  if (Number.isFinite(v.duration) && v.duration > 0) return v.duration;
+  const s = v.seekable;
+  if (s && s.length > 0) {
+    const end = s.end(s.length - 1);
+    if (Number.isFinite(end) && end > 0) return end;
+  }
+  return NaN;
+};
 
 export default function VideoPlayer({
   src,
@@ -79,15 +91,27 @@ export default function VideoPlayer({
       setLoading(true);
       v.preload = "auto";
       v.src = fileUrl;
+
+      const updateDur = () => {
+        const d = computeDur(v);
+        if (Number.isFinite(d)) setDur(d);
+      };
+
       const onMeta = () => {
+        updateDur();
         try {
-          if (initialTime > 0 && Number.isFinite(v.duration)) {
-            v.currentTime = Math.min(initialTime, Math.max(0, (v.duration || 1) - 1));
+          const d = computeDur(v);
+          if (initialTime > 0) {
+            const maxSeek = Number.isFinite(d) ? Math.max(0, d - 1) : undefined;
+            v.currentTime = maxSeek !== undefined ? Math.min(initialTime, maxSeek) : initialTime;
           }
         } catch {}
         tryPlay(v);
       };
+
       v.addEventListener("loadedmetadata", onMeta, { once: true });
+      v.addEventListener("durationchange", updateDur);
+      v.addEventListener("loadeddata", updateDur);
     };
 
     (async () => {
@@ -108,16 +132,13 @@ export default function VideoPlayer({
       v.addEventListener("canplay", onCanPlay);
       v.addEventListener("canplaythrough", onCanPlayThrough);
 
-      // Détecte live vs VOD d’après l’URL API
       const isLiveSrc = /\/api\/media\/live\//i.test(resolvedSrc);
       const isVodSrc  = /\/api\/media\/(movie|series)\//i.test(resolvedSrc);
 
       if (isVodSrc) {
-        // VOD: lecture directe fichier (plus rapide)
         const fileUrl = isHls(resolvedSrc) ? hlsToFile(resolvedSrc) : resolvedSrc;
         attachFile(v, fileUrl);
       } else if (isLiveSrc && isHls(resolvedSrc)) {
-        // LIVE: HLS via Shaka
         try {
           setLoading(true);
           const shaka = await loadShakaOnce();
@@ -128,7 +149,6 @@ export default function VideoPlayer({
           await player.attach(v);
           playerRef.current = player;
 
-          // Buffer initial réduit pour démarrer plus vite en live
           player.configure({
             streaming: { bufferingGoal: 2, rebufferingGoal: 1.5, bufferBehind: 30 },
             abr: { defaultBandwidthEstimate: 5_000_000 }
@@ -156,18 +176,16 @@ export default function VideoPlayer({
 
           await player.load(resolvedSrc, initialTime);
           if (destroyed) return;
-          setDur(v.duration || NaN);
+          setDur(computeDur(v));
           refreshTracks();
           await tryPlay(v);
         } catch (e) {
           console.error("[Player/HLS]", e);
           try { await playerRef.current?.destroy(); } catch {}
           playerRef.current = null;
-          // Live sans HLS non supporté → on ne force pas /file ici
           setLoading(false);
         }
       } else {
-        // Cas restant: source directe → fichier
         attachFile(v, resolvedSrc);
       }
 
@@ -186,24 +204,30 @@ export default function VideoPlayer({
     const v = videoRef.current;
     if (!v) return;
     let lastPush = 0;
+
     const onTime = () => {
       setT(v.currentTime || 0);
-      setDur(v.duration || dur);
+      const d = computeDur(v);
+      if (Number.isFinite(d)) setDur(d);
+
       if (!lsKey) return;
       const now = Date.now();
       if (now - lastPush > 4000) {
         lastPush = now;
-        const payload = { position: v.currentTime || 0, duration: v.duration || 0, title: title || null, src: resolvedSrc || src };
+        const payload = { position: v.currentTime || 0, duration: d || 0, title: title || null, src: resolvedSrc || src };
         try { localStorage.setItem(lsKey, JSON.stringify(payload)); } catch {}
         if (resumeApi && resumeKey) {
           postJson("/user/watch/progress", { key: resumeKey, position: payload.position, duration: payload.duration }).catch(() => {});
         }
       }
     };
+
     const onEndedCb = () => {
-      if (resumeApi && resumeKey) postJson("/user/watch/progress", { key: resumeKey, position: dur, duration: dur }).catch(() => {});
+      const d = Number.isFinite(dur) ? dur : computeDur(v);
+      if (resumeApi && resumeKey) postJson("/user/watch/progress", { key: resumeKey, position: d || v.currentTime || 0, duration: d || 0 }).catch(() => {});
       onEnded && onEnded();
     };
+
     v.addEventListener("timeupdate", onTime);
     v.addEventListener("pause", onTime);
     v.addEventListener("ended", onEndedCb);
