@@ -36,7 +36,6 @@ export default function VideoPlayer({
   const videoRef = useRef(null);
   const playerRef = useRef(null);
   const [dur, setDur] = useState(NaN);
-  const [knownDur, setKnownDur] = useState(null); // durée fournie par le serveur
   const [t, setT] = useState(0);
   const [audios, setAudios] = useState([]);
   const [texts, setTexts] = useState([]);
@@ -76,19 +75,10 @@ export default function VideoPlayer({
   useEffect(() => {
     let destroyed = false;
 
-    const attachFile = async (v, fileUrl) => {
+    const attachFile = (v, fileUrl) => {
       setLoading(true);
-      setKnownDur(null);
-
-      // HEAD pour récupérer X-Content-Duration envoyé par l'API
-      try {
-        const r = await fetch(fileUrl, { method: "HEAD", credentials: "include" });
-        const d = parseFloat(r.headers.get("x-content-duration"));
-        if (Number.isFinite(d) && d > 0) setKnownDur(d);
-      } catch {}
-
+      v.preload = "auto";
       v.src = fileUrl;
-
       const onMeta = () => {
         try {
           if (initialTime > 0 && Number.isFinite(v.duration)) {
@@ -97,10 +87,7 @@ export default function VideoPlayer({
         } catch {}
         tryPlay(v);
       };
-      const onDur = () => setDur(v.duration || NaN);
-
       v.addEventListener("loadedmetadata", onMeta, { once: true });
-      v.addEventListener("durationchange", onDur);
     };
 
     (async () => {
@@ -115,11 +102,22 @@ export default function VideoPlayer({
       const onWaiting = () => setLoading(true);
       const onPlaying = () => setLoading(false);
       const onCanPlay = () => setLoading(false);
+      const onCanPlayThrough = () => setLoading(false);
       v.addEventListener("waiting", onWaiting);
       v.addEventListener("playing", onPlaying);
       v.addEventListener("canplay", onCanPlay);
+      v.addEventListener("canplaythrough", onCanPlayThrough);
 
-      if (isHls(resolvedSrc)) {
+      // Détecte live vs VOD d’après l’URL API
+      const isLiveSrc = /\/api\/media\/live\//i.test(resolvedSrc);
+      const isVodSrc  = /\/api\/media\/(movie|series)\//i.test(resolvedSrc);
+
+      if (isVodSrc) {
+        // VOD: lecture directe fichier (plus rapide)
+        const fileUrl = isHls(resolvedSrc) ? hlsToFile(resolvedSrc) : resolvedSrc;
+        attachFile(v, fileUrl);
+      } else if (isLiveSrc && isHls(resolvedSrc)) {
+        // LIVE: HLS via Shaka
         try {
           setLoading(true);
           const shaka = await loadShakaOnce();
@@ -129,6 +127,12 @@ export default function VideoPlayer({
           const player = new shaka.Player();
           await player.attach(v);
           playerRef.current = player;
+
+          // Buffer initial réduit pour démarrer plus vite en live
+          player.configure({
+            streaming: { bufferingGoal: 2, rebufferingGoal: 1.5, bufferBehind: 30 },
+            abr: { defaultBandwidthEstimate: 5_000_000 }
+          });
 
           const ne = player.getNetworkingEngine?.();
           if (ne && ne.registerRequestFilter) {
@@ -159,16 +163,19 @@ export default function VideoPlayer({
           console.error("[Player/HLS]", e);
           try { await playerRef.current?.destroy(); } catch {}
           playerRef.current = null;
-          await attachFile(v, hlsToFile(resolvedSrc));
+          // Live sans HLS non supporté → on ne force pas /file ici
+          setLoading(false);
         }
       } else {
-        await attachFile(v, resolvedSrc);
+        // Cas restant: source directe → fichier
+        attachFile(v, resolvedSrc);
       }
 
       return () => {
         v.removeEventListener("waiting", onWaiting);
         v.removeEventListener("playing", onPlaying);
         v.removeEventListener("canplay", onCanPlay);
+        v.removeEventListener("canplaythrough", onCanPlayThrough);
       };
     })();
 
@@ -217,8 +224,6 @@ export default function VideoPlayer({
     if (!langOrOff) { p.setTextTrackVisibility(false); setTextSel({ lang: null, enabled: false }); }
     else { p.setTextTrackVisibility(true); p.selectTextLanguage(langOrOff); setTextSel({ lang: langOrOff, enabled: true }); }
   };
-
-  const displayDur = (Number.isFinite(dur) && dur > 0 && dur !== Infinity) ? dur : (knownDur ?? NaN);
 
   return (
     <div className="relative w-full h-full">
@@ -270,7 +275,7 @@ export default function VideoPlayer({
         </select>
       </div>
       <div className="absolute left-3 bottom-3 text-[11px] rounded bg-black/50 text-white px-2 py-1">
-        {fmt(t)} / {fmt(displayDur)}
+        {fmt(t)} / {fmt(dur)}
       </div>
     </div>
   );
