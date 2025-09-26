@@ -14,23 +14,18 @@ pool.on("error", (e) => console.error("[PG ERROR]", e));
 const TMDB_KEY = process.env.TMDB_API_KEY;
 const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600);
 
-// 1 = transcode MKV -> MP4 (audio AAC) si nécessaire
-const TRANSCODE_MKV = String(process.env.TRANSCODE_MKV || "1") === "1";
+// 0 = pas de transcodage MKV (recommandé si ffmpeg absent). 1 = tenter transcodage MKV→MP4/AAC.
+const TRANSCODE_MKV = String(process.env.TRANSCODE_MKV || "0") === "1";
 
 /* ========== Utils ========== */
 const b64u = (s) =>
-  Buffer.from(String(s), "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  Buffer.from(String(s), "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 const fromB64u = (s) => {
   let t = String(s).replace(/-/g, "+").replace(/_/g, "/");
   while (t.length % 4) t += "=";
   return Buffer.from(t, "base64").toString("utf8");
-};
-const parseHMS = (str) => {
-  if (!str) return 0;
-  const m = String(str).trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
-  if (!m) return 0;
-  const h = Number(m[1] || 0), mn = Number(m[2] || 0), s = Number(m[3] || 0);
-  return h * 3600 + mn * 60 + s;
 };
 
 /* ========== Auth minimale ========== */
@@ -168,6 +163,8 @@ async function tmdbDetails(kind, id) {
   u.searchParams.set("language", "fr-FR");
   return fetchJson(u.toString());
 }
+
+/* ========== Resolvers (light) ========== */
 async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
   if (!refresh) {
     const cached = await getCache("movie", vodId);
@@ -206,7 +203,7 @@ async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
 /* ========== Upstream policy (strict|public|off) ========== */
 function isPrivateIPv4(ip) {
   const o = ip.split(".").map(Number);
-  if (o.length !== 4 || o.some((n) => Number.isNaN(n))) return false;
+  if (o.length !== 4 || o.some(n => Number.isNaN(n))) return false;
   const [a, b] = o;
   if (a === 10) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
@@ -252,7 +249,7 @@ router.get("/:kind(movie|series|live)/:id/stream-url", (_req, res) =>
   res.status(410).json({ error: "direct-url-disabled" })
 );
 
-// HLS live -> réécriture; VOD -> /file
+// HLS: live réécrit, VOD redirigé vers /file
 router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -265,11 +262,11 @@ router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
     if (!creds) return res.status(404).json({ error: "no-xtream" });
 
     const candidates = (base) => {
-      const root = base.replace(/\/$/, "");
+      const root = base.replace(/\/$/,"");
       return [
         `${root}/live/${creds.username}/${creds.password}/${id}.m3u8`,
         `${root}/live/${creds.username}/${creds.password}/${id}.ts`,
-        `${root}/live/${creds.username}/${creds.password}/${id}`,
+        `${root}/live/${creds.username}/${creds.password}/${id}`
       ];
     };
 
@@ -316,11 +313,12 @@ router.get("/:kind(movie|series|live)/:id/hls.m3u8", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Proxy générique (+ Content-Duration / X-Content-Duration facultatifs)
+// Proxy via base64url dans le chemin
 router.get("/proxy/u/:b64", async (req, res, next) => {
   try {
     const userId = getUserId(req);
     if (!userId) return res.sendStatus(401);
+
     const creds = await getCreds(userId);
     if (!creds) return res.status(404).json({ error: "no-xtream" });
 
@@ -328,12 +326,11 @@ router.get("/proxy/u/:b64", async (req, res, next) => {
     if (!/^https?:\/\//i.test(url)) { const e = new Error("missing url"); e.status = 400; throw e; }
     await assertAllowedUpstream(url, creds.baseUrl);
 
-    const headers = { "User-Agent": "VLC/3.0", Referer: creds.baseUrl + "/" };
+    const headers = { "User-Agent": "VLC/3.0", "Referer": creds.baseUrl + "/" };
     if (req.headers.range) headers.Range = req.headers.range;
     if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
 
     const up = await fetchWithTimeout(url, 15000, headers);
-
     const ct = up.headers.get("content-type");
     const cr = up.headers.get("content-range");
     const ar = up.headers.get("accept-ranges");
@@ -342,24 +339,18 @@ router.get("/proxy/u/:b64", async (req, res, next) => {
     if (cr) res.setHeader("Content-Range", cr);
     if (ar) res.setHeader("Accept-Ranges", ar);
     if (cl) res.setHeader("Content-Length", cl);
-
-    const hinted = Number(req.query.d || 0);
-    if (Number.isFinite(hinted) && hinted > 0) {
-      res.setHeader("Content-Duration", String(Math.floor(hinted)));
-      res.setHeader("X-Content-Duration", String(Math.floor(hinted)));
-    }
-
     res.setHeader("Cache-Control", "no-store");
     res.status(up.status);
     if (up.body) Readable.fromWeb(up.body).pipe(res); else res.end();
   } catch (e) { next(e); }
 });
 
-// Compat query
+// Ancienne route query (compat)
 router.get("/proxy", async (req, res, next) => {
   try {
     const userId = getUserId(req);
     if (!userId) return res.sendStatus(401);
+
     const creds = await getCreds(userId);
     if (!creds) return res.status(404).json({ error: "no-xtream" });
 
@@ -367,7 +358,7 @@ router.get("/proxy", async (req, res, next) => {
     if (!/^https?:\/\//i.test(url)) { const e = new Error("missing url"); e.status = 400; throw e; }
     await assertAllowedUpstream(url, creds.baseUrl);
 
-    const headers = { "User-Agent": "VLC/3.0", Referer: creds.baseUrl + "/" };
+    const headers = { "User-Agent": "VLC/3.0", "Referer": creds.baseUrl + "/" };
     if (req.headers.range) headers.Range = req.headers.range;
     if (req.headers["if-range"]) headers["If-Range"] = req.headers["if-range"];
 
@@ -380,20 +371,13 @@ router.get("/proxy", async (req, res, next) => {
     if (cr) res.setHeader("Content-Range", cr);
     if (ar) res.setHeader("Accept-Ranges", ar);
     if (cl) res.setHeader("Content-Length", cl);
-
-    const hinted = Number(req.query.d || 0);
-    if (Number.isFinite(hinted) && hinted > 0) {
-      res.setHeader("Content-Duration", String(Math.floor(hinted)));
-      res.setHeader("X-Content-Duration", String(Math.floor(hinted)));
-    }
-
     res.setHeader("Cache-Control", "no-store");
     res.status(up.status);
     if (up.body) Readable.fromWeb(up.body).pipe(res); else res.end();
   } catch (e) { next(e); }
 });
 
-// Fallback fichiers (VOD/Live) — passe la durée au proxy/transcode via ?d=
+// Fallback fichiers (VOD/Live)
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -444,7 +428,6 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
     let fileUrl = null;
     let containerExt = null;
     let streamId = id;
-    let durationHint = 0;
 
     if (kind === "live") {
       const extOrder = [".m3u8", ".ts"];
@@ -460,9 +443,6 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
           if (sid) { streamId = String(sid); notes.push(`resolved stream_id=${streamId}`); }
           const ext = String(info?.movie_data?.container_extension || info?.info?.container_extension || "").trim();
           if (ext) { containerExt = "." + ext.replace(/^\.+/, ""); notes.push(`container_extension=${containerExt}`); }
-          durationHint =
-            Number(info?.movie_data?.duration_secs || info?.info?.duration_secs || 0) ||
-            parseHMS(info?.movie_data?.duration || info?.info?.duration || "");
         } catch (e) { notes.push(`get_vod_info error: ${e.message || e}`); }
       }
 
@@ -481,28 +461,31 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
       return res.status(404).json({ error: "no-file" });
     }
 
-    try { await assertAllowedUpstream(fileUrl, creds0.baseUrl); } catch (e) {}
+    try { await assertAllowedUpstream(fileUrl, creds0.baseUrl); } catch (e) { if (debug) notes.push(String(e)); }
 
-    const isMkv = /\.mkv(\?|$)/i.test(fileUrl) || (containerExt && containerExt.toLowerCase() === ".mkv");
-    if (TRANSCODE_MKV && isMkv && (kind === "movie" || kind === "series")) {
-      const qs = `u=${encodeURIComponent(b64u(fileUrl))}${durationHint>0?`&d=${Math.floor(durationHint)}`:""}`;
-      return res.redirect(302, `/api/media/${kind}/${id}/transcode.mp4?${qs}`);
+    // Transcodage MKV optionnel
+    if (
+      TRANSCODE_MKV &&
+      ( /\.mkv(\?|$)/i.test(fileUrl) || (containerExt && containerExt.toLowerCase() === ".mkv") ) &&
+      (kind === "movie" || kind === "series")
+    ) {
+      const u = `/api/media/${kind}/${id}/transcode.mp4?u=${encodeURIComponent(b64u(fileUrl))}`;
+      return res.redirect(302, u);
     }
 
-    // Proxy direct avec indice de durée
-    const qs = durationHint > 0 ? `?d=${Math.floor(durationHint)}` : "";
-    req.url = `/proxy/u/${b64u(fileUrl)}${qs}`;
+    // Route interne proxy (sans préfixe)
+    req.url = `/proxy/u/${b64u(fileUrl)}`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
 
-// Transcodage MKV→MP4 (audio AAC). Répond au HEAD et pousse Content-Duration.
+// Transcodage opportuniste MKV→MP4/AAC avec fallback proxy
 router.get("/:kind(movie|series)/:id/transcode.mp4", async (req, res, next) => {
   try {
     if (!TRANSCODE_MKV) return res.status(404).json({ error: "transcode-disabled" });
-
     const userId = getUserId(req);
     if (!userId) return res.sendStatus(401);
+
     const creds = await getCreds(userId);
     if (!creds) return res.status(404).json({ error: "no-xtream" });
 
@@ -510,48 +493,26 @@ router.get("/:kind(movie|series)/:id/transcode.mp4", async (req, res, next) => {
     if (!/^https?:\/\//i.test(src)) return res.status(400).json({ error: "missing src" });
     try { await assertAllowedUpstream(src, creds.baseUrl); } catch {}
 
-    const hinted = Number(req.query.d || 0);
-    if (Number.isFinite(hinted) && hinted > 0) {
-      res.setHeader("Content-Duration", String(Math.floor(hinted)));
-      res.setHeader("X-Content-Duration", String(Math.floor(hinted)));
-    }
-
-    // HEAD => pas de transcodage, juste les en-têtes
-    if (req.method === "HEAD") {
-      res.setHeader("Content-Type", "video/mp4");
-      res.setHeader("Cache-Control", "no-store");
-      return res.status(200).end();
-    }
-
     const args = [
-      "-user_agent", "VLC/3.0",
-      "-headers", `Referer: ${creds.baseUrl}/\r\n`,
       "-fflags", "nobuffer",
       "-rw_timeout", "2000000",
-      "-reconnect", "1",
-      "-reconnect_streamed", "1",
-      "-reconnect_delay_max", "2",
-      "-probesize", "1M",
-      "-analyzeduration", "0",
       "-i", src,
       "-map", "0:v:0?", "-map", "0:a:0?",
-      "-c:v", "copy",
-      "-c:a", "aac", "-b:a", "160k",
-      "-ac", "2",
+      "-c:v", "libx264", "-preset", "veryfast", "-tune", "fastdecode", "-crf", "22", "-bf", "0",
+      "-c:a", "aac", "-b:a", "128k", "-ac", "2",
       "-movflags", "frag_keyframe+empty_moov+faststart",
-      "-max_interleave_delta", "0",
       "-f", "mp4", "pipe:1"
     ];
 
     res.setHeader("Content-Type", "video/mp4");
     res.setHeader("Cache-Control", "no-store");
 
-    const ff = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "inherit"] });
+    const ff = spawn("ffmpeg", args, { stdio: ["ignore","pipe","inherit"] });
 
     const fallback = () => {
       if (!res.headersSent) {
-        const q = encodeURIComponent(b64u(src));
-        res.redirect(302, `/api/media/proxy/u/${q}${hinted>0?`?d=${Math.floor(hinted)}`:""}`);
+        res.setHeader("Cache-Control", "no-store");
+        res.redirect(302, `/api/media/proxy/u/${encodeURIComponent(b64u(src))}`);
       }
     };
 
@@ -564,10 +525,8 @@ router.get("/:kind(movie|series)/:id/transcode.mp4", async (req, res, next) => {
 
 /* ========== Metadata (min) ========== */
 router.get("/movie/:id", async (req, res, next) => {
-  try {
-    const out = await resolveMovie(getUserId(req), req.params.id, { refresh: req.query.refresh === "1" });
-    res.json(out);
-  } catch (e) { e.status = e.status || 500; next(e); }
+  try { res.json(await resolveMovie(getUserId(req), req.params.id, { refresh: req.query.refresh === "1" })); }
+  catch (e) { e.status = e.status || 500; next(e); }
 });
 
 export default router;
