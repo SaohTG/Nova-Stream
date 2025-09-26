@@ -529,4 +529,85 @@ router.get("/movie/:id", async (req, res, next) => {
   catch (e) { e.status = e.status || 500; next(e); }
 });
 
+/* ========== Series episodes resolver (S/E → stream_id → file) ========== */
+
+async function getSeriesInfo(creds, seriesId) {
+  return fetchJson(
+    buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series_info", { series_id: seriesId })
+  );
+}
+
+function normalizeSeriesEpisodes(info) {
+  const src = info?.episodes || {};
+  const bySeason = {};
+  const flat = [];
+  let idx = 0;
+
+  for (const [seasonKey, arr] of Object.entries(src)) {
+    const s = Number(seasonKey) || 1;
+    const list = Array.isArray(arr) ? arr.slice().sort((a, b) =>
+      (Number(a.episode_num ?? a.num ?? a.episode ?? 0)) - (Number(b.episode_num ?? b.num ?? b.episode ?? 0))
+    ) : [];
+    for (const it of list) {
+      const e = Number(it.episode_num ?? it.num ?? it.episode ?? ++idx);
+      const streamId = it.id ?? it.stream_id ?? it.episode_id ?? it.series_id;
+      const title = String(it.title ?? it.name ?? it.info?.title ?? `S${s}E${e}`).trim();
+      const ext = "." + String(it.container_extension ?? it.info?.container_extension ?? "mkv").replace(/^\.+/, "");
+      const node = { s, e, stream_id: String(streamId || ""), title, ext, index: flat.length };
+      bySeason[s] ??= {};
+      bySeason[s][e] = node;
+      flat.push(node);
+    }
+  }
+  return { bySeason, flat };
+}
+
+// Liste normalisée S/E
+router.get("/series/:seriesId/episodes", async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+    const creds = await getCreds(userId);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const info = await getSeriesInfo(creds, req.params.seriesId);
+    const map = normalizeSeriesEpisodes(info);
+    res.json(map);
+  } catch (e) { next(e); }
+});
+
+// Lecture par S/E → redirige vers /api/media/series/:streamId/file
+router.get("/series/:seriesId/episode/:s/:e/file", async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+    const creds = await getCreds(userId);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const info = await getSeriesInfo(creds, req.params.seriesId);
+    const { bySeason } = normalizeSeriesEpisodes(info);
+    const ep = bySeason?.[Number(req.params.s)]?.[Number(req.params.e)];
+    if (!ep?.stream_id) return res.status(404).json({ error: "episode_not_found" });
+
+    return res.redirect(302, `/api/media/series/${ep.stream_id}/file`);
+  } catch (e) { next(e); }
+});
+
+// Fallback par index d’apparition si S/E absents
+router.get("/series/:seriesId/episode/by-index/:i/file", async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+    const creds = await getCreds(userId);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const info = await getSeriesInfo(creds, req.params.seriesId);
+    const { flat } = normalizeSeriesEpisodes(info);
+    const ep = flat?.[Number(req.params.i)];
+    if (!ep?.stream_id) return res.status(404).json({ error: "episode_not_found" });
+
+    return res.redirect(302, `/api/media/series/${ep.stream_id}/file`);
+  } catch (e) { next(e); }
+});
+
 export default router;
