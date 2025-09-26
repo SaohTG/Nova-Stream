@@ -15,7 +15,6 @@ const TMDB_KEY = process.env.TMDB_API_KEY;
 const TTL = Number(process.env.MEDIA_TTL_SECONDS || 7 * 24 * 3600);
 
 // 0 = pas de transcodage MKV (recommandé si ffmpeg absent). 1 = tenter transcodage MKV→MP4/AAC.
-// Note: même si activé, on évite le MP4 fragmenté pipe:1 pour préserver la durée; on préfère HLS VOD.
 const TRANSCODE_MKV = String(process.env.TRANSCODE_MKV || "0") === "1";
 
 /* ========== Utils ========== */
@@ -28,26 +27,6 @@ const fromB64u = (s) => {
   while (t.length % 4) t += "=";
   return Buffer.from(t, "base64").toString("utf8");
 };
-
-async function fetchWithTimeout(url, ms = 12000, headers = {}, init = {}) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), ms);
-  try { return await fetch(url, { signal: ctrl.signal, headers, redirect: "follow", ...init }); }
-  finally { clearTimeout(t); }
-}
-async function fetchJson(url) {
-  const r = await fetchWithTimeout(url, 12000, { "User-Agent": "NovaStream/1.0" });
-  const txt = await r.text();
-  if (!r.ok) { const e = new Error(`HTTP_${r.status}`); e.status = r.status; e.body = txt; throw e; }
-  try { return JSON.parse(txt); } catch { const e = new Error("BAD_JSON"); e.body = txt; throw e; }
-}
-async function fetchTextOk(url, ms = 8000) {
-  const r = await fetchWithTimeout(url, ms, { "User-Agent": "VLC/3.0" });
-  if (!r.ok) return null;
-  return await r.text();
-}
-const isVodM3u8 = (txt) =>
-  !!txt && txt.includes("#EXTM3U") && txt.includes("#EXT-X-ENDLIST");
 
 /* ========== Auth minimale ========== */
 function parseCookies(req) {
@@ -163,47 +142,17 @@ function buildPlayerApi(baseUrl, username, password, action, extra = {}) {
   for (const [k, v] of Object.entries(extra)) if (v != null) u.searchParams.set(k, String(v));
   return u.toString();
 }
-
-/* ========== Upstream policy (strict|public|off) ========== */
-function isPrivateIPv4(ip) {
-  const o = ip.split(".").map(Number);
-  if (o.length !== 4 || o.some(n => Number.isNaN(n))) return false;
-  const [a, b] = o;
-  if (a === 10) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 127) return true;
-  if (a === 169 && b === 254) return true;
-  if (a === 100 && b >= 64 && b <= 127) return true;
-  if (a === 0) return true;
-  if (a >= 224) return true;
-  return false;
+async function fetchWithTimeout(url, ms = 12000, headers = {}, init = {}) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try { return await fetch(url, { signal: ctrl.signal, headers, redirect: "follow", ...init }); }
+  finally { clearTimeout(t); }
 }
-function isPrivateIPv6(ip) {
-  const s = ip.toLowerCase();
-  return s === "::1" || s.startsWith("fc") || s.startsWith("fd") || s.startsWith("fe80") || s.startsWith("ff");
-}
-async function assertAllowedUpstream(targetUrl, baseUrl) {
-  const mode = (process.env.SECURE_PROXY_MODE || "public").toLowerCase();
-  const u = new URL(targetUrl);
-  if (!/^https?:$/.test(u.protocol)) throw Object.assign(new Error("bad-scheme"), { status: 400 });
-  if (u.username || u.password) throw Object.assign(new Error("bad-auth"), { status: 400 });
-  if (mode === "off") return;
-  if (mode === "strict") {
-    const b = new URL(baseUrl);
-    const bPort = Number(b.port || (b.protocol === "https:" ? 443 : 80));
-    const uPort = Number(u.port || (u.protocol === "https:" ? 443 : 80));
-    if (b.hostname !== u.hostname || bPort !== uPort || b.protocol !== u.protocol) {
-      const e = new Error("forbidden host"); e.status = 400; throw e;
-    }
-    return;
-  }
-  const addrs = await dns.lookup(u.hostname, { all: true });
-  if (!addrs.length) { const e = new Error("dns-failed"); e.status = 400; throw e; }
-  for (const a of addrs) {
-    if (a.family === 4 && isPrivateIPv4(a.address)) { const e = new Error("private-ipv4"); e.status = 400; throw e; }
-    if (a.family === 6 && isPrivateIPv6(a.address)) { const e = new Error("private-ipv6"); e.status = 400; throw e; }
-  }
+async function fetchJson(url) {
+  const r = await fetchWithTimeout(url, 12000, { "User-Agent": "NovaStream/1.0" });
+  const txt = await r.text();
+  if (!r.ok) { const e = new Error(`HTTP_${r.status}`); e.status = r.status; e.body = txt; throw e; }
+  try { return JSON.parse(txt); } catch { const e = new Error("BAD_JSON"); e.body = txt; throw e; }
 }
 
 /* ========== TMDB minimal ========== */
@@ -249,6 +198,48 @@ async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
   };
   await putCache("movie", vodId, tmdbId, payload.title, payload);
   return payload;
+}
+
+/* ========== Upstream policy (strict|public|off) ========== */
+function isPrivateIPv4(ip) {
+  const o = ip.split(".").map(Number);
+  if (o.length !== 4 || o.some(n => Number.isNaN(n))) return false;
+  const [a, b] = o;
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
+  if (a === 0) return true;
+  if (a >= 224) return true;
+  return false;
+}
+function isPrivateIPv6(ip) {
+  const s = ip.toLowerCase();
+  return s === "::1" || s.startsWith("fc") || s.startsWith("fd") || s.startsWith("fe80") || s.startsWith("ff");
+}
+async function assertAllowedUpstream(targetUrl, baseUrl) {
+  const mode = (process.env.SECURE_PROXY_MODE || "public").toLowerCase();
+  const u = new URL(targetUrl);
+  if (!/^https?:$/.test(u.protocol)) throw Object.assign(new Error("bad-scheme"), { status: 400 });
+  if (u.username || u.password) throw Object.assign(new Error("bad-auth"), { status: 400 });
+  if (mode === "off") return;
+  if (mode === "strict") {
+    const b = new URL(baseUrl);
+    const bPort = Number(b.port || (b.protocol === "https:" ? 443 : 80));
+    const uPort = Number(u.port || (u.protocol === "https:" ? 443 : 80));
+    if (b.hostname !== u.hostname || bPort !== uPort || b.protocol !== u.protocol) {
+      const e = new Error("forbidden host"); e.status = 400; throw e;
+    }
+    return;
+  }
+  const addrs = await dns.lookup(u.hostname, { all: true });
+  if (!addrs.length) { const e = new Error("dns-failed"); e.status = 400; throw e; }
+  for (const a of addrs) {
+    if (a.family === 4 && isPrivateIPv4(a.address)) { const e = new Error("private-ipv4"); e.status = 400; throw e; }
+    if (a.family === 6 && isPrivateIPv6(a.address)) { const e = new Error("private-ipv6"); e.status = 400; throw e; }
+  }
 }
 
 /* ========== Routes ========== */
@@ -386,7 +377,7 @@ router.get("/proxy", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Fallback fichiers (VOD/Live) — priorise HLS VOD avec ENDLIST pour durée connue
+// Fallback fichiers (VOD/Live)
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -414,17 +405,12 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
       for (const u of urls) {
         tried.push(u);
         try {
-          if (u.endsWith(".m3u8")) {
-            const txt = await fetchTextOk(u, 9000);
-            if (isVodM3u8(txt)) return u; // n’accepte que VOD fermé
-          } else {
-            let r = await fetchWithTimeout(u, 7000, { "User-Agent": "VLC/3.0" }, { method: "HEAD" });
-            if (r.ok) return u;
-            r = await fetchWithTimeout(u, 7000, { "User-Agent": "VLC/3.0", Range: "bytes=0-1023" }, { method: "GET" });
-            if (r.ok) return u;
-            r = await fetchWithTimeout(u, 7000, { "User-Agent": "VLC/3.0" }, { method: "GET" });
-            if (r.ok) return u;
-          }
+          let r = await fetchWithTimeout(u, 7000, { "User-Agent": "VLC/3.0" }, { method: "HEAD" });
+          if (r.ok) return u;
+          r = await fetchWithTimeout(u, 7000, { "User-Agent": "VLC/3.0", Range: "bytes=0-1023" }, { method: "GET" });
+          if (r.ok) return u;
+          r = await fetchWithTimeout(u, 7000, { "User-Agent": "VLC/3.0" }, { method: "GET" });
+          if (r.ok) return u;
         } catch {}
       }
       return null;
@@ -460,16 +446,9 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
         } catch (e) { notes.push(`get_vod_info error: ${e.message || e}`); }
       }
 
-      // Priorité: HLS .m3u8 VOD fermé, puis MP4, puis MKV, puis TS
-      const extOrder = [".m3u8", ".mp4", ".mkv", ".ts"];
-      if (containerExt && !extOrder.includes(containerExt.toLowerCase())) {
-        // si l’extension déclarée est autre, on la teste en tête (sauf .m3u8 déjà premier)
-        if (containerExt.toLowerCase() === ".m3u8") {
-          // déjà priorisé
-        } else {
-          extOrder.unshift(containerExt.toLowerCase());
-        }
-      }
+      const extOrder = [];
+      if (containerExt) extOrder.push(containerExt.toLowerCase());
+      for (const e of [".mp4", ".mkv", ".ts", ".m3u8"]) if (!extOrder.includes(e)) extOrder.push(e);
 
       for (const b of bases) {
         const hit = await tryUrls(buildCandidates(b, kind, streamId, extOrder));
@@ -484,8 +463,15 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
 
     try { await assertAllowedUpstream(fileUrl, creds0.baseUrl); } catch (e) { if (debug) notes.push(String(e)); }
 
-    // IMPORTANT: ne plus rediriger les MKV vers /transcode.mp4 en pipe:1 (durée inconnue).
-    // On proxy la source; côté front, préférer un player HLS ou MediaSource si nécessaire.
+    // Transcodage MKV optionnel
+    if (
+      TRANSCODE_MKV &&
+      ( /\.mkv(\?|$)/i.test(fileUrl) || (containerExt && containerExt.toLowerCase() === ".mkv") ) &&
+      (kind === "movie" || kind === "series")
+    ) {
+      const u = `/api/media/${kind}/${id}/transcode.mp4?u=${encodeURIComponent(b64u(fileUrl))}`;
+      return res.redirect(302, u);
+    }
 
     // Route interne proxy (sans préfixe)
     req.url = `/proxy/u/${b64u(fileUrl)}`;
@@ -493,9 +479,7 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Transcodage opportuniste MKV→MP4/AAC (conservé pour compat, évité par /file)
-// Attention: sortie fragmented MP4 pipe:1 => durée inconnue dans la plupart des players.
-// Gardé pour dépannage ponctuel, non utilisé par défaut.
+// Transcodage opportuniste MKV→MP4/AAC avec fallback proxy
 router.get("/:kind(movie|series)/:id/transcode.mp4", async (req, res, next) => {
   try {
     if (!TRANSCODE_MKV) return res.status(404).json({ error: "transcode-disabled" });
@@ -516,7 +500,6 @@ router.get("/:kind(movie|series)/:id/transcode.mp4", async (req, res, next) => {
       "-map", "0:v:0?", "-map", "0:a:0?",
       "-c:v", "libx264", "-preset", "veryfast", "-tune", "fastdecode", "-crf", "22", "-bf", "0",
       "-c:a", "aac", "-b:a", "128k", "-ac", "2",
-      // Gardé tel quel, mais déconseillé pour l’UI de durée:
       "-movflags", "frag_keyframe+empty_moov+faststart",
       "-f", "mp4", "pipe:1"
     ];
