@@ -377,7 +377,7 @@ router.get("/proxy", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Fallback fichiers (VOD/Live)
+// Fallback fichiers (VOD/Live) — lecture directe par stream_id pour séries
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -449,7 +449,7 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
       // ordre d’essai des extensions
       const extOrder = [];
       if (kind === "series") {
-        // Les épisodes séries sont en .mkv → priorité .mkv
+        // épisodes séries: priorité .mkv
         extOrder.push(".mkv", ".mp4", ".ts", ".m3u8");
       } else {
         if (containerExt) extOrder.push(containerExt.toLowerCase());
@@ -535,38 +535,9 @@ router.get("/movie/:id", async (req, res, next) => {
   catch (e) { e.status = e.status || 500; next(e); }
 });
 
-/* ========== Séries via playlist Xtream (#EXTINF “Sx Ey” + URL /series/USER/PASS/STREAM_ID.mkv) ========== */
+/* ========== Séries: M3U fourni et Xtream ========== */
 
-// 1) Construit un M3U normalisé pour la série depuis Xtream
-async function buildSeriesM3UFromXtream(creds, seriesId) {
-  const infoUrl = buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series_info", { series_id: seriesId });
-  const data = await fetchJson(infoUrl);
-
-  const seriesTitle = String(data?.info?.name || `Series_${seriesId}`).trim();
-  const lines = ["#EXTM3U"];
-  const episodesBySeason = data?.episodes || {};
-
-  for (const [seasonStr, eps] of Object.entries(episodesBySeason)) {
-    const s = Number(seasonStr) || 1;
-    const arr = Array.isArray(eps) ? eps.slice() : [];
-    arr.sort((a,b) => Number(a.episode_num ?? a.num ?? 0) - Number(b.episode_num ?? b.num ?? 0));
-    for (const ep of arr) {
-      const e = Number(ep.episode_num ?? ep.num ?? 0) || 0;
-      const streamId = String(ep.id ?? ep.stream_id ?? "");
-      if (!streamId) continue;
-
-      const title = `${seriesTitle} S${s} E${e}`;
-      const root = new URL(creds.baseUrl).toString().replace(/\/$/,"");
-      const play = `${root}/series/${creds.username}/${creds.password}/${streamId}.mkv`;
-
-      lines.push(`#EXTINF:-1,${title}`);
-      lines.push(play);
-    }
-  }
-  return lines.join("\n");
-}
-
-// 2) Parse M3U → { bySeason, flat }
+// ——— Parse M3U (#EXTINF "... S<S> E<E>" + URL suivante /series/USER/PASS/<STREAM_ID>.mkv)
 function parseM3USeries(text) {
   const lines = String(text).split(/\r?\n/).filter(Boolean);
   const bySeason = {};
@@ -578,7 +549,7 @@ function parseM3USeries(text) {
 
     const title = meta.replace(/^#EXTINF:[^,]*,?/, "").trim();
     const m = /S\s*(\d+)\s*E\s*(\d+)/i.exec(title);
-    if (!m) continue;
+    if (!m) continue; // strict
     const s = +m[1], e = +m[2];
 
     let streamId = null;
@@ -596,60 +567,127 @@ function parseM3USeries(text) {
   return { bySeason, flat };
 }
 
-// 3) S/E → stream_id via M3U généré
-async function resolveSeriesStreamIdFromSe(creds, seriesId, s, e) {
-  const m3u = await buildSeriesM3UFromXtream(creds, seriesId);
-  const { bySeason } = parseM3USeries(m3u);
-  const hit = bySeason?.[Number(s)]?.[Number(e)];
-  return hit?.stream_id || null;
-}
-
-// Liste S/E normalisée depuis M3U
+// ——— GET: liste S/E depuis une URL M3U (optionnel)
 router.get("/series/:seriesId/episodes/m3u", async (req, res, next) => {
   try {
     const userId = getUserId(req); if (!userId) return res.sendStatus(401);
-    const creds = await getCreds(userId); if (!creds) return res.status(404).json({ error: "no-xtream" });
-    const text = await buildSeriesM3UFromXtream(creds, req.params.seriesId);
-    res.json(parseM3USeries(text));
+    const src = String(req.query.src || "").trim();
+    if (!/^https?:\/\//i.test(src)) return res.status(400).json({ error: "missing_m3u_src" });
+    const r = await fetchWithTimeout(src, 15000, { "User-Agent": "NovaStream/1.0" });
+    const text = await r.text();
+    return res.json(parseM3USeries(text));
   } catch (e) { next(e); }
 });
 
-// Lecture par S/E via M3U → redirige sur /series/<stream_id>/file
-router.get("/series/:seriesId/episode/:s/:e/file", async (req, res, next) => {
+// ——— POST: liste S/E depuis le contenu M3U brut (optionnel)
+router.post("/series/:seriesId/episodes/m3u", async (req, res, next) => {
   try {
     const userId = getUserId(req); if (!userId) return res.sendStatus(401);
-    const creds = await getCreds(userId); if (!creds) return res.status(404).json({ error: "no-xtream" });
+    const text = typeof req.body === "string" ? req.body : (req.body?.m3u || "");
+    if (!String(text).trim()) return res.status(400).json({ error: "empty_body" });
+    return res.json(parseM3USeries(String(text)));
+  } catch (e) { next(e); }
+});
 
-    const sid = await resolveSeriesStreamIdFromSe(creds, req.params.seriesId, req.params.s, req.params.e);
-    if (!sid) return res.status(404).json({ error: "episode_not_found" });
+// ——— Lecture par S/E à partir d'une M3U fournie (src=URL ou b64=contenu)
+router.get("/series/:seriesId/episode/:s/:e/file-from-m3u", async (req, res, next) => {
+  try {
+    const userId = getUserId(req); if (!userId) return res.sendStatus(401);
 
-    return res.redirect(302, `/api/media/series/${sid}/file`);
+    let map = null;
+    if (req.query.src) {
+      const r = await fetchWithTimeout(String(req.query.src), 15000, { "User-Agent": "NovaStream/1.0" });
+      const text = await r.text();
+      map = parseM3USeries(text);
+    } else if (req.query.b64) {
+      const text = fromB64u(String(req.query.b64));
+      map = parseM3USeries(text);
+    } else {
+      return res.status(400).json({ error: "missing_m3u_src_or_b64" });
+    }
+
+    const s = Number(req.params.s), e = Number(req.params.e);
+    const ep = map.bySeason?.[s]?.[e];
+    if (!ep?.stream_id) return res.status(404).json({ error: "episode_not_found" });
+
+    return res.redirect(302, `/api/media/series/${ep.stream_id}/file`);
+  } catch (e) { next(e); }
+});
+
+// ——— Résolution S/E via Xtream get_series_info (quand tu passes un vrai series_id)
+async function getSeriesInfo(creds, seriesId) {
+  return fetchJson(
+    buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series_info", { series_id: seriesId })
+  );
+}
+function normalizeSeriesEpisodes(info) {
+  const src = info?.episodes || {};
+  const bySeason = {};
+  const flat = [];
+  let idx = 0;
+
+  for (const [seasonKey, arr] of Object.entries(src)) {
+    const s = Number(seasonKey) || 1;
+    const list = Array.isArray(arr) ? arr.slice().sort((a, b) =>
+      (Number(a.episode_num ?? a.num ?? a.episode ?? 0)) - (Number(b.episode_num ?? b.num ?? b.episode ?? 0))
+    ) : [];
+    for (const it of list) {
+      const e = Number(it.episode_num ?? it.num ?? it.episode ?? ++idx);
+      const streamId = it.id ?? it.stream_id ?? it.episode_id ?? it.series_id;
+      const title = String(it.title ?? it.name ?? it.info?.title ?? `S${s}E${e}`).trim();
+      const ext = "." + String(it.container_extension ?? it.info?.container_extension ?? "mkv").replace(/^\.+/, "");
+      const node = { s, e, stream_id: String(streamId || ""), title, ext, index: flat.length };
+      bySeason[s] ??= {};
+      bySeason[s][e] = node;
+      flat.push(node);
+    }
+  }
+  return { bySeason, flat };
+}
+
+// ——— Liste S/E via Xtream
+router.get("/series/:seriesId/episodes", async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+    const creds = await getCreds(userId);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const info = await getSeriesInfo(creds, req.params.seriesId);
+    const map = normalizeSeriesEpisodes(info);
+    res.json(map);
+  } catch (e) { next(e); }
+});
+
+// ——— Lecture S/E via Xtream
+router.get("/series/:seriesId/episode/:s/:e/file", async (req, res, next) => {
+  try {
+    const userId = getUserId(req);
+    if (!userId) return res.sendStatus(401);
+    const creds = await getCreds(userId);
+    if (!creds) return res.status(404).json({ error: "no-xtream" });
+
+    const info = await getSeriesInfo(creds, req.params.seriesId);
+    const { bySeason } = normalizeSeriesEpisodes(info);
+    const ep = bySeason?.[Number(req.params.s)]?.[Number(req.params.e)];
+    if (!ep?.stream_id) return res.status(404).json({ error: "episode_not_found" });
+
+    return res.redirect(302, `/api/media/series/${ep.stream_id}/file`);
   } catch (e) { next(e); }
 });
 
 /* ==== Compat front: /series/:seriesId/season/:s/episode/:e/(file|hls.m3u8) ==== */
-async function _resolveSeriesSe(creds, seriesId, s, e) {
-  return resolveSeriesStreamIdFromSe(creds, seriesId, s, e);
-}
-
 router.get("/series/:seriesId/season/:s/episode/:e/file", async (req, res, next) => {
   try {
-    const userId = getUserId(req); if (!userId) return res.sendStatus(401);
-    const creds = await getCreds(userId); if (!creds) return res.status(404).json({ error: "no-xtream" });
-    const sid = await _resolveSeriesSe(creds, req.params.seriesId, req.params.s, req.params.e);
-    if (!sid) return res.status(404).json({ error: "episode_not_found" });
-    return res.redirect(302, `/api/media/series/${sid}/file`);
+    req.url = `/series/${encodeURIComponent(req.params.seriesId)}/episode/${encodeURIComponent(req.params.s)}/${encodeURIComponent(req.params.e)}/file`;
+    return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
-
 router.get("/series/:seriesId/season/:s/episode/:e/hls.m3u8", async (req, res, next) => {
   try {
-    const userId = getUserId(req); if (!userId) return res.sendStatus(401);
-    const creds = await getCreds(userId); if (!creds) return res.status(404).json({ error: "no-xtream" });
-    const sid = await _resolveSeriesSe(creds, req.params.seriesId, req.params.s, req.params.e);
-    if (!sid) return res.status(404).json({ error: "episode_not_found" });
-    // ton handler /:kind/:id/hls.m3u8 redirige VOD vers /file, donc on garde la même logique
-    return res.redirect(302, `/api/media/series/${sid}/hls.m3u8`);
+    req.url = `/series/${encodeURIComponent(req.params.seriesId)}/episode/${encodeURIComponent(req.params.s)}/${encodeURIComponent(req.params.e)}/hls.m3u8`;
+    // redirigera ensuite vers /file dans le handler HLS générique
+    return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
 
