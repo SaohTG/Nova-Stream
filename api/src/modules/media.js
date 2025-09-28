@@ -377,7 +377,7 @@ router.get("/proxy", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// Fallback fichiers (VOD/Live) — lecture directe par stream_id pour séries
+// Fallback fichiers (VOD/Live)
 router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -467,7 +467,7 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
 
     try { await assertAllowedUpstream(fileUrl, creds0.baseUrl); } catch (e) { if (debug) notes.push(String(e)); }
 
-    // --- Détection MKV par extension OU Content-Type
+    // Détection MKV par extension OU Content-Type
     let isMkv = /\.mkv(\?|$)/i.test(fileUrl) || (containerExt && containerExt.toLowerCase() === ".mkv");
     try {
       const head = await fetchWithTimeout(fileUrl, 6000, { "User-Agent": "VLC/3.0" }, { method: "HEAD" });
@@ -476,22 +476,18 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
     } catch {}
 
     // Transcodage MKV optionnel
-    if (
-      TRANSCODE_MKV &&
-      isMkv &&
-      (kind === "movie" || kind === "series")
-    ) {
+    if (TRANSCODE_MKV && isMkv && (kind === "movie" || kind === "series")) {
       const u = `/api/media/${kind}/${id}/transcode.mp4?u=${encodeURIComponent(b64u(fileUrl))}`;
       return res.redirect(302, u);
     }
 
-    // Route interne proxy (sans préfixe)
+    // Route interne proxy
     req.url = `/proxy/u/${b64u(fileUrl)}`;
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
 
-// Transcodage opportuniste MKV→MP4/AAC avec fallback proxy
+// Transcodage opportuniste MKV→MP4/AAC avec GOP court
 router.get("/:kind(movie|series)/:id/transcode.mp4", async (req, res, next) => {
   try {
     if (!TRANSCODE_MKV) return res.status(404).json({ error: "transcode-disabled" });
@@ -508,10 +504,28 @@ router.get("/:kind(movie|series)/:id/transcode.mp4", async (req, res, next) => {
     const args = [
       "-fflags", "nobuffer",
       "-rw_timeout", "2000000",
+      "-probesize", "50M",
+      "-analyzeduration", "50M",
       "-i", src,
+
       "-map", "0:v:0?", "-map", "0:a:0?",
-      "-c:v", "libx264", "-preset", "veryfast", "-tune", "fastdecode", "-crf", "22", "-bf", "0",
-      "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+      "-c:v", "libx264",
+      "-preset", "veryfast",
+      "-tune", "fastdecode",
+      "-crf", "22",
+      "-bf", "0",
+      "-pix_fmt", "yuv420p",
+
+      // GOP ~2s
+      "-g", "48",
+      "-keyint_min", "48",
+      "-sc_threshold", "0",
+      "-force_key_frames", "expr:gte(t,n_forced*2)",
+
+      "-c:a", "aac",
+      "-b:a", "128k",
+      "-ac", "2",
+
       "-movflags", "frag_keyframe+empty_moov+faststart",
       "-f", "mp4", "pipe:1"
     ];
@@ -543,7 +557,6 @@ router.get("/movie/:id", async (req, res, next) => {
 
 /* ========== Séries: M3U fourni et Xtream ========== */
 
-// ——— Parse M3U (#EXTINF "... S<S> E<E>" + URL suivante /series/USER/PASS/<STREAM_ID>.mkv)
 function parseM3USeries(text) {
   const lines = String(text).split(/\r?\n/).filter(Boolean);
   const bySeason = {};
@@ -573,7 +586,6 @@ function parseM3USeries(text) {
   return { bySeason, flat };
 }
 
-// ——— GET: liste S/E depuis une URL M3U (optionnel)
 router.get("/series/:seriesId/episodes/m3u", async (req, res, next) => {
   try {
     const userId = getUserId(req); if (!userId) return res.sendStatus(401);
@@ -585,7 +597,6 @@ router.get("/series/:seriesId/episodes/m3u", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ——— POST: liste S/E depuis le contenu M3U brut (optionnel)
 router.post("/series/:seriesId/episodes/m3u", async (req, res, next) => {
   try {
     const userId = getUserId(req); if (!userId) return res.sendStatus(401);
@@ -595,7 +606,6 @@ router.post("/series/:seriesId/episodes/m3u", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ——— Lecture par S/E à partir d'une M3U fournie (src=URL ou b64=contenu)
 router.get("/series/:seriesId/episode/:s/:e/file-from-m3u", async (req, res, next) => {
   try {
     const userId = getUserId(req); if (!userId) return res.sendStatus(401);
@@ -620,7 +630,6 @@ router.get("/series/:seriesId/episode/:s/:e/file-from-m3u", async (req, res, nex
   } catch (e) { next(e); }
 });
 
-// ——— Résolution S/E via Xtream get_series_info (quand tu passes un vrai series_id)
 async function getSeriesInfo(creds, seriesId) {
   return fetchJson(
     buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_series_info", { series_id: seriesId })
@@ -651,7 +660,6 @@ function normalizeSeriesEpisodes(info) {
   return { bySeason, flat };
 }
 
-// ——— Liste S/E via Xtream
 router.get("/series/:seriesId/episodes", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -665,7 +673,6 @@ router.get("/series/:seriesId/episodes", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ——— Lecture S/E via Xtream
 router.get("/series/:seriesId/episode/:s/:e/file", async (req, res, next) => {
   try {
     const userId = getUserId(req);
@@ -682,7 +689,7 @@ router.get("/series/:seriesId/episode/:s/:e/file", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-/* ==== Compat front: /series/:seriesId/season/:s/episode/:e/(file|hls.m3u8) ==== */
+/* Compat front */
 router.get("/series/:seriesId/season/:s/episode/:e/file", async (req, res, next) => {
   try {
     req.url = `/series/${encodeURIComponent(req.params.seriesId)}/episode/${encodeURIComponent(req.params.s)}/${encodeURIComponent(req.params.e)}/file`;
