@@ -446,10 +446,8 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
         } catch (e) { notes.push(`get_vod_info error: ${e.message || e}`); }
       }
 
-      // ordre d’essai des extensions
       const extOrder = [];
       if (kind === "series") {
-        // épisodes séries: priorité .mkv
         extOrder.push(".mkv", ".mp4", ".ts", ".m3u8");
       } else {
         if (containerExt) extOrder.push(containerExt.toLowerCase());
@@ -469,10 +467,18 @@ router.get("/:kind(movie|series|live)/:id/file", async (req, res, next) => {
 
     try { await assertAllowedUpstream(fileUrl, creds0.baseUrl); } catch (e) { if (debug) notes.push(String(e)); }
 
+    // --- Détection MKV par extension OU Content-Type
+    let isMkv = /\.mkv(\?|$)/i.test(fileUrl) || (containerExt && containerExt.toLowerCase() === ".mkv");
+    try {
+      const head = await fetchWithTimeout(fileUrl, 6000, { "User-Agent": "VLC/3.0" }, { method: "HEAD" });
+      const ct = (head.headers.get("content-type") || "").toLowerCase();
+      if (ct.includes("matroska") || ct === "video/x-matroska" || ct === "application/x-matroska") isMkv = true;
+    } catch {}
+
     // Transcodage MKV optionnel
     if (
       TRANSCODE_MKV &&
-      ( /\.mkv(\?|$)/i.test(fileUrl) || (containerExt && containerExt.toLowerCase() === ".mkv") ) &&
+      isMkv &&
       (kind === "movie" || kind === "series")
     ) {
       const u = `/api/media/${kind}/${id}/transcode.mp4?u=${encodeURIComponent(b64u(fileUrl))}`;
@@ -549,7 +555,7 @@ function parseM3USeries(text) {
 
     const title = meta.replace(/^#EXTINF:[^,]*,?/, "").trim();
     const m = /S\s*(\d+)\s*E\s*(\d+)/i.exec(title);
-    if (!m) continue; // strict
+    if (!m) continue;
     const s = +m[1], e = +m[2];
 
     let streamId = null;
@@ -686,7 +692,6 @@ router.get("/series/:seriesId/season/:s/episode/:e/file", async (req, res, next)
 router.get("/series/:seriesId/season/:s/episode/:e/hls.m3u8", async (req, res, next) => {
   try {
     req.url = `/series/${encodeURIComponent(req.params.seriesId)}/episode/${encodeURIComponent(req.params.s)}/${encodeURIComponent(req.params.e)}/hls.m3u8`;
-    // redirigera ensuite vers /file dans le handler HLS générique
     return router.handle(req, res, next);
   } catch (e) { next(e); }
 });
