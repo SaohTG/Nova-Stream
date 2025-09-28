@@ -23,6 +23,7 @@ import SearchPage from "./pages/Search.jsx";
 import Title from "./pages/Title.jsx";
 import MyList from "./pages/MyList.jsx";
 import Watch from "./pages/Watch.jsx";
+import Account from "./pages/Account.jsx"; // ← ajout
 
 import Login from "./pages/Login.jsx";
 import Signup from "./pages/Signup.jsx";
@@ -101,6 +102,7 @@ export default function App() {
             {/* Auth OK mais Xtream facultatif */}
             <Route path="/onboarding/xtream" element={<OnboardingXtream />} />
             <Route path="/settings" element={<Settings />} />
+            <Route path="/compte" element={<Account />} /> {/* ← nouvelle page compte */}
 
             {/* Contenus : Xtream requis */}
             <Route element={<RequireXtream />}>
