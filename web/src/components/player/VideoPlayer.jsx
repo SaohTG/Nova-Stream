@@ -2,8 +2,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { postJson } from "../../lib/api";
 
-function fmt(t){ if(!Number.isFinite(t)) return "--:--"; const s=Math.floor(t%60).toString().padStart(2,"0"); const m=Math.floor((t/60)%60).toString().padStart(2,"0"); const h=Math.floor(t/3600); return h?`${h}:${m}:${s}`:`${m}:${s}`; }
-
 async function loadShakaOnce() {
   if (window.shaka) return window.shaka;
   await new Promise((res, rej) => {
@@ -24,25 +22,15 @@ const isHls = (u) => /\.m3u8(\?|$)/i.test(String(u));
 const hlsToFile = (u) => String(u).replace(/\/hls\.m3u8(\?.*)?$/i, "/file$1");
 
 export default function VideoPlayer({
-  src,
-  poster,
-  title,
-  resumeKey,
-  resumeApi = true,
-  startAt = 0,
-  onEnded,
-  showPoster = true,
+  src, poster, title, resumeKey, resumeApi = true, startAt = 0, onEnded, showPoster = true,
 }) {
   const videoRef = useRef(null);
   const playerRef = useRef(null);
   const [dur, setDur] = useState(NaN);
-  const [t, setT] = useState(0);
   const [audios, setAudios] = useState([]);
   const [texts, setTexts] = useState([]);
   const [audioSel, setAudioSel] = useState({ lang: null, role: null });
   const [textSel, setTextSel] = useState({ lang: null, enabled: false });
-
-  const [loading, setLoading] = useState(false);
   const [autoBlocked, setAutoBlocked] = useState(false);
 
   const lsKey = useMemo(() => (resumeKey ? `ns_watch_${resumeKey}` : null), [resumeKey]);
@@ -59,20 +47,16 @@ export default function VideoPlayer({
 
   const resolvedSrc = useMemo(() => (src || null), [src]);
 
-  useEffect(() => { console.log("[Video src]", resolvedSrc); }, [resolvedSrc]);
-
   async function tryPlay(v) {
     v.muted = false;
     v.volume = 1;
-    try { await v.play(); setAutoBlocked(false); }
-    catch { setAutoBlocked(true); }
+    try { await v.play(); setAutoBlocked(false); } catch { setAutoBlocked(true); }
   }
 
   useEffect(() => {
     let destroyed = false;
 
     const attachFile = (v, fileUrl) => {
-      setLoading(true);
       v.preload = "auto";
       v.src = fileUrl;
       const onMeta = () => {
@@ -95,15 +79,6 @@ export default function VideoPlayer({
         playerRef.current = null;
       }
 
-      const onWaiting = () => setLoading(true);
-      const onPlaying = () => setLoading(false);
-      const onCanPlay = () => setLoading(false);
-      const onCanPlayThrough = () => setLoading(false);
-      v.addEventListener("waiting", onWaiting);
-      v.addEventListener("playing", onPlaying);
-      v.addEventListener("canplay", onCanPlay);
-      v.addEventListener("canplaythrough", onCanPlayThrough);
-
       const isLiveSrc = /\/api\/media\/live\//i.test(resolvedSrc);
       const isVodSrc  = /\/api\/media\/(movie|series)\//i.test(resolvedSrc);
 
@@ -112,7 +87,6 @@ export default function VideoPlayer({
         attachFile(v, fileUrl);
       } else if (isLiveSrc && isHls(resolvedSrc)) {
         try {
-          setLoading(true);
           const shaka = await loadShakaOnce();
           shaka.polyfill.installAll?.();
           if (!shaka.Player.isBrowserSupported()) throw new Error("Shaka unsupported");
@@ -130,8 +104,6 @@ export default function VideoPlayer({
           if (ne?.registerRequestFilter) {
             ne.registerRequestFilter((_t, req) => { req.allowCrossSiteCredentials = true; });
           }
-
-          player.addEventListener("error", (e) => console.error("[Shaka error]", e.detail));
 
           const refreshTracks = () => {
             const a = player.getAudioLanguagesAndRoles();
@@ -155,18 +127,10 @@ export default function VideoPlayer({
           console.error("[Player/HLS]", e);
           try { await playerRef.current?.destroy(); } catch {}
           playerRef.current = null;
-          setLoading(false);
         }
       } else {
         attachFile(v, resolvedSrc);
       }
-
-      return () => {
-        v.removeEventListener("waiting", onWaiting);
-        v.removeEventListener("playing", onPlaying);
-        v.removeEventListener("canplay", onCanPlay);
-        v.removeEventListener("canplaythrough", onCanPlayThrough);
-      };
     })();
 
     return () => { destroyed = true; };
@@ -177,7 +141,6 @@ export default function VideoPlayer({
     if (!v) return;
     let lastPush = 0;
     const onTime = () => {
-      setT(v.currentTime || 0);
       setDur(v.duration || dur);
       if (!lsKey) return;
       const now = Date.now();
@@ -226,14 +189,7 @@ export default function VideoPlayer({
         preload="metadata"
         crossOrigin="use-credentials"
       />
-      {loading && (
-        <div className="absolute inset-0 grid place-items-center bg-black/40 pointer-events-none">
-          <svg className="animate-spin h-10 w-10 text-white" viewBox="0 0 24 24">
-            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.25"/>
-            <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" strokeWidth="4" fill="none"/>
-          </svg>
-        </div>
-      )}
+      {/* pas de spinner custom → plus de double chargement */}
       {autoBlocked && (
         <div className="absolute inset-0 grid place-items-center bg-black/50">
           <button
@@ -264,7 +220,6 @@ export default function VideoPlayer({
           {texts.map((t, i) => (<option key={`t-${i}`} value={t.lang}>{t.label}</option>))}
         </select>
       </div>
-      {/* compteur custom supprimé pour éviter le doublon avec les contrôles natifs */}
     </div>
   );
 }
