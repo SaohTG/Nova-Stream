@@ -64,12 +64,8 @@ export default function VideoPlayer({
   async function tryPlay(v) {
     v.muted = false;
     v.volume = 1;
-    try {
-      await v.play();
-      setAutoBlocked(false);
-    } catch {
-      setAutoBlocked(true);
-    }
+    try { await v.play(); setAutoBlocked(false); }
+    catch { setAutoBlocked(true); }
   }
 
   useEffect(() => {
@@ -108,16 +104,13 @@ export default function VideoPlayer({
       v.addEventListener("canplay", onCanPlay);
       v.addEventListener("canplaythrough", onCanPlayThrough);
 
-      // Détecte live vs VOD d’après l’URL API
       const isLiveSrc = /\/api\/media\/live\//i.test(resolvedSrc);
       const isVodSrc  = /\/api\/media\/(movie|series)\//i.test(resolvedSrc);
 
       if (isVodSrc) {
-        // VOD: lecture directe fichier (plus rapide)
         const fileUrl = isHls(resolvedSrc) ? hlsToFile(resolvedSrc) : resolvedSrc;
         attachFile(v, fileUrl);
       } else if (isLiveSrc && isHls(resolvedSrc)) {
-        // LIVE: HLS via Shaka
         try {
           setLoading(true);
           const shaka = await loadShakaOnce();
@@ -128,15 +121,14 @@ export default function VideoPlayer({
           await player.attach(v);
           playerRef.current = player;
 
-          // Buffer initial réduit pour démarrer plus vite en live
           player.configure({
             streaming: { bufferingGoal: 2, rebufferingGoal: 1.5, bufferBehind: 30 },
             abr: { defaultBandwidthEstimate: 5_000_000 }
           });
 
           const ne = player.getNetworkingEngine?.();
-          if (ne && ne.registerRequestFilter) {
-            ne.registerRequestFilter((_type, req) => { req.allowCrossSiteCredentials = true; });
+          if (ne?.registerRequestFilter) {
+            ne.registerRequestFilter((_t, req) => { req.allowCrossSiteCredentials = true; });
           }
 
           player.addEventListener("error", (e) => console.error("[Shaka error]", e.detail));
@@ -163,11 +155,9 @@ export default function VideoPlayer({
           console.error("[Player/HLS]", e);
           try { await playerRef.current?.destroy(); } catch {}
           playerRef.current = null;
-          // Live sans HLS non supporté → on ne force pas /file ici
           setLoading(false);
         }
       } else {
-        // Cas restant: source directe → fichier
         attachFile(v, resolvedSrc);
       }
 
@@ -274,9 +264,7 @@ export default function VideoPlayer({
           {texts.map((t, i) => (<option key={`t-${i}`} value={t.lang}>{t.label}</option>))}
         </select>
       </div>
-      <div className="absolute left-3 bottom-3 text-[11px] rounded bg-black/50 text-white px-2 py-1">
-        {fmt(t)} / {fmt(dur)}
-      </div>
+      {/* compteur custom supprimé pour éviter le doublon avec les contrôles natifs */}
     </div>
   );
 }
