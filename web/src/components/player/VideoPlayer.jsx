@@ -22,11 +22,17 @@ const isHls = (u) => /\.m3u8(\?|$)/i.test(String(u));
 const hlsToFile = (u) => String(u).replace(/\/hls\.m3u8(\?.*)?$/i, "/file$1");
 
 export default function VideoPlayer({
-  src, poster, title, resumeKey, resumeApi = true, startAt = 0, onEnded, showPoster = true,
+  src,
+  poster,
+  title,
+  resumeKey,
+  resumeApi = true,
+  startAt = 0,
+  onEnded,
+  showPoster = true,
 }) {
   const videoRef = useRef(null);
   const playerRef = useRef(null);
-  const [dur, setDur] = useState(NaN);
   const [audios, setAudios] = useState([]);
   const [texts, setTexts] = useState([]);
   const [audioSel, setAudioSel] = useState({ lang: null, role: null });
@@ -57,17 +63,19 @@ export default function VideoPlayer({
     let destroyed = false;
 
     const attachFile = (v, fileUrl) => {
-      v.preload = "auto";
+      v.preload = "metadata";
       v.src = fileUrl;
-      const onMeta = () => {
+
+      const onCanPlay = () => {
         try {
-          if (initialTime > 0 && Number.isFinite(v.duration)) {
+          if (initialTime > 5 && Number.isFinite(v.duration)) {
             v.currentTime = Math.min(initialTime, Math.max(0, (v.duration || 1) - 1));
           }
         } catch {}
         tryPlay(v);
       };
-      v.addEventListener("loadedmetadata", onMeta, { once: true });
+
+      v.addEventListener("canplay", onCanPlay, { once: true });
     };
 
     (async () => {
@@ -118,9 +126,8 @@ export default function VideoPlayer({
           player.addEventListener("variantchanged", refreshTracks);
           player.addEventListener("textchanged", refreshTracks);
 
-          await player.load(resolvedSrc, initialTime);
+          await player.load(resolvedSrc, initialTime > 5 ? initialTime : 0);
           if (destroyed) return;
-          setDur(v.duration || NaN);
           refreshTracks();
           await tryPlay(v);
         } catch (e) {
@@ -141,7 +148,6 @@ export default function VideoPlayer({
     if (!v) return;
     let lastPush = 0;
     const onTime = () => {
-      setDur(v.duration || dur);
       if (!lsKey) return;
       const now = Date.now();
       if (now - lastPush > 4000) {
@@ -154,7 +160,7 @@ export default function VideoPlayer({
       }
     };
     const onEndedCb = () => {
-      if (resumeApi && resumeKey) postJson("/user/watch/progress", { key: resumeKey, position: dur, duration: dur }).catch(() => {});
+      if (resumeApi && resumeKey) postJson("/user/watch/progress", { key: resumeKey, position: v.duration || 0, duration: v.duration || 0 }).catch(() => {});
       onEnded && onEnded();
     };
     v.addEventListener("timeupdate", onTime);
@@ -165,7 +171,7 @@ export default function VideoPlayer({
       v.removeEventListener("pause", onTime);
       v.removeEventListener("ended", onEndedCb);
     };
-  }, [lsKey, resumeApi, resumeKey, resolvedSrc, src, title, dur, onEnded]);
+  }, [lsKey, resumeApi, resumeKey, resolvedSrc, src, title, onEnded]);
 
   const applyAudio = async (lang, role) => {
     const p = playerRef.current; if (!p) return;
@@ -189,7 +195,6 @@ export default function VideoPlayer({
         preload="metadata"
         crossOrigin="use-credentials"
       />
-      {/* pas de spinner custom → plus de double chargement */}
       {autoBlocked && (
         <div className="absolute inset-0 grid place-items-center bg-black/50">
           <button
