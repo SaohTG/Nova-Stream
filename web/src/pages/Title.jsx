@@ -90,7 +90,7 @@ export default function Title() {
     };
   }, [showTrailer]);
 
-  // --- Films: inchangé ---
+  // Films
   async function startPlayback() {
     if (kind !== "movie") return;
     setShowTrailer(false);
@@ -107,7 +107,7 @@ export default function Title() {
     }
   }
 
-  // --- Séries: lancer un épisode ---
+  // Séries
   async function startEpisodePlayback(seriesId, seasonNum, episodeNum) {
     if (kind !== "series") return;
     setPlaying(true);
@@ -154,8 +154,15 @@ export default function Title() {
       : (data.poster_url || data.backdrop_url || "");
   const resumeKey = kind === "movie" ? `movie:${xid}` : undefined;
 
+  const titleText =
+    kind === "series" ? (data?.info?.name || data?.info?.series_name || "") : (data.title || "");
+
+  const showPlayer = playing && !!src && !playErr;
+  const showPreparing = playing && !src && !playErr;
+
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6">
+      {/* Trailer overlay */}
       {showTrailer && hasTrailer && (
         <div
           className="fixed inset-0 z-[1000] bg-black/80 backdrop-blur-sm grid place-items-center p-4"
@@ -184,69 +191,71 @@ export default function Title() {
         </div>
       )}
 
+      {/* Zone lecteur: un seul VideoPlayer monté */}
       {!showTrailer && playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
-          {!src ? (
-            <div className="flex h-full w-full items-center justify-center">
-              <Spinner label="Préparation du flux…" />
-            </div>
-          ) : playErr ? (
+          {playErr ? (
             <div className="flex h-full w-full items-center justify-center p-4 text-center text-red-300">
               {playErr}
             </div>
-          ) : (
+          ) : showPreparing ? (
+            <div className="flex h-full w-full items-center justify-center">
+              <Spinner label="Préparation du flux…" />
+            </div>
+          ) : showPlayer ? (
             <VideoPlayer
+              key={`${kind}:${xid}:${src}`}
               src={src}
               poster={posterSrc}
-              title={kind === "series" ? (data?.info?.name || data?.info?.series_name || "") : data.title}
+              title={titleText}
               resumeKey={resumeKey}
               resumeApi
               showPoster={false}
             />
-          )}
+          ) : null}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
-        {/* Affiche cliquable: films seulement (inchangé) */}
-        <button
-          type="button"
-          className={`relative w-[220px] rounded-xl overflow-hidden group ${resolvingSrc ? "cursor-wait" : ""}`}
-          onClick={startPlayback}
-          disabled={kind !== "movie" || resolvingSrc}
-          title={kind === "movie" ? "Regarder" : "Lecture non disponible ici"}
-          aria-busy={resolvingSrc ? "true" : "false"}
-        >
-          {resolvingSrc ? (
-            <div className="w-[220px] h-[330px] bg-zinc-900 grid place-items-center">
-              <Spinner />
-            </div>
-          ) : posterSrc ? (
-            <img
-              src={posterSrc}
-              alt={(kind === "series" ? (data?.info?.name || data?.info?.series_name || "") : (data.title || ""))}
-              className="w-[220px] h-full object-cover"
-              draggable={false}
-            />
-          ) : (
-            <div className="w-[220px] h-[330px] bg-zinc-800" />
-          )}
-          {kind === "movie" && !resolvingSrc && (
-            <div className="absolute inset-0 grid place-items-center bg-black/0 group-hover:bg-black/40 transition">
-              <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-black text-sm">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
-                  <path d="M8 5v14l11-7z" />
-                </svg>
-                Regarder
+        {/* Affiche cliquable: masquée pendant la lecture pour éviter un second “chargement” */}
+        {!playing && (
+          <button
+            type="button"
+            className={`relative w-[220px] rounded-xl overflow-hidden group ${resolvingSrc ? "cursor-wait" : ""}`}
+            onClick={startPlayback}
+            disabled={kind !== "movie" || resolvingSrc}
+            title={kind === "movie" ? "Regarder" : "Lecture non disponible ici"}
+            aria-busy={resolvingSrc ? "true" : "false"}
+          >
+            {resolvingSrc ? (
+              <div className="w-[220px] h-[330px] bg-zinc-900 grid place-items-center">
+                <Spinner />
               </div>
-            </div>
-          )}
-        </button>
+            ) : posterSrc ? (
+              <img
+                src={posterSrc}
+                alt={titleText}
+                className="w-[220px] h-full object-cover"
+                draggable={false}
+              />
+            ) : (
+              <div className="w-[220px] h-[330px] bg-zinc-800" />
+            )}
+            {kind === "movie" && !resolvingSrc && (
+              <div className="absolute inset-0 grid place-items-center bg-black/0 group-hover:bg-black/40 transition">
+                <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-black text-sm">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+                    <path d="M8 5v14l11-7z" />
+                  </svg>
+                  Regarder
+                </div>
+              </div>
+            )}
+          </button>
+        )}
 
         <div>
-          <h1 className="text-2xl font-bold">
-            {kind === "series" ? (data?.info?.name || data?.info?.series_name || "") : (data.title || "")}
-          </h1>
+          <h1 className="text-2xl font-bold">{titleText}</h1>
           {kind === "movie" && data.vote_average != null && (
             <div className="mt-1 text-sm text-zinc-300">
               Note TMDB&nbsp;: {Number(data.vote_average).toFixed(1)}/10
@@ -272,7 +281,7 @@ export default function Title() {
         </div>
       </div>
 
-      {/* Saisons + épisodes pour séries uniquement */}
+      {/* Séries: grilles */}
       {kind === "series" && (
         <SeriesSeasonsGrid
           seriesId={xid}
