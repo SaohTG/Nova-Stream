@@ -33,6 +33,18 @@ export default function NavBar() {
           <SearchBar />
         </div>
 
+        {/* Icône compte à la Netflix */}
+        <Link
+          to="/compte"
+          className="relative grid h-9 w-9 place-items-center rounded-full bg-zinc-800 text-zinc-200 hover:bg-zinc-700 focus:outline-none focus:ring-2 focus:ring-white/30"
+          title="Compte"
+          aria-label="Compte"
+        >
+          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor" aria-hidden="true">
+            <path d="M12 12c2.76 0 5-2.46 5-5.5S14.76 1 12 1 7 3.46 7 6.5 9.24 12 12 12zm0 2c-4.42 0-8 2.69-8 6v1h16v-1c0-3.31-3.58-6-8-6z"/>
+          </svg>
+        </Link>
+
         <button
           onClick={logout}
           className="rounded-lg bg-zinc-800 px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-700"
