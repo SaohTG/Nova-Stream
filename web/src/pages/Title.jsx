@@ -1,6 +1,6 @@
 // web/src/pages/Title.jsx
 import { useEffect, useState, useMemo } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { getJson } from "../lib/api";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
@@ -37,6 +37,7 @@ function Spinner({ label = "Chargement…" }) {
 
 export default function Title() {
   const { kind, id } = useParams();
+  const [search] = useSearchParams();
   const xid = useMemo(() => String(id || "").replace(/^xid-/, ""), [id]);
   const nav = useNavigate();
 
@@ -47,6 +48,9 @@ export default function Title() {
   const [resolvingSrc, setResolvingSrc] = useState(false);
   const [src, setSrc] = useState("");
   const [playErr, setPlayErr] = useState("");
+
+  // clé de reprise courante passée au VideoPlayer
+  const [currentResumeKey, setCurrentResumeKey] = useState(null);
 
   const [showTrailer, setShowTrailer] = useState(false);
 
@@ -76,6 +80,7 @@ export default function Title() {
     setSrc("");
     setPlayErr("");
     setShowTrailer(false);
+    setCurrentResumeKey(null);
   }, [kind, xid]);
 
   useEffect(() => {
@@ -90,7 +95,7 @@ export default function Title() {
     };
   }, [showTrailer]);
 
-  // Films
+  // ——— Films
   async function startPlayback() {
     if (kind !== "movie") return;
     setShowTrailer(false);
@@ -98,6 +103,7 @@ export default function Title() {
     setResolvingSrc(true);
     setPlayErr("");
     setSrc("");
+    setCurrentResumeKey(`movie:${xid}`);
     try {
       setSrc(`/api/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}/hls.m3u8`);
     } catch {
@@ -107,13 +113,14 @@ export default function Title() {
     }
   }
 
-  // Séries
+  // ——— Séries
   async function startEpisodePlayback(seriesId, seasonNum, episodeNum) {
     if (kind !== "series") return;
     setPlaying(true);
     setResolvingSrc(true);
     setPlayErr("");
     setSrc("");
+    setCurrentResumeKey(`series:${seriesId}:S${seasonNum}E${episodeNum}`);
     try {
       const hls = `/api/media/series/${encodeURIComponent(seriesId)}/season/${encodeURIComponent(seasonNum)}/episode/${encodeURIComponent(episodeNum)}/hls.m3u8`;
       const r = await fetch(hls, { method: "HEAD", credentials: "include" });
@@ -125,6 +132,19 @@ export default function Title() {
       setResolvingSrc(false);
     }
   }
+
+  // ——— Auto-lecture si ?play=1 (&season, &episode pour séries)
+  useEffect(() => {
+    const auto = search.get("play") === "1";
+    if (!auto || loading || !data) return;
+    if (kind === "movie") startPlayback();
+    if (kind === "series") {
+      const s = Number(search.get("season") || 1);
+      const e = Number(search.get("episode") || 1);
+      startEpisodePlayback(xid, s, e);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, loading, data, kind, xid]);
 
   const trailerEmbed = useMemo(() => {
     if (kind !== "movie") return "";
@@ -152,17 +172,11 @@ export default function Title() {
     kind === "series"
       ? (data?.info?.cover || data?.info?.backdrop_path || "")
       : (data.poster_url || data.backdrop_url || "");
-  const resumeKey = kind === "movie" ? `movie:${xid}` : undefined;
-
-  const titleText =
-    kind === "series" ? (data?.info?.name || data?.info?.series_name || "") : (data.title || "");
-
-  const showPlayer = playing && !!src && !playErr;
-  const showPreparing = playing && !src && !playErr;
+  const movieTitle = data.title;
+  const seriesTitle = data?.info?.name || data?.info?.series_name || "";
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6">
-      {/* Trailer overlay */}
       {showTrailer && hasTrailer && (
         <div
           className="fixed inset-0 z-[1000] bg-black/80 backdrop-blur-sm grid place-items-center p-4"
@@ -191,71 +205,68 @@ export default function Title() {
         </div>
       )}
 
-      {/* Zone lecteur: un seul VideoPlayer monté */}
       {!showTrailer && playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
-          {playErr ? (
-            <div className="flex h-full w-full items-center justify-center p-4 text-center text-red-300">
-              {playErr}
-            </div>
-          ) : showPreparing ? (
+          {!src ? (
             <div className="flex h-full w-full items-center justify-center">
               <Spinner label="Préparation du flux…" />
             </div>
-          ) : showPlayer ? (
+          ) : playErr ? (
+            <div className="flex h-full w-full items-center justify-center p-4 text-center text-red-300">
+              {playErr}
+            </div>
+          ) : (
             <VideoPlayer
-              key={`${kind}:${xid}:${src}`}
               src={src}
               poster={posterSrc}
-              title={titleText}
-              resumeKey={resumeKey}
+              title={kind === "series" ? seriesTitle : movieTitle}
+              resumeKey={currentResumeKey || (kind === "movie" ? `movie:${xid}` : undefined)}
               resumeApi
               showPoster={false}
             />
-          ) : null}
+          )}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
-        {/* Affiche cliquable: masquée pendant la lecture pour éviter un second “chargement” */}
-        {!playing && (
-          <button
-            type="button"
-            className={`relative w-[220px] rounded-xl overflow-hidden group ${resolvingSrc ? "cursor-wait" : ""}`}
-            onClick={startPlayback}
-            disabled={kind !== "movie" || resolvingSrc}
-            title={kind === "movie" ? "Regarder" : "Lecture non disponible ici"}
-            aria-busy={resolvingSrc ? "true" : "false"}
-          >
-            {resolvingSrc ? (
-              <div className="w-[220px] h-[330px] bg-zinc-900 grid place-items-center">
-                <Spinner />
+        <button
+          type="button"
+          className={`relative w-[220px] rounded-xl overflow-hidden group ${resolvingSrc ? "cursor-wait" : ""}`}
+          onClick={startPlayback}
+          disabled={kind !== "movie" || resolvingSrc}
+          title={kind === "movie" ? "Regarder" : "Lecture non disponible ici"}
+          aria-busy={resolvingSrc ? "true" : "false"}
+        >
+          {resolvingSrc ? (
+            <div className="w-[220px] h-[330px] bg-zinc-900 grid place-items-center">
+              <Spinner />
+            </div>
+          ) : posterSrc ? (
+            <img
+              src={posterSrc}
+              alt={(kind === "series" ? seriesTitle : (movieTitle || ""))}
+              className="w-[220px] h-full object-cover"
+              draggable={false}
+            />
+          ) : (
+            <div className="w-[220px] h-[330px] bg-zinc-800" />
+          )}
+          {kind === "movie" && !resolvingSrc && (
+            <div className="absolute inset-0 grid place-items-center bg-black/0 group-hover:bg-black/40 transition">
+              <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-black text-sm">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                Regarder
               </div>
-            ) : posterSrc ? (
-              <img
-                src={posterSrc}
-                alt={titleText}
-                className="w-[220px] h-full object-cover"
-                draggable={false}
-              />
-            ) : (
-              <div className="w-[220px] h-[330px] bg-zinc-800" />
-            )}
-            {kind === "movie" && !resolvingSrc && (
-              <div className="absolute inset-0 grid place-items-center bg-black/0 group-hover:bg-black/40 transition">
-                <div className="flex items-center gap-2 rounded-full bg-white/90 px-3 py-2 text-black text-sm">
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
-                    <path d="M8 5v14l11-7z" />
-                  </svg>
-                  Regarder
-                </div>
-              </div>
-            )}
-          </button>
-        )}
+            </div>
+          )}
+        </button>
 
         <div>
-          <h1 className="text-2xl font-bold">{titleText}</h1>
+          <h1 className="text-2xl font-bold">
+            {kind === "series" ? seriesTitle : (movieTitle || "")}
+          </h1>
           {kind === "movie" && data.vote_average != null && (
             <div className="mt-1 text-sm text-zinc-300">
               Note TMDB&nbsp;: {Number(data.vote_average).toFixed(1)}/10
@@ -281,7 +292,6 @@ export default function Title() {
         </div>
       </div>
 
-      {/* Séries: grilles */}
       {kind === "series" && (
         <SeriesSeasonsGrid
           seriesId={xid}
