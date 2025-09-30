@@ -6,6 +6,53 @@ import Row from "../components/Row.jsx";
 const CATS_BATCH = 30;  // nb de catégories chargées par “page”
 const PER_CAT    = 15;  // nb d’items par rangée
 
+function getMovieId(it) {
+  // essaie plusieurs clés possibles
+  return String(
+    it?.xtream_id ??
+    it?.stream_id ??
+    it?.movie_id ??
+    it?.id ??
+    ""
+  );
+}
+
+function getResumeForMovie(movieId) {
+  if (!movieId) return null;
+  try {
+    const raw = localStorage.getItem(`ns_watch_movie:${movieId}`);
+    if (!raw) return null;
+    const j = JSON.parse(raw);
+    const dur = Number(j.duration || 0);
+    const pos = Number(j.position || 0);
+    if (!Number.isFinite(dur) || dur <= 0) return null;
+    const pct = pos / dur;
+    if (pct < 0.05 || pct > 0.95) return null; // trop peu ou quasi fini
+    return { position: pos, duration: dur, pct };
+  } catch {
+    return null;
+  }
+}
+
+function decorateItemsWithResume(items) {
+  return (Array.isArray(items) ? items : []).map((it) => {
+    const xid = getMovieId(it);
+    const resume = getResumeForMovie(xid);
+    // lien par défaut → fiche film
+    const baseLink = `/title/movie/${encodeURIComponent(xid)}`;
+    // si reprise, on force la fiche avec auto-lecture
+    const linkOverride = resume ? `${baseLink}?play=1` : baseLink;
+    return {
+      ...it,
+      __xid: xid,
+      linkOverride,
+      progressPct: resume ? Math.min(100, Math.round(resume.pct * 100)) : undefined,
+      badgeResume: resume ? "Reprendre" : undefined,
+      __resume: resume || undefined,
+    };
+  });
+}
+
 export default function Movies() {
   const [cats, setCats] = useState([]);
   const [rows, setRows] = useState([]);
@@ -51,7 +98,7 @@ export default function Movies() {
         return {
           id: String(c.category_id),
           name: c.category_name || "Sans catégorie",
-          items: Array.isArray(items) ? items : [],
+          items: decorateItemsWithResume(Array.isArray(items) ? items : []),
         };
       })
     );
@@ -89,6 +136,11 @@ export default function Movies() {
           items={g.items}
           kind="vod"
           seeMoreHref={`/movies/category/${g.id}?name=${encodeURIComponent(g.name)}`}
+          // Ces props sont optionnelles. Si votre Row les gère, il affichera la reprise.
+          // Sinon, il utilisera au moins items[].linkOverride pour le clic.
+          itemLinkKey="linkOverride"
+          itemProgressKey="progressPct"
+          itemBadgeKey="badgeResume"
         />
       ))}
 
