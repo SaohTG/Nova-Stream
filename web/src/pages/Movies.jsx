@@ -7,7 +7,6 @@ const CATS_BATCH = 30;  // nb de catégories chargées par “page”
 const PER_CAT    = 15;  // nb d’items par rangée
 
 function getMovieId(it) {
-  // essaie plusieurs clés possibles
   return String(
     it?.xtream_id ??
     it?.stream_id ??
@@ -27,8 +26,13 @@ function getResumeForMovie(movieId) {
     const pos = Number(j.position || 0);
     if (!Number.isFinite(dur) || dur <= 0) return null;
     const pct = pos / dur;
-    if (pct < 0.05 || pct > 0.95) return null; // trop peu ou quasi fini
-    return { position: pos, duration: dur, pct };
+    if (pct < 0.05 || pct > 0.95) return null;
+    return {
+      position: pos,
+      duration: dur,
+      pct,
+      savedAt: Number(j.savedAt || 0) || 0,
+    };
   } catch {
     return null;
   }
@@ -38,9 +42,7 @@ function decorateItemsWithResume(items) {
   return (Array.isArray(items) ? items : []).map((it) => {
     const xid = getMovieId(it);
     const resume = getResumeForMovie(xid);
-    // lien par défaut → fiche film
     const baseLink = `/title/movie/${encodeURIComponent(xid)}`;
-    // si reprise, on force la fiche avec auto-lecture
     const linkOverride = resume ? `${baseLink}?play=1` : baseLink;
     return {
       ...it,
@@ -53,15 +55,38 @@ function decorateItemsWithResume(items) {
   });
 }
 
+function computeResumeRow(fromGroups) {
+  const map = new Map(); // xid -> item
+  for (const g of fromGroups) {
+    for (const it of g.items || []) {
+      if (!it.__resume) continue;
+      const prev = map.get(it.__xid);
+      if (!prev) { map.set(it.__xid, it); continue; }
+      const a = prev.__resume, b = it.__resume;
+      const aScore = (a.savedAt || 0) || a.pct || 0;
+      const bScore = (b.savedAt || 0) || b.pct || 0;
+      if (bScore > aScore) map.set(it.__xid, it);
+    }
+  }
+  const list = Array.from(map.values());
+  list.sort((a, b) => {
+    const as = (a.__resume?.savedAt || 0), bs = (b.__resume?.savedAt || 0);
+    if (bs !== as) return bs - as;
+    const ap = a.__resume?.pct || 0, bp = b.__resume?.pct || 0;
+    return bp - ap;
+  });
+  return list.slice(0, 20);
+}
+
 export default function Movies() {
   const [cats, setCats] = useState([]);
   const [rows, setRows] = useState([]);
+  const [resumeItems, setResumeItems] = useState([]);
   const [nextIndex, setNextIndex] = useState(0);
   const [loadingCats, setLoadingCats] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState(null);
 
-  // charge la liste de catégories
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -73,6 +98,7 @@ export default function Movies() {
         const safe = Array.isArray(list) ? list : [];
         setCats(safe);
         setRows([]);
+        setResumeItems([]);
         setNextIndex(0);
       } catch (e) {
         if (!alive) return;
@@ -82,6 +108,10 @@ export default function Movies() {
       }
     })();
     return () => { alive = false; };
+  }, []);
+
+  const recomputeResume = useCallback((groups) => {
+    setResumeItems(computeResumeRow(groups));
   }, []);
 
   const loadMoreCats = useCallback(async () => {
@@ -108,22 +138,51 @@ export default function Movies() {
       .map((s) => s.value)
       .filter((r) => r.items.length > 0);
 
-    setRows((prev) => [...prev, ...ok]);
+    setRows((prev) => {
+      const merged = [...prev, ...ok];
+      // met à jour la rangée “Reprendre”
+      recomputeResume(merged);
+      return merged;
+    });
     setNextIndex((i) => i + slice.length);
     setLoadingMore(false);
-  }, [cats, nextIndex, loadingMore]);
+  }, [cats, nextIndex, loadingMore, recomputeResume]);
 
-  // charger le premier batch
   useEffect(() => {
     if (!loadingCats && cats.length > 0 && nextIndex === 0) {
       loadMoreCats();
     }
   }, [loadingCats, cats, nextIndex, loadMoreCats]);
 
+  // Réagit quand le localStorage change (autre onglet ou retour depuis la lecture)
+  useEffect(() => {
+    const onStorage = (e) => {
+      if (!e || typeof e.key !== "string") return;
+      if (e.key.startsWith("ns_watch_movie:")) {
+        setResumeItems(computeResumeRow(rows));
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, [rows]);
+
   return (
     <>
       <h1 className="mb-4 text-2xl font-bold">Films</h1>
       {err && <div className="mb-4 rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
+
+      {/* Rangée REPRENDRE tout en haut si dispo */}
+      {resumeItems.length > 0 && (
+        <Row
+          key="resume-row"
+          title="Reprendre"
+          items={resumeItems}
+          kind="vod"
+          itemLinkKey="linkOverride"
+          itemProgressKey="progressPct"
+          itemBadgeKey="badgeResume"
+        />
+      )}
 
       {rows.length === 0 && (loadingCats || loadingMore) && (
         <Row title="Chargement…" loading />
@@ -136,8 +195,6 @@ export default function Movies() {
           items={g.items}
           kind="vod"
           seeMoreHref={`/movies/category/${g.id}?name=${encodeURIComponent(g.name)}`}
-          // Ces props sont optionnelles. Si votre Row les gère, il affichera la reprise.
-          // Sinon, il utilisera au moins items[].linkOverride pour le clic.
           itemLinkKey="linkOverride"
           itemProgressKey="progressPct"
           itemBadgeKey="badgeResume"
