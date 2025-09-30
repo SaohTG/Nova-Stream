@@ -3,8 +3,8 @@ import { useEffect, useState, useCallback } from "react";
 import { getJson, postJson } from "../lib/api";
 import Row from "../components/Row.jsx";
 
-const CATS_BATCH = 30;  // nb de catégories chargées par “page”
-const PER_CAT    = 15;  // nb d’items par rangée
+const CATS_BATCH = 30;
+const PER_CAT = 15;
 
 function getMovieId(it) {
   return String(
@@ -43,7 +43,9 @@ function decorateItemsWithResume(items) {
     const xid = getMovieId(it);
     const resume = getResumeForMovie(xid);
     const baseLink = `/title/movie/${encodeURIComponent(xid)}`;
-    const linkOverride = resume ? `${baseLink}?play=1` : baseLink;
+    const linkOverride = resume
+      ? `${baseLink}?play=1&t=${Math.floor(resume.position || 0)}`
+      : baseLink;
     return {
       ...it,
       __xid: xid,
@@ -56,7 +58,7 @@ function decorateItemsWithResume(items) {
 }
 
 function computeResumeRow(fromGroups) {
-  const map = new Map(); // xid -> item
+  const map = new Map();
   for (const g of fromGroups) {
     for (const it of g.items || []) {
       if (!it.__resume) continue;
@@ -140,7 +142,6 @@ export default function Movies() {
 
     setRows((prev) => {
       const merged = [...prev, ...ok];
-      // met à jour la rangée “Reprendre”
       recomputeResume(merged);
       return merged;
     });
@@ -154,7 +155,6 @@ export default function Movies() {
     }
   }, [loadingCats, cats, nextIndex, loadMoreCats]);
 
-  // Réagit quand le localStorage change (autre onglet ou retour depuis la lecture)
   useEffect(() => {
     const onStorage = (e) => {
       if (!e || typeof e.key !== "string") return;
@@ -171,7 +171,6 @@ export default function Movies() {
       <h1 className="mb-4 text-2xl font-bold">Films</h1>
       {err && <div className="mb-4 rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
 
-      {/* Rangée REPRENDRE tout en haut si dispo */}
       {resumeItems.length > 0 && (
         <Row
           key="resume-row"
