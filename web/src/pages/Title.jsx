@@ -49,10 +49,13 @@ export default function Title() {
   const [src, setSrc] = useState("");
   const [playErr, setPlayErr] = useState("");
 
-  // clé de reprise courante passée au VideoPlayer
   const [currentResumeKey, setCurrentResumeKey] = useState(null);
-
   const [showTrailer, setShowTrailer] = useState(false);
+
+  const startAtQ = useMemo(() => {
+    const v = Number(search.get("t") || 0);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  }, [search]);
 
   useEffect(() => {
     let alive = true;
@@ -95,7 +98,6 @@ export default function Title() {
     };
   }, [showTrailer]);
 
-  // ——— Films
   async function startPlayback() {
     if (kind !== "movie") return;
     setShowTrailer(false);
@@ -113,7 +115,6 @@ export default function Title() {
     }
   }
 
-  // ——— Séries
   async function startEpisodePlayback(seriesId, seasonNum, episodeNum) {
     if (kind !== "series") return;
     setPlaying(true);
@@ -133,7 +134,6 @@ export default function Title() {
     }
   }
 
-  // ——— Auto-lecture si ?play=1 (&season, &episode pour séries)
   useEffect(() => {
     const auto = search.get("play") === "1";
     if (!auto || loading || !data) return;
@@ -223,6 +223,7 @@ export default function Title() {
               resumeKey={currentResumeKey || (kind === "movie" ? `movie:${xid}` : undefined)}
               resumeApi
               showPoster={false}
+              startAt={startAtQ}
             />
           )}
         </div>
@@ -358,7 +359,7 @@ function EpisodeCard({ season, ep, onPlay }) {
         {img ? (
           <img src={img} alt={name || "Episode"} className="h-full w-full object-cover" loading="lazy" />
         ) : (
-          <div className="grid h-full w-full place-items-center text-zinc-400">
+          <div className="grid h.full w.full place-items-center text-zinc-400">
             S{season} • E{num}
           </div>
         )}
