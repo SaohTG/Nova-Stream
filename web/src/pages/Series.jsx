@@ -1,10 +1,10 @@
 // web/src/pages/Series.jsx
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { getJson, postJson } from "../lib/api";
 import Row from "../components/Row.jsx";
 
-const CATS_BATCH = 30;
-const PER_CAT    = 15;
+const CATS_BATCH = 30;  // nb de catégories chargées par “page”
+const PER_CAT    = 15;  // nb d’items par rangée
 
 export default function Series() {
   const [cats, setCats] = useState([]);
@@ -14,6 +14,54 @@ export default function Series() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState(null);
 
+  // -------- Reprendre (localStorage) --------
+  const resumeItems = useMemo(() => {
+    const out = [];
+    const now = Date.now();
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i) || "";
+      if (!k.startsWith("ns_watch_series:")) continue;
+      try {
+        const v = JSON.parse(localStorage.getItem(k) || "{}");
+        const parts = k.split(":"); // ns_watch_series:<seriesId>:S<X>E<Y>
+        const seriesId = parts[1];
+        const se = parts[2] || "";
+        const m = /^S(\d+)E(\d+)$/i.exec(se);
+        if (!seriesId || !m) continue;
+
+        const season = Number(m[1]);
+        const episode = Number(m[2]);
+        const pos = Number(v.position || 0);
+        const dur = Number(v.duration || 0);
+        if (!Number.isFinite(pos) || !Number.isFinite(dur) || dur < 60 || pos <= 0) continue;
+
+        // Affichage progression %
+        const pct = Math.max(1, Math.min(99, Math.round((pos / Math.max(1, dur)) * 100)));
+
+        out.push({
+          // champs utilisés par <Row/>
+          id: seriesId,
+          name: v.title || `S${season}E${episode}`,
+          stream_icon: v.poster || "",
+
+          // meta pour lien reprise
+          _resume: {
+            seriesId,
+            season,
+            episode,
+            t: Math.floor(pos),
+            updatedAt: v.updatedAt || now,
+            pct,
+          },
+        });
+      } catch {}
+    }
+    // les plus récents d’abord
+    out.sort((a, b) => (b._resume?.updatedAt || 0) - (a._resume?.updatedAt || 0));
+    return out;
+  }, []);
+
+  // charge la liste de catégories
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -65,6 +113,7 @@ export default function Series() {
     setLoadingMore(false);
   }, [cats, nextIndex, loadingMore]);
 
+  // charger le premier batch
   useEffect(() => {
     if (!loadingCats && cats.length > 0 && nextIndex === 0) {
       loadMoreCats();
@@ -76,6 +125,24 @@ export default function Series() {
       <h1 className="mb-4 text-2xl font-bold">Séries</h1>
       {err && <div className="mb-4 rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
 
+      {/* Reprendre */}
+      {resumeItems.length > 0 && (
+        <Row
+          title="Reprendre"
+          kind="series"
+          items={resumeItems.map((it) => {
+            const r = it._resume;
+            // on fournit un lien direct vers la page Titre avec auto-play et reprise t=<sec>
+            return {
+              ...it,
+              __href: `/title/series/${encodeURIComponent(it.id)}?play=1&season=${r.season}&episode=${r.episode}&t=${r.t}`,
+              __badge: `S${r.season}E${r.episode} • ${r.pct}%`,
+            };
+          })}
+        />
+      )}
+
+      {/* placeholder pendant le chargement initial */}
       {rows.length === 0 && (loadingCats || loadingMore) && (
         <Row title="Chargement…" loading />
       )}
