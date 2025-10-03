@@ -1,10 +1,9 @@
-// web/src/pages/Series.jsx
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { getJson, postJson } from "../lib/api";
 import Row from "../components/Row.jsx";
 
-const CATS_BATCH = 30;  // nb de catégories chargées par “page”
-const PER_CAT    = 15;  // nb d’items par rangée
+const CATS_BATCH = 30;
+const PER_CAT    = 15;
 
 export default function Series() {
   const [cats, setCats] = useState([]);
@@ -35,16 +34,15 @@ export default function Series() {
         const dur = Number(v.duration || 0);
         if (!Number.isFinite(pos) || !Number.isFinite(dur) || dur < 60 || pos <= 0) continue;
 
-        // Affichage progression %
         const pct = Math.max(1, Math.min(99, Math.round((pos / Math.max(1, dur)) * 100)));
 
         out.push({
-          // champs utilisés par <Row/>
           id: seriesId,
           name: v.title || `S${season}E${episode}`,
+          // Row attend généralement stream_icon / movie_image / cover...
+          // On place l’affiche sauvegardée par le player dans stream_icon
           stream_icon: v.poster || "",
 
-          // meta pour lien reprise
           _resume: {
             seriesId,
             season,
@@ -56,12 +54,11 @@ export default function Series() {
         });
       } catch {}
     }
-    // les plus récents d’abord
     out.sort((a, b) => (b._resume?.updatedAt || 0) - (a._resume?.updatedAt || 0));
     return out;
   }, []);
 
-  // charge la liste de catégories
+  // charge catégories
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -113,7 +110,6 @@ export default function Series() {
     setLoadingMore(false);
   }, [cats, nextIndex, loadingMore]);
 
-  // charger le premier batch
   useEffect(() => {
     if (!loadingCats && cats.length > 0 && nextIndex === 0) {
       loadMoreCats();
@@ -132,7 +128,6 @@ export default function Series() {
           kind="series"
           items={resumeItems.map((it) => {
             const r = it._resume;
-            // on fournit un lien direct vers la page Titre avec auto-play et reprise t=<sec>
             return {
               ...it,
               __href: `/title/series/${encodeURIComponent(it.id)}?play=1&season=${r.season}&episode=${r.episode}&t=${r.t}`,
@@ -142,7 +137,6 @@ export default function Series() {
         />
       )}
 
-      {/* placeholder pendant le chargement initial */}
       {rows.length === 0 && (loadingCats || loadingMore) && (
         <Row title="Chargement…" loading />
       )}
