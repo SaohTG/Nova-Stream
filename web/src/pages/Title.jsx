@@ -6,21 +6,29 @@ import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
 function toYoutubeEmbed(urlOrId = "") {
   if (!urlOrId) return "";
-  if (/^https?:\/\/(www\.)?youtube\.com\/embed\//.test(urlOrId)) return urlOrId;
+  let id = "";
   try {
     if (/^https?:\/\//i.test(urlOrId)) {
       const u = new URL(urlOrId);
-      if (u.hostname.includes("youtu.be")) {
-        const id = u.pathname.replace(/^\//, "");
-        return id ? `https://www.youtube.com/embed/${id}` : "";
-      }
-      if (u.hostname.includes("youtube.com")) {
-        const id = u.searchParams.get("v");
-        return id ? `https://www.youtube.com/embed/${id}` : "";
-      }
+      if (u.hostname.includes("youtu.be")) id = u.pathname.replace(/^\//, "");
+      else if (u.hostname.includes("youtube.com")) id = u.searchParams.get("v") || "";
+      else if (u.pathname.startsWith("/embed/")) id = u.pathname.split("/").pop() || "";
+    } else {
+      id = urlOrId;
     }
-  } catch {}
-  return `https://www.youtube.com/embed/${urlOrId}`;
+  } catch { id = urlOrId; }
+  id = (id || "").trim();
+  if (!id) return "";
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const qs = new URLSearchParams({
+    autoplay: "1",
+    playsinline: "1",
+    rel: "0",
+    modestbranding: "1",
+    enablejsapi: "1",
+    origin
+  }).toString();
+  return `https://www.youtube-nocookie.com/embed/${id}?${qs}`;
 }
 
 function Spinner({ label = "Chargement…" }) {
@@ -57,26 +65,17 @@ export default function Title() {
     return Number.isFinite(v) && v > 0 ? v : 0;
   }, [search]);
 
-  // Chargement + auto-refresh si trailer manquant (cache ancien)
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        setLoading(true);
-        let j;
         if (kind === "series") {
-          j = await getJson(`/xtream/series-info/${encodeURIComponent(xid)}`);
+          const j = await getJson(`/xtream/series-info/${encodeURIComponent(xid)}`);
+          if (alive) setData(j);
         } else {
-          j = await getJson(`/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}`);
-          // si pas de trailer → on force un refresh côté API pour regénérer depuis TMDB
-          if (kind === "movie" && (!j?.trailer?.embed_url && !j?.trailer?.url)) {
-            try {
-              const jr = await getJson(`/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}?refresh=1`);
-              if (jr?.trailer?.embed_url || jr?.trailer?.url) j = jr;
-            } catch {}
-          }
+          const j = await getJson(`/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}`);
+          if (alive) setData(j);
         }
-        if (alive) setData(j || null);
       } catch {
         if (alive) setData(null);
       } finally {
@@ -197,10 +196,12 @@ export default function Title() {
           >
             <iframe
               className="h-full w-full"
-              src={`${trailerEmbed}?autoplay=1&rel=0`}
+              src={trailerEmbed}
               title="Bande-annonce"
               allow="autoplay; encrypted-media; picture-in-picture"
               allowFullScreen
+              referrerPolicy="origin"
+              sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
             />
             <button
               type="button"
@@ -210,6 +211,16 @@ export default function Title() {
             >
               Fermer
             </button>
+            <div className="absolute left-3 bottom-3">
+              <a
+                href={trailerEmbed.replace("youtube-nocookie.com/embed/","youtube.com/watch?v=").replace(/\?.*$/,"")}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded bg-white/90 px-3 py-1 text-black text-xs hover:bg-white"
+              >
+                Ouvrir sur YouTube
+              </a>
+            </div>
           </div>
         </div>
       )}
@@ -291,10 +302,9 @@ export default function Title() {
           {kind === "movie" && (
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <button
-                className="btn"
+                className="btn disabled:opacity-50 disabled:cursor-not-allowed"
                 onClick={() => hasTrailer && (setPlaying(false), setShowTrailer(true))}
                 disabled={!hasTrailer}
-                title={hasTrailer ? "Voir la bande-annonce" : "Bande-annonce indisponible"}
               >
                 ▶ Bande-annonce
               </button>
