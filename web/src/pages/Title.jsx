@@ -31,6 +31,32 @@ function toYoutubeEmbed(urlOrId = "") {
   return `https://www.youtube-nocookie.com/embed/${id}?${qs}`;
 }
 
+// Recherche d’un trailer dans divers champs possibles (films & séries)
+function pickTrailerEmbed(data, kind) {
+  const candidates = [];
+  // commun
+  if (data?.trailer?.embed_url) candidates.push(data.trailer.embed_url);
+  if (data?.trailer?.url) candidates.push(data.trailer.url);
+  // champs TMDB possibles
+  if (data?.videos?.results?.length) {
+    const yt = (data.videos.results.find(v => (v.site || "").toLowerCase() === "youtube" && (v.type || "").toLowerCase().includes("trailer")) || data.videos.results[0]);
+    if (yt?.key) candidates.push(yt.key);
+  }
+  // spécifiques séries (côté Xtream / agrégés)
+  const info = data?.info || {};
+  if (info.trailer) candidates.push(info.trailer);
+  if (info.trailer_url) candidates.push(info.trailer_url);
+  if (info.youtube_trailer) candidates.push(info.youtube_trailer);
+  if (info.youtube_trailer_id) candidates.push(info.youtube_trailer_id);
+  if (info.trailer_embed_url) candidates.push(info.trailer_embed_url);
+
+  for (const c of candidates) {
+    const em = toYoutubeEmbed(c);
+    if (em) return em;
+  }
+  return "";
+}
+
 function Spinner({ label = "Chargement…" }) {
   return (
     <div className="flex flex-col items-center justify-center gap-3 text-zinc-300">
@@ -96,8 +122,7 @@ export default function Title() {
 
   useEffect(() => {
     const root = document.documentElement;
-    if (showTrailer) root.style.overflow = "hidden";
-    else root.style.overflow = "";
+    root.style.overflow = showTrailer ? "hidden" : "";
     const onKey = (e) => { if (e.key === "Escape") setShowTrailer(false); };
     window.addEventListener("keydown", onKey);
     return () => {
@@ -154,11 +179,10 @@ export default function Title() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, loading, data, kind, xid]);
 
+  // 🔎 Trailer pour films ET séries
   const trailerEmbed = useMemo(() => {
-    if (kind !== "movie") return "";
-    const e = data?.trailer?.embed_url;
-    const u = data?.trailer?.url;
-    return toYoutubeEmbed(e || u || "");
+    if (!data) return "";
+    return pickTrailerEmbed(data, kind);
   }, [data, kind]);
   const hasTrailer = Boolean(trailerEmbed);
 
@@ -250,6 +274,7 @@ export default function Title() {
       )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
+        {/* Affiche clickable (films) */}
         <button
           type="button"
           className={`relative w-[220px] rounded-xl overflow-hidden group ${resolvingSrc ? "cursor-wait" : ""}`}
@@ -299,12 +324,12 @@ export default function Title() {
             </p>
           )}
 
-          {kind === "movie" && (
+          {/* Bouton Bande-annonce pour films ET séries si on a une source */}
+          {hasTrailer && (
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <button
-                className="btn disabled:opacity-50 disabled:cursor-not-allowed"
-                onClick={() => hasTrailer && (setPlaying(false), setShowTrailer(true))}
-                disabled={!hasTrailer}
+                className="btn"
+                onClick={() => (setPlaying(false), setShowTrailer(true))}
               >
                 ▶ Bande-annonce
               </button>
@@ -358,7 +383,7 @@ function SeriesSeasonsGrid({ seriesId, episodesBySeason, onPlay }) {
 
 function EpisodeCard({ season, ep, onPlay }) {
   const name = ep?.title || ep?.name || ep?.episode_name || "";
-  const num = ep?.episode_num;
+  ��const num = ep?.episode_num;
   const rawImg =
     ep?.stream_icon ||
     ep?.info?.movie_image ||
