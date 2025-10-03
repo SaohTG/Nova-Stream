@@ -31,18 +31,14 @@ function toYoutubeEmbed(urlOrId = "") {
   return `https://www.youtube-nocookie.com/embed/${id}?${qs}`;
 }
 
-// Recherche d’un trailer dans divers champs possibles (films & séries)
-function pickTrailerEmbed(data, kind) {
+function pickTrailerEmbed(data, _kind) {
   const candidates = [];
-  // commun
   if (data?.trailer?.embed_url) candidates.push(data.trailer.embed_url);
   if (data?.trailer?.url) candidates.push(data.trailer.url);
-  // champs TMDB possibles
   if (data?.videos?.results?.length) {
     const yt = (data.videos.results.find(v => (v.site || "").toLowerCase() === "youtube" && (v.type || "").toLowerCase().includes("trailer")) || data.videos.results[0]);
     if (yt?.key) candidates.push(yt.key);
   }
-  // spécifiques séries (côté Xtream / agrégés)
   const info = data?.info || {};
   if (info.trailer) candidates.push(info.trailer);
   if (info.trailer_url) candidates.push(info.trailer_url);
@@ -179,7 +175,6 @@ export default function Title() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, loading, data, kind, xid]);
 
-  // 🔎 Trailer pour films ET séries
   const trailerEmbed = useMemo(() => {
     if (!data) return "";
     return pickTrailerEmbed(data, kind);
@@ -274,7 +269,6 @@ export default function Title() {
       )}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
-        {/* Affiche clickable (films) */}
         <button
           type="button"
           className={`relative w-[220px] rounded-xl overflow-hidden group ${resolvingSrc ? "cursor-wait" : ""}`}
@@ -324,7 +318,6 @@ export default function Title() {
             </p>
           )}
 
-          {/* Bouton Bande-annonce pour films ET séries si on a une source */}
           {hasTrailer && (
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <button
@@ -383,7 +376,7 @@ function SeriesSeasonsGrid({ seriesId, episodesBySeason, onPlay }) {
 
 function EpisodeCard({ season, ep, onPlay }) {
   const name = ep?.title || ep?.name || ep?.episode_name || "";
-  ��const num = ep?.episode_num;
+  const num = ep?.episode_num;
   const rawImg =
     ep?.stream_icon ||
     ep?.info?.movie_image ||
