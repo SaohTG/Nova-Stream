@@ -161,7 +161,10 @@ async function tmdbDetails(kind, id) {
   const u = new URL(`${TMDB_BASE}/${kind === "movie" ? "movie" : "tv"}/${id}`);
   u.searchParams.set("api_key", TMDB_KEY);
   u.searchParams.set("language", "fr-FR");
-  u.searchParams.set("append_to_response", "videos"); // ← AJOUT pour récupérer les trailers
+  // Récupère aussi les vidéos pour les trailers YouTube
+  u.searchParams.set("append_to_response", "videos");
+  // Laisse TMDB retourner FR et EN
+  u.searchParams.set("include_video_language", "fr,en,null");
   return fetchJson(u.toString());
 }
 
@@ -187,19 +190,6 @@ async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
   }
 
   const det = await tmdbDetails("movie", tmdbId);
-
-  // — Trailer YouTube (videos append)
-  const vids = (det?.videos?.results || []).filter(v => v.site === "YouTube");
-  const pick = vids.find(v => v.type === "Trailer" && v.official)
-            || vids.find(v => v.type === "Trailer")
-            || vids.find(v => v.type === "Teaser");
-  const trailer = pick?.key ? {
-    id: pick.key,
-    url: `https://www.youtube.com/watch?v=${pick.key}`,
-    embed_url: `https://www.youtube-nocookie.com/embed/${pick.key}`,
-    name: pick.name || null,
-  } : null;
-
   const payload = {
     kind: "movie",
     xtream_id: String(vodId),
@@ -208,7 +198,6 @@ async function resolveMovie(reqUser, vodId, { refresh = false } = {}) {
     poster_url: det.poster_path ? `https://image.tmdb.org/t/p/w500${det.poster_path}` : null,
     backdrop_url: det.backdrop_path ? `https://image.tmdb.org/t/p/w1280${det.backdrop_path}` : null,
     overview: det.overview || null,
-    trailer, // ← AJOUT
     data: det,
   };
   await putCache("movie", vodId, tmdbId, payload.title, payload);
