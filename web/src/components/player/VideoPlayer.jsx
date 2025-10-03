@@ -1,6 +1,7 @@
-// web/src/components/player/VideoPlayer.jsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { postJson } from "../../lib/api";
+
+function fmt(t){ if(!Number.isFinite(t)) return "--:--"; const s=Math.floor(t%60).toString().padStart(2,"0"); const m=Math.floor((t/60)%60).toString().padStart(2,"0"); const h=Math.floor(t/3600); return h?`${h}:${m}:${s}`:`${m}:${s}`; }
 
 async function loadShakaOnce() {
   if (window.shaka) return window.shaka;
@@ -33,10 +34,14 @@ export default function VideoPlayer({
 }) {
   const videoRef = useRef(null);
   const playerRef = useRef(null);
+  const [dur, setDur] = useState(NaN);
+  const [t, setT] = useState(0);
   const [audios, setAudios] = useState([]);
   const [texts, setTexts] = useState([]);
   const [audioSel, setAudioSel] = useState({ lang: null, role: null });
   const [textSel, setTextSel] = useState({ lang: null, enabled: false });
+
+  const [loading, setLoading] = useState(false);
   const [autoBlocked, setAutoBlocked] = useState(false);
 
   const lsKey = useMemo(() => (resumeKey ? `ns_watch_${resumeKey}` : null), [resumeKey]);
@@ -53,29 +58,35 @@ export default function VideoPlayer({
 
   const resolvedSrc = useMemo(() => (src || null), [src]);
 
+  useEffect(() => { console.log("[Video src]", resolvedSrc); }, [resolvedSrc]);
+
   async function tryPlay(v) {
     v.muted = false;
     v.volume = 1;
-    try { await v.play(); setAutoBlocked(false); } catch { setAutoBlocked(true); }
+    try {
+      await v.play();
+      setAutoBlocked(false);
+    } catch {
+      setAutoBlocked(true);
+    }
   }
 
   useEffect(() => {
     let destroyed = false;
 
     const attachFile = (v, fileUrl) => {
-      v.preload = "metadata";
+      setLoading(true);
+      v.preload = "auto";
       v.src = fileUrl;
-
-      const onCanPlay = () => {
+      const onMeta = () => {
         try {
-          if (initialTime > 5 && Number.isFinite(v.duration)) {
+          if (initialTime > 0 && Number.isFinite(v.duration)) {
             v.currentTime = Math.min(initialTime, Math.max(0, (v.duration || 1) - 1));
           }
         } catch {}
         tryPlay(v);
       };
-
-      v.addEventListener("canplay", onCanPlay, { once: true });
+      v.addEventListener("loadedmetadata", onMeta, { once: true });
     };
 
     (async () => {
@@ -87,6 +98,15 @@ export default function VideoPlayer({
         playerRef.current = null;
       }
 
+      const onWaiting = () => setLoading(true);
+      const onPlaying = () => setLoading(false);
+      const onCanPlay = () => setLoading(false);
+      const onCanPlayThrough = () => setLoading(false);
+      v.addEventListener("waiting", onWaiting);
+      v.addEventListener("playing", onPlaying);
+      v.addEventListener("canplay", onCanPlay);
+      v.addEventListener("canplaythrough", onCanPlayThrough);
+
       const isLiveSrc = /\/api\/media\/live\//i.test(resolvedSrc);
       const isVodSrc  = /\/api\/media\/(movie|series)\//i.test(resolvedSrc);
 
@@ -95,6 +115,7 @@ export default function VideoPlayer({
         attachFile(v, fileUrl);
       } else if (isLiveSrc && isHls(resolvedSrc)) {
         try {
+          setLoading(true);
           const shaka = await loadShakaOnce();
           shaka.polyfill.installAll?.();
           if (!shaka.Player.isBrowserSupported()) throw new Error("Shaka unsupported");
@@ -109,9 +130,11 @@ export default function VideoPlayer({
           });
 
           const ne = player.getNetworkingEngine?.();
-          if (ne?.registerRequestFilter) {
-            ne.registerRequestFilter((_t, req) => { req.allowCrossSiteCredentials = true; });
+          if (ne && ne.registerRequestFilter) {
+            ne.registerRequestFilter((_type, req) => { req.allowCrossSiteCredentials = true; });
           }
+
+          player.addEventListener("error", (e) => console.error("[Shaka error]", e.detail));
 
           const refreshTracks = () => {
             const a = player.getAudioLanguagesAndRoles();
@@ -126,18 +149,27 @@ export default function VideoPlayer({
           player.addEventListener("variantchanged", refreshTracks);
           player.addEventListener("textchanged", refreshTracks);
 
-          await player.load(resolvedSrc, initialTime > 5 ? initialTime : 0);
+          await player.load(resolvedSrc, initialTime);
           if (destroyed) return;
+          setDur(v.duration || NaN);
           refreshTracks();
           await tryPlay(v);
         } catch (e) {
           console.error("[Player/HLS]", e);
           try { await playerRef.current?.destroy(); } catch {}
           playerRef.current = null;
+          setLoading(false);
         }
       } else {
         attachFile(v, resolvedSrc);
       }
+
+      return () => {
+        v.removeEventListener("waiting", onWaiting);
+        v.removeEventListener("playing", onPlaying);
+        v.removeEventListener("canplay", onCanPlay);
+        v.removeEventListener("canplaythrough", onCanPlayThrough);
+      };
     })();
 
     return () => { destroyed = true; };
@@ -148,11 +180,20 @@ export default function VideoPlayer({
     if (!v) return;
     let lastPush = 0;
     const onTime = () => {
+      setT(v.currentTime || 0);
+      setDur(v.duration || dur);
       if (!lsKey) return;
       const now = Date.now();
       if (now - lastPush > 4000) {
         lastPush = now;
-        const payload = { position: v.currentTime || 0, duration: v.duration || 0, title: title || null, src: resolvedSrc || src };
+        const payload = {
+          position: v.currentTime || 0,
+          duration: v.duration || 0,
+          title: title || null,
+          src: resolvedSrc || src,
+          poster: poster || null,        // <<< ajoute l’affiche en stockage
+          updatedAt: now,                // <<< ordonnancement “Reprendre”
+        };
         try { localStorage.setItem(lsKey, JSON.stringify(payload)); } catch {}
         if (resumeApi && resumeKey) {
           postJson("/user/watch/progress", { key: resumeKey, position: payload.position, duration: payload.duration }).catch(() => {});
@@ -160,7 +201,7 @@ export default function VideoPlayer({
       }
     };
     const onEndedCb = () => {
-      if (resumeApi && resumeKey) postJson("/user/watch/progress", { key: resumeKey, position: v.duration || 0, duration: v.duration || 0 }).catch(() => {});
+      if (resumeApi && resumeKey) postJson("/user/watch/progress", { key: resumeKey, position: dur, duration: dur }).catch(() => {});
       onEnded && onEnded();
     };
     v.addEventListener("timeupdate", onTime);
@@ -171,7 +212,7 @@ export default function VideoPlayer({
       v.removeEventListener("pause", onTime);
       v.removeEventListener("ended", onEndedCb);
     };
-  }, [lsKey, resumeApi, resumeKey, resolvedSrc, src, title, onEnded]);
+  }, [lsKey, resumeApi, resumeKey, resolvedSrc, src, title, poster, dur, onEnded]);
 
   const applyAudio = async (lang, role) => {
     const p = playerRef.current; if (!p) return;
@@ -195,6 +236,14 @@ export default function VideoPlayer({
         preload="metadata"
         crossOrigin="use-credentials"
       />
+      {loading && (
+        <div className="absolute inset-0 grid place-items-center bg-black/40 pointer-events-none">
+          <svg className="animate-spin h-10 w-10 text-white" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" opacity="0.25"/>
+            <path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" strokeWidth="4" fill="none"/>
+          </svg>
+        </div>
+      )}
       {autoBlocked && (
         <div className="absolute inset-0 grid place-items-center bg-black/50">
           <button
@@ -224,6 +273,9 @@ export default function VideoPlayer({
           <option value="">Sous-titres désactivés</option>
           {texts.map((t, i) => (<option key={`t-${i}`} value={t.lang}>{t.label}</option>))}
         </select>
+      </div>
+      <div className="absolute left-3 bottom-3 text-[11px] rounded bg-black/50 text-white px-2 py-1">
+        {fmt(t)} / {fmt(dur)}
       </div>
     </div>
   );
