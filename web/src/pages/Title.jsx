@@ -4,53 +4,58 @@ import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { getJson } from "../lib/api";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
+/* ---------- Helpers ---------- */
 function toYoutubeEmbed(urlOrId = "") {
   if (!urlOrId) return "";
-  let id = "";
+  if (/^https?:\/\/(www\.)?youtube\.com\/embed\//.test(urlOrId)) return urlOrId;
   try {
     if (/^https?:\/\//i.test(urlOrId)) {
       const u = new URL(urlOrId);
-      if (u.hostname.includes("youtu.be")) id = u.pathname.replace(/^\//, "");
-      else if (u.hostname.includes("youtube.com")) id = u.searchParams.get("v") || "";
-      else if (u.pathname.startsWith("/embed/")) id = u.pathname.split("/").pop() || "";
-    } else {
-      id = urlOrId;
+      if (u.hostname.includes("youtu.be")) {
+        const id = u.pathname.replace(/^\//, "");
+        return id ? `https://www.youtube.com/embed/${id}` : "";
+      }
+      if (u.hostname.includes("youtube.com")) {
+        const id = u.searchParams.get("v");
+        return id ? `https://www.youtube.com/embed/${id}` : "";
+      }
     }
-  } catch { id = urlOrId; }
-  id = (id || "").trim();
-  if (!id) return "";
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const qs = new URLSearchParams({
-    autoplay: "1",
-    playsinline: "1",
-    rel: "0",
-    modestbranding: "1",
-    enablejsapi: "1",
-    origin
-  }).toString();
-  return `https://www.youtube-nocookie.com/embed/${id}?${qs}`;
+  } catch {}
+  return `https://www.youtube.com/embed/${urlOrId}`;
 }
 
-function pickTrailerEmbed(data, _kind) {
-  const candidates = [];
-  if (data?.trailer?.embed_url) candidates.push(data.trailer.embed_url);
-  if (data?.trailer?.url) candidates.push(data.trailer.url);
-  if (data?.videos?.results?.length) {
-    const yt = (data.videos.results.find(v => (v.site || "").toLowerCase() === "youtube" && (v.type || "").toLowerCase().includes("trailer")) || data.videos.results[0]);
-    if (yt?.key) candidates.push(yt.key);
-  }
-  const info = data?.info || {};
-  if (info.trailer) candidates.push(info.trailer);
-  if (info.trailer_url) candidates.push(info.trailer_url);
-  if (info.youtube_trailer) candidates.push(info.youtube_trailer);
-  if (info.youtube_trailer_id) candidates.push(info.youtube_trailer_id);
-  if (info.trailer_embed_url) candidates.push(info.trailer_embed_url);
+function pickTrailerEmbed(data, kind) {
+  // 1) chemins directs connus
+  const direct =
+    data?.trailer?.embed_url ||
+    data?.trailer?.url ||
+    data?.trailer?.youtube_id ||
+    data?.trailer?.id ||
+    null;
 
-  for (const c of candidates) {
-    const em = toYoutubeEmbed(c);
-    if (em) return em;
-  }
-  return "";
+  // 2) TMDB videos si présent dans payload (movie or tv)
+  const tmdbVideos =
+    data?.data?.videos?.results ||
+    data?.videos?.results ||
+    data?.info?.videos?.results ||
+    [];
+
+  const ytFromVideos = (() => {
+    const arr = Array.isArray(tmdbVideos) ? tmdbVideos : [];
+    // priorité aux "Trailer", sinon "Teaser"
+    const pick = (type) =>
+      arr.find(
+        (v) =>
+          String(v?.site).toLowerCase() === "youtube" &&
+          String(v?.type).toLowerCase() === type &&
+          v?.key
+      );
+    const t = pick("trailer") || pick("teaser");
+    return t?.key ? `https://www.youtube.com/embed/${t.key}` : null;
+  })();
+
+  const raw = direct || ytFromVideos || "";
+  return raw ? toYoutubeEmbed(raw) : "";
 }
 
 function Spinner({ label = "Chargement…" }) {
@@ -65,6 +70,7 @@ function Spinner({ label = "Chargement…" }) {
   );
 }
 
+/* ---------- Page ---------- */
 export default function Title() {
   const { kind, id } = useParams();
   const [search] = useSearchParams();
@@ -87,6 +93,7 @@ export default function Title() {
     return Number.isFinite(v) && v > 0 ? v : 0;
   }, [search]);
 
+  // Fetch data (movie metadata or series info)
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -107,6 +114,7 @@ export default function Title() {
     return () => { alive = false; };
   }, [kind, xid]);
 
+  // Reset playback state on id change
   useEffect(() => {
     setPlaying(false);
     setResolvingSrc(false);
@@ -116,9 +124,11 @@ export default function Title() {
     setCurrentResumeKey(null);
   }, [kind, xid]);
 
+  // Trailer modal page scroll lock
   useEffect(() => {
     const root = document.documentElement;
-    root.style.overflow = showTrailer ? "hidden" : "";
+    if (showTrailer) root.style.overflow = "hidden";
+    else root.style.overflow = "";
     const onKey = (e) => { if (e.key === "Escape") setShowTrailer(false); };
     window.addEventListener("keydown", onKey);
     return () => {
@@ -127,6 +137,7 @@ export default function Title() {
     };
   }, [showTrailer]);
 
+  // Playback start helpers
   async function startPlayback() {
     if (kind !== "movie") return;
     setShowTrailer(false);
@@ -163,6 +174,7 @@ export default function Title() {
     }
   }
 
+  // Autoplay via querystring
   useEffect(() => {
     const auto = search.get("play") === "1";
     if (!auto || loading || !data) return;
@@ -175,10 +187,8 @@ export default function Title() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, loading, data, kind, xid]);
 
-  const trailerEmbed = useMemo(() => {
-    if (!data) return "";
-    return pickTrailerEmbed(data, kind);
-  }, [data, kind]);
+  // Trailer handling (movies + series)
+  const trailerEmbed = useMemo(() => pickTrailerEmbed(data, kind), [data, kind]);
   const hasTrailer = Boolean(trailerEmbed);
 
   if (loading) {
@@ -199,12 +209,13 @@ export default function Title() {
     kind === "series"
       ? (data?.info?.cover || data?.info?.backdrop_path || "")
       : (data.poster_url || data.backdrop_url || "");
-  const movieTitle = data.title;
+  const movieTitle = data?.title || "";
   const seriesTitle = data?.info?.name || data?.info?.series_name || "";
 
   return (
     <div className="mx-auto w-full max-w-7xl px-4 py-6">
-      {showTrailer && hasTrailer && (
+      {/* Trailer modal */}
+      {showTrailer && (
         <div
           className="fixed inset-0 z-[1000] bg-black/80 backdrop-blur-sm grid place-items-center p-4"
           onClick={() => setShowTrailer(false)}
@@ -213,15 +224,19 @@ export default function Title() {
             className="relative w-full max-w-5xl aspect-video rounded-xl overflow-hidden bg-black"
             onClick={(e) => e.stopPropagation()}
           >
-            <iframe
-              className="h-full w-full"
-              src={trailerEmbed}
-              title="Bande-annonce"
-              allow="autoplay; encrypted-media; picture-in-picture"
-              allowFullScreen
-              referrerPolicy="origin"
-              sandbox="allow-scripts allow-same-origin allow-presentation allow-popups"
-            />
+            {hasTrailer ? (
+              <iframe
+                className="h-full w-full"
+                src={`${trailerEmbed}?autoplay=1&rel=0`}
+                title="Bande-annonce"
+                allow="autoplay; encrypted-media; picture-in-picture"
+                allowFullScreen
+              />
+            ) : (
+              <div className="grid h-full w-full place-items-center text-zinc-300">
+                Aucune bande-annonce intégrée.
+              </div>
+            )}
             <button
               type="button"
               onClick={() => setShowTrailer(false)}
@@ -230,20 +245,11 @@ export default function Title() {
             >
               Fermer
             </button>
-            <div className="absolute left-3 bottom-3">
-              <a
-                href={trailerEmbed.replace("youtube-nocookie.com/embed/","youtube.com/watch?v=").replace(/\?.*$/,"")}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded bg-white/90 px-3 py-1 text-black text-xs hover:bg-white"
-              >
-                Ouvrir sur YouTube
-              </a>
-            </div>
           </div>
         </div>
       )}
 
+      {/* Player area */}
       {!showTrailer && playing && (
         <div className="mb-6 w-full overflow-hidden rounded-xl bg-black aspect-video">
           {!src ? (
@@ -268,7 +274,9 @@ export default function Title() {
         </div>
       )}
 
+      {/* Details */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[220px,1fr]">
+        {/* Poster button (movies only) */}
         <button
           type="button"
           className={`relative w-[220px] rounded-xl overflow-hidden group ${resolvingSrc ? "cursor-wait" : ""}`}
@@ -284,7 +292,7 @@ export default function Title() {
           ) : posterSrc ? (
             <img
               src={posterSrc}
-              alt={(kind === "series" ? seriesTitle : (movieTitle || ""))}
+              alt={(kind === "series" ? seriesTitle : movieTitle)}
               className="w-[220px] h-full object-cover"
               draggable={false}
             />
@@ -305,7 +313,7 @@ export default function Title() {
 
         <div>
           <h1 className="text-2xl font-bold">
-            {kind === "series" ? seriesTitle : (movieTitle || "")}
+            {kind === "series" ? seriesTitle : movieTitle}
           </h1>
           {kind === "movie" && data.vote_average != null && (
             <div className="mt-1 text-sm text-zinc-300">
@@ -318,19 +326,35 @@ export default function Title() {
             </p>
           )}
 
-          {hasTrailer && (
-            <div className="mt-6 flex flex-wrap items-center gap-3">
-              <button
-                className="btn"
-                onClick={() => (setPlaying(false), setShowTrailer(true))}
-              >
-                ▶ Bande-annonce
-              </button>
-            </div>
-          )}
+          {/* Bande-annonce: films ET séries.
+              - Si embed dispo → modal
+              - Sinon → recherche YouTube de secours */}
+          <div className="mt-6 flex flex-wrap items-center gap-3">
+            <button
+              className={`btn ${!hasTrailer ? "bg-white/80 text-black hover:bg-white" : ""}`}
+              onClick={() => {
+                const titleText = kind === "series" ? (seriesTitle || "") : (movieTitle || "");
+                if (hasTrailer) {
+                  setPlaying(false);
+                  setShowTrailer(true);
+                } else if (titleText) {
+                  const q = `${titleText} bande annonce trailer`;
+                  window.open(
+                    `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`,
+                    "_blank",
+                    "noopener,noreferrer"
+                  );
+                }
+              }}
+              title={hasTrailer ? "Voir la bande-annonce" : "Aucune bande-annonce intégrée — ouvrir une recherche YouTube"}
+            >
+              ▶ Bande-annonce
+            </button>
+          </div>
         </div>
       </div>
 
+      {/* Series seasons grid */}
       {kind === "series" && (
         <SeriesSeasonsGrid
           seriesId={xid}
