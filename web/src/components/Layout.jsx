@@ -65,15 +65,16 @@ export default function Layout({ children }) {
 
           {/* Right controls */}
           <div className="ml-auto flex items-center gap-2">
-            {/* Account icon: visible on all breakpoints */}
-            <Link
+            {/* Icône Compte → /account */}
+            <NavLink
               to="/account"
+              onClick={() => setMenuOpen(false)}
               className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-zinc-800/80 ring-1 ring-white/10 hover:bg-zinc-700/80 text-white"
               title="Compte"
               aria-label="Compte"
             >
               <AccountIcon className="h-5 w-5" />
-            </Link>
+            </NavLink>
 
             {/* Desktop logout */}
             <button
