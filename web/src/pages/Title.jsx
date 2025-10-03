@@ -5,22 +5,33 @@ import { getJson } from "../lib/api";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
 function toYoutubeEmbed(urlOrId = "") {
-  if (!urlOrId) return "";
-  if (/^https?:\/\/(www\.)?youtube\.com\/embed\//.test(urlOrId)) return urlOrId;
+  const s = String(urlOrId || "").trim();
+  if (!s) return { embed: "", id: "", raw: "" };
+
+  // ID pur
+  if (/^[a-zA-Z0-9_-]{11}$/.test(s)) {
+    return { embed: `https://www.youtube-nocookie.com/embed/${s}`, id: s, raw: s };
+  }
+
+  // URL complète
   try {
-    if (/^https?:\/\//i.test(urlOrId)) {
-      const u = new URL(urlOrId);
-      if (u.hostname.includes("youtu.be")) {
-        const id = u.pathname.replace(/^\//, "");
-        return id ? `https://www.youtube.com/embed/${id}` : "";
-      }
-      if (u.hostname.includes("youtube.com")) {
-        const id = u.searchParams.get("v");
-        return id ? `https://www.youtube.com/embed/${id}` : "";
-      }
+    const u = new URL(s);
+    const host = u.hostname.replace(/^www\./, "");
+    let id = "";
+
+    if (host === "youtu.be") {
+      id = u.pathname.replace(/^\//, "").split("/")[0] || "";
+    } else if (host.endsWith("youtube.com")) {
+      if (u.pathname.startsWith("/watch")) id = u.searchParams.get("v") || "";
+      else if (u.pathname.startsWith("/shorts/")) id = (u.pathname.split("/")[2] || "");
+      else if (u.pathname.startsWith("/embed/")) id = (u.pathname.split("/")[2] || "");
+    }
+    if (id && /^[a-zA-Z0-9_-]{11}$/.test(id)) {
+      return { embed: `https://www.youtube-nocookie.com/embed/${id}`, id, raw: s };
     }
   } catch {}
-  return `https://www.youtube.com/embed/${urlOrId}`;
+
+  return { embed: "", id: "", raw: s };
 }
 
 function Spinner({ label = "Chargement…" }) {
@@ -88,8 +99,7 @@ export default function Title() {
 
   useEffect(() => {
     const root = document.documentElement;
-    if (showTrailer) root.style.overflow = "hidden";
-    else root.style.overflow = "";
+    root.style.overflow = showTrailer ? "hidden" : "";
     const onKey = (e) => { if (e.key === "Escape") setShowTrailer(false); };
     window.addEventListener("keydown", onKey);
     return () => {
@@ -134,6 +144,7 @@ export default function Title() {
     }
   }
 
+  // Auto play depuis query
   useEffect(() => {
     const auto = search.get("play") === "1";
     if (!auto || loading || !data) return;
@@ -146,13 +157,18 @@ export default function Title() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, loading, data, kind, xid]);
 
-  const trailerEmbed = useMemo(() => {
-    if (kind !== "movie") return "";
-    const e = data?.trailer?.embed_url;
-    const u = data?.trailer?.url;
-    return toYoutubeEmbed(e || u || "");
-  }, [data, kind]);
-  const hasTrailer = Boolean(trailerEmbed);
+  // Bande-annonce: support films et séries si présent
+  const trailerRaw = useMemo(() => {
+    return (
+      data?.trailer?.embed_url ||
+      data?.trailer?.url ||
+      data?.trailer_url ||
+      data?.trailer ||
+      ""
+    );
+  }, [data]);
+  const trailer = useMemo(() => toYoutubeEmbed(trailerRaw), [trailerRaw]);
+  const hasTrailer = Boolean(trailer.embed);
 
   if (loading) {
     return <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">Chargement…</div>;
@@ -188,10 +204,14 @@ export default function Title() {
           >
             <iframe
               className="h-full w-full"
-              src={`${trailerEmbed}?autoplay=1&rel=0`}
+              src={`${trailer.embed}?autoplay=1&rel=0&modestbranding=1&playsinline=1`}
               title="Bande-annonce"
-              allow="autoplay; encrypted-media; picture-in-picture"
+              allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+              referrerPolicy="strict-origin-when-cross-origin"
               allowFullScreen
+              onError={() => {
+                if (trailer.raw) window.open(trailer.raw, "_blank", "noopener,noreferrer");
+              }}
             />
             <button
               type="button"
@@ -279,7 +299,7 @@ export default function Title() {
             </p>
           )}
 
-          {kind === "movie" && (
+          {(kind === "movie" || kind === "series") && (
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <button
                 className="btn disabled:opacity-50 disabled:cursor-not-allowed"
@@ -359,7 +379,7 @@ function EpisodeCard({ season, ep, onPlay }) {
         {img ? (
           <img src={img} alt={name || "Episode"} className="h-full w-full object-cover" loading="lazy" />
         ) : (
-          <div className="grid h.full w.full place-items-center text-zinc-400">
+          <div className="grid h-full w-full place-items-center text-zinc-400">
             S{season} • E{num}
           </div>
         )}
