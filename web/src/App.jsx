@@ -23,10 +23,10 @@ import SearchPage from "./pages/Search.jsx";
 import Title from "./pages/Title.jsx";
 import MyList from "./pages/MyList.jsx";
 import Watch from "./pages/Watch.jsx";
-import Account from "./pages/Account.jsx"; // ← ajout
 
 import Login from "./pages/Login.jsx";
 import Signup from "./pages/Signup.jsx";
+import Account from "./pages/Account.jsx";
 
 function CenterLoader({ label = "Chargement…" }) {
   return (
@@ -99,10 +99,10 @@ export default function App() {
         {/* Protégé */}
         <Route element={<RequireAuth />}>
           <Route element={<Shell />}>
-            {/* Auth OK mais Xtream facultatif */}
+            {/* Auth OK, Xtream facultatif */}
             <Route path="/onboarding/xtream" element={<OnboardingXtream />} />
             <Route path="/settings" element={<Settings />} />
-            <Route path="/compte" element={<Account />} /> {/* ← nouvelle page compte */}
+            <Route path="/account" element={<Account />} /> {/* ← ICI */}
 
             {/* Contenus : Xtream requis */}
             <Route element={<RequireXtream />}>
@@ -115,7 +115,6 @@ export default function App() {
               <Route path="/series/category/:id" element={<SeriesCategory />} />
               <Route path="/title/:kind/:id" element={<Title />} />
               <Route path="/my-list" element={<MyList />} />
-              {/* Watch : 2 formes prises en charge */}
               <Route path="/watch/:kind/:id" element={<Watch />} />
               <Route path="/watch" element={<Watch />} />
             </Route>
