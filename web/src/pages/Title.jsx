@@ -5,33 +5,22 @@ import { getJson } from "../lib/api";
 import VideoPlayer from "../components/player/VideoPlayer.jsx";
 
 function toYoutubeEmbed(urlOrId = "") {
-  const s = String(urlOrId || "").trim();
-  if (!s) return { embed: "", id: "", raw: "" };
-
-  // ID pur
-  if (/^[a-zA-Z0-9_-]{11}$/.test(s)) {
-    return { embed: `https://www.youtube-nocookie.com/embed/${s}`, id: s, raw: s };
-  }
-
-  // URL complète
+  if (!urlOrId) return "";
+  if (/^https?:\/\/(www\.)?youtube\.com\/embed\//.test(urlOrId)) return urlOrId;
   try {
-    const u = new URL(s);
-    const host = u.hostname.replace(/^www\./, "");
-    let id = "";
-
-    if (host === "youtu.be") {
-      id = u.pathname.replace(/^\//, "").split("/")[0] || "";
-    } else if (host.endsWith("youtube.com")) {
-      if (u.pathname.startsWith("/watch")) id = u.searchParams.get("v") || "";
-      else if (u.pathname.startsWith("/shorts/")) id = (u.pathname.split("/")[2] || "");
-      else if (u.pathname.startsWith("/embed/")) id = (u.pathname.split("/")[2] || "");
-    }
-    if (id && /^[a-zA-Z0-9_-]{11}$/.test(id)) {
-      return { embed: `https://www.youtube-nocookie.com/embed/${id}`, id, raw: s };
+    if (/^https?:\/\//i.test(urlOrId)) {
+      const u = new URL(urlOrId);
+      if (u.hostname.includes("youtu.be")) {
+        const id = u.pathname.replace(/^\//, "");
+        return id ? `https://www.youtube.com/embed/${id}` : "";
+      }
+      if (u.hostname.includes("youtube.com")) {
+        const id = u.searchParams.get("v");
+        return id ? `https://www.youtube.com/embed/${id}` : "";
+      }
     }
   } catch {}
-
-  return { embed: "", id: "", raw: s };
+  return `https://www.youtube.com/embed/${urlOrId}`;
 }
 
 function Spinner({ label = "Chargement…" }) {
@@ -68,17 +57,26 @@ export default function Title() {
     return Number.isFinite(v) && v > 0 ? v : 0;
   }, [search]);
 
+  // Chargement + auto-refresh si trailer manquant (cache ancien)
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
+        setLoading(true);
+        let j;
         if (kind === "series") {
-          const j = await getJson(`/xtream/series-info/${encodeURIComponent(xid)}`);
-          if (alive) setData(j);
+          j = await getJson(`/xtream/series-info/${encodeURIComponent(xid)}`);
         } else {
-          const j = await getJson(`/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}`);
-          if (alive) setData(j);
+          j = await getJson(`/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}`);
+          // si pas de trailer → on force un refresh côté API pour regénérer depuis TMDB
+          if (kind === "movie" && (!j?.trailer?.embed_url && !j?.trailer?.url)) {
+            try {
+              const jr = await getJson(`/media/${encodeURIComponent(kind)}/${encodeURIComponent(xid)}?refresh=1`);
+              if (jr?.trailer?.embed_url || jr?.trailer?.url) j = jr;
+            } catch {}
+          }
         }
+        if (alive) setData(j || null);
       } catch {
         if (alive) setData(null);
       } finally {
@@ -99,7 +97,8 @@ export default function Title() {
 
   useEffect(() => {
     const root = document.documentElement;
-    root.style.overflow = showTrailer ? "hidden" : "";
+    if (showTrailer) root.style.overflow = "hidden";
+    else root.style.overflow = "";
     const onKey = (e) => { if (e.key === "Escape") setShowTrailer(false); };
     window.addEventListener("keydown", onKey);
     return () => {
@@ -144,7 +143,6 @@ export default function Title() {
     }
   }
 
-  // Auto play depuis query
   useEffect(() => {
     const auto = search.get("play") === "1";
     if (!auto || loading || !data) return;
@@ -157,18 +155,13 @@ export default function Title() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [search, loading, data, kind, xid]);
 
-  // Bande-annonce: support films et séries si présent
-  const trailerRaw = useMemo(() => {
-    return (
-      data?.trailer?.embed_url ||
-      data?.trailer?.url ||
-      data?.trailer_url ||
-      data?.trailer ||
-      ""
-    );
-  }, [data]);
-  const trailer = useMemo(() => toYoutubeEmbed(trailerRaw), [trailerRaw]);
-  const hasTrailer = Boolean(trailer.embed);
+  const trailerEmbed = useMemo(() => {
+    if (kind !== "movie") return "";
+    const e = data?.trailer?.embed_url;
+    const u = data?.trailer?.url;
+    return toYoutubeEmbed(e || u || "");
+  }, [data, kind]);
+  const hasTrailer = Boolean(trailerEmbed);
 
   if (loading) {
     return <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">Chargement…</div>;
@@ -204,14 +197,10 @@ export default function Title() {
           >
             <iframe
               className="h-full w-full"
-              src={`${trailer.embed}?autoplay=1&rel=0&modestbranding=1&playsinline=1`}
+              src={`${trailerEmbed}?autoplay=1&rel=0`}
               title="Bande-annonce"
-              allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-              referrerPolicy="strict-origin-when-cross-origin"
+              allow="autoplay; encrypted-media; picture-in-picture"
               allowFullScreen
-              onError={() => {
-                if (trailer.raw) window.open(trailer.raw, "_blank", "noopener,noreferrer");
-              }}
             />
             <button
               type="button"
@@ -299,12 +288,13 @@ export default function Title() {
             </p>
           )}
 
-          {(kind === "movie" || kind === "series") && (
+          {kind === "movie" && (
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <button
-                className="btn disabled:opacity-50 disabled:cursor-not-allowed"
+                className="btn"
                 onClick={() => hasTrailer && (setPlaying(false), setShowTrailer(true))}
                 disabled={!hasTrailer}
+                title={hasTrailer ? "Voir la bande-annonce" : "Bande-annonce indisponible"}
               >
                 ▶ Bande-annonce
               </button>
