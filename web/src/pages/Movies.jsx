@@ -5,6 +5,7 @@ import Row from "../components/Row.jsx";
 
 const CATS_BATCH = 30;
 const PER_CAT = 15;
+const RECENT_MAX = 24;
 
 function getMovieId(it) {
   return String(
@@ -80,6 +81,20 @@ function computeResumeRow(fromGroups) {
   return list.slice(0, 20);
 }
 
+// helpers “Ajoutés récemment”
+function addedValue(x) {
+  const v = x?.added;
+  if (v == null) return 0;
+  if (typeof v === "number") return v;
+  const n = Number(v);
+  if (Number.isFinite(n)) return n;
+  const d = Date.parse(String(v));
+  return Number.isFinite(d) ? Math.floor(d / 1000) : 0;
+}
+function sortByAddedDesc(list) {
+  return [...(Array.isArray(list) ? list : [])].sort((a, b) => addedValue(b) - addedValue(a));
+}
+
 export default function Movies() {
   const [cats, setCats] = useState([]);
   const [rows, setRows] = useState([]);
@@ -88,6 +103,10 @@ export default function Movies() {
   const [loadingCats, setLoadingCats] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState(null);
+
+  // Ajoutés récemment
+  const [recent, setRecent] = useState([]);
+  const [loadingRecent, setLoadingRecent] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -107,6 +126,28 @@ export default function Movies() {
         setErr(e?.message || "Erreur catégories films");
       } finally {
         if (alive) setLoadingCats(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  // charger “Ajoutés récemment”
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        setLoadingRecent(true);
+        // Essai: tri côté serveur
+        let items = await postJson("/xtream/movies", { limit: RECENT_MAX, sort: "added_desc" }).catch(() => null);
+        if (!Array.isArray(items) || items.length === 0) {
+          // Repli: gros lot + tri local
+          const bulk = await postJson("/xtream/movies", { limit: 200 }).catch(() => []);
+          items = sortByAddedDesc(bulk).slice(0, RECENT_MAX);
+        }
+        if (!alive) return;
+        setRecent(decorateItemsWithResume(items));
+      } finally {
+        if (alive) setLoadingRecent(false);
       }
     })();
     return () => { alive = false; };
@@ -159,7 +200,9 @@ export default function Movies() {
     const onStorage = (e) => {
       if (!e || typeof e.key !== "string") return;
       if (e.key.startsWith("ns_watch_movie:")) {
+        // refresh “reprendre” + “ajoutés récemment” (mise à jour badge/progress)
         setResumeItems(computeResumeRow(rows));
+        setRecent((prev) => decorateItemsWithResume(prev));
       }
     };
     window.addEventListener("storage", onStorage);
@@ -171,6 +214,21 @@ export default function Movies() {
       <h1 className="mb-4 text-2xl font-bold">Films</h1>
       {err && <div className="mb-4 rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
 
+      {/* Ajoutés récemment */}
+      {(loadingRecent && recent.length === 0) ? (
+        <Row title="Ajoutés récemment" loading />
+      ) : recent.length > 0 ? (
+        <Row
+          title="Ajoutés récemment"
+          items={recent}
+          kind="vod"
+          itemLinkKey="linkOverride"
+          itemProgressKey="progressPct"
+          itemBadgeKey="badgeResume"
+        />
+      ) : null}
+
+      {/* Reprendre */}
       {resumeItems.length > 0 && (
         <Row
           key="resume-row"
@@ -183,6 +241,7 @@ export default function Movies() {
         />
       )}
 
+      {/* Catégories */}
       {rows.length === 0 && (loadingCats || loadingMore) && (
         <Row title="Chargement…" loading />
       )}
