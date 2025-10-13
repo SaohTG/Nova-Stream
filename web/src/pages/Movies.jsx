@@ -26,6 +26,15 @@ function getMovieNumericId(it) {
   const n = Number(raw);
   return Number.isFinite(n) ? n : -Infinity;
 }
+function getAddedMs(it) {
+  // Xtream renvoie souvent "added" en secondes (string). On normalise en millisecondes.
+  let v = it?.added ?? it?.info?.added ?? null;
+  if (v == null) return null;
+  let n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  if (n < 1e12) n = n * 1000; // secondes -> ms
+  return n;
+}
 
 function getResumeForMovie(movieId) {
   if (!movieId) return null;
@@ -61,6 +70,7 @@ function decorateItemsWithResume(items) {
       ...it,
       __xid: xid,
       __nid: getMovieNumericId(it),
+      __addedMs: getAddedMs(it),
       linkOverride,
       progressPct: resume ? Math.min(100, Math.round(resume.pct * 100)) : undefined,
       badgeResume: resume ? "Reprendre" : undefined,
@@ -92,23 +102,47 @@ function computeResumeRow(fromGroups) {
   return list.slice(0, 20);
 }
 
-/* ==== NEW: compute “Ajoutés récemment” by ID desc only ==== */
-function computeRecentByIdDesc(fromGroups) {
+/* ==== NEW: “Ajoutés récemment” = éléments ajoutés dans les 7 derniers jours ==== */
+function computeRecentThisWeek(fromGroups) {
+  const oneWeekMs = 7 * 24 * 3600 * 1000;
+  const cutoff = Date.now() - oneWeekMs;
+
+  // Dédoublonne par film
   const map = new Map();
   for (const g of fromGroups) {
     for (const it of g.items || []) {
       if (!it.__xid) continue;
-      const existing = map.get(it.__xid);
-      if (!existing) { map.set(it.__xid, it); continue; }
-      // garde la version avec l’ID numérique le plus élevé (au cas de doublons)
-      if ((it.__nid ?? -Infinity) > (existing.__nid ?? -Infinity)) {
+      if (!Number.isFinite(it.__addedMs)) continue; // ignore si pas de date
+      if (it.__addedMs < cutoff) continue;         // garde seulement la semaine
+
+      const prev = map.get(it.__xid);
+      if (!prev || (it.__addedMs > (prev.__addedMs || -Infinity))) {
         map.set(it.__xid, it);
       }
     }
   }
-  const all = Array.from(map.values());
-  all.sort((a, b) => (b.__nid ?? -Infinity) - (a.__nid ?? -Infinity));
-  return all.slice(0, 20);
+
+  const list = Array.from(map.values());
+  list.sort((a, b) => (b.__addedMs || 0) - (a.__addedMs || 0));
+
+  // Si rien trouvé (pas de champ added côté Xtream), fallback: ID décroissant (au cas où)
+  if (list.length === 0) {
+    const fallbackMap = new Map();
+    for (const g of fromGroups) {
+      for (const it of g.items || []) {
+        if (!it.__xid) continue;
+        const ex = fallbackMap.get(it.__xid);
+        if (!ex || (it.__nid ?? -Infinity) > (ex.__nid ?? -Infinity)) {
+          fallbackMap.set(it.__xid, it);
+        }
+      }
+    }
+    const fb = Array.from(fallbackMap.values());
+    fb.sort((a, b) => (b.__nid ?? -Infinity) - (a.__nid ?? -Infinity));
+    return fb.slice(0, 20);
+  }
+
+  return list.slice(0, 20);
 }
 
 /* ==== Page ==== */
@@ -149,7 +183,7 @@ export default function Movies() {
 
   const recomputeSpecialRows = useCallback((groups) => {
     setResumeItems(computeResumeRow(groups));
-    setRecentItems(computeRecentByIdDesc(groups)); // basé UNIQUEMENT sur l’ID
+    setRecentItems(computeRecentThisWeek(groups)); // <= semaine courante via `added`
   }, []);
 
   const loadMoreCats = useCallback(async () => {
@@ -192,7 +226,7 @@ export default function Movies() {
     }
   }, [loadingCats, cats, nextIndex, loadMoreCats]);
 
-  // sync Reprendre en direct si autre onglet met à jour le localStorage
+  // sync Reprendre si autre onglet met à jour le localStorage
   useEffect(() => {
     const onStorage = (e) => {
       if (!e || typeof e.key !== "string") return;
@@ -209,7 +243,7 @@ export default function Movies() {
       <h1 className="mb-4 text-2xl font-bold">Films</h1>
       {err && <div className="mb-4 rounded-xl bg-rose-900/40 p-3 text-rose-200">{err}</div>}
 
-      {/* Reprendre (top) */}
+      {/* Reprendre (tout en haut) */}
       {resumeItems.length > 0 && (
         <Row
           key="resume-row"
@@ -222,7 +256,7 @@ export default function Movies() {
         />
       )}
 
-      {/* Ajoutés récemment par ID décroissant */}
+      {/* Ajoutés récemment (semaine) */}
       {recentItems.length > 0 && (
         <Row
           key="recent-row"
