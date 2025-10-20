@@ -1,4 +1,5 @@
 // web/src/components/Row.jsx
+import React from "react";
 import { Link } from "react-router-dom";
 import { useEffect, useRef, useState, useCallback } from "react";
 import PosterCard from "./PosterCard.jsx";
@@ -13,7 +14,7 @@ function SkeletonCard({ kind = "vod" }) {
   );
 }
 
-export default function Row({ title, items = [], kind = "vod", loading = false, seeMoreHref }) {
+const Row = React.memo(function Row({ title, items = [], kind = "vod", loading = false, seeMoreHref }) {
   const w = kind === "live" ? "w-[12rem] md:w-[14rem]" : "w-40 md:w-44 xl:w-48";
 
   const trackRef = useRef(null);
@@ -157,7 +158,7 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
     const te = () => {
       axis.current = null;
       setDragging(false);
-      // Pas d’inertie en tactile pour rester natif
+      // Pas d'inertie en tactile pour rester natif
     };
 
     el.addEventListener("touchstart", ts, { passive: true });
@@ -257,4 +258,6 @@ export default function Row({ title, items = [], kind = "vod", loading = false, 
       </div>
     </section>
   );
-}
+});
+
+export default Row;

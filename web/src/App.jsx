@@ -1,5 +1,5 @@
 // web/src/App.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useState, Suspense, lazy } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -11,27 +11,39 @@ import {
 import { getJson } from "./lib/api";
 
 import Layout from "./components/Layout.jsx";
-import Home from "./pages/Home.jsx";
-import Movies from "./pages/Movies.jsx";
-import Series from "./pages/Series.jsx";
-import Live from "./pages/Live.jsx";
-import Settings from "./pages/Settings.jsx";
-import OnboardingXtream from "./pages/OnboardingXtream.jsx";
-import MovieCategory from "./pages/MovieCategory.jsx";
-import SeriesCategory from "./pages/SeriesCategory.jsx";
-import SearchPage from "./pages/Search.jsx";
-import Title from "./pages/Title.jsx";
-import MyList from "./pages/MyList.jsx";
-import Watch from "./pages/Watch.jsx";
 
-import Login from "./pages/Login.jsx";
-import Signup from "./pages/Signup.jsx";
-import Account from "./pages/Account.jsx";
+// Lazy load pages for better performance
+const Home = lazy(() => import("./pages/Home.jsx"));
+const Movies = lazy(() => import("./pages/Movies.jsx"));
+const Series = lazy(() => import("./pages/Series.jsx"));
+const Live = lazy(() => import("./pages/Live.jsx"));
+const Settings = lazy(() => import("./pages/Settings.jsx"));
+const OnboardingXtream = lazy(() => import("./pages/OnboardingXtream.jsx"));
+const MovieCategory = lazy(() => import("./pages/MovieCategory.jsx"));
+const SeriesCategory = lazy(() => import("./pages/SeriesCategory.jsx"));
+const SearchPage = lazy(() => import("./pages/Search.jsx"));
+const Title = lazy(() => import("./pages/Title.jsx"));
+const MyList = lazy(() => import("./pages/MyList.jsx"));
+const Watch = lazy(() => import("./pages/Watch.jsx"));
+const Login = lazy(() => import("./pages/Login.jsx"));
+const Signup = lazy(() => import("./pages/Signup.jsx"));
+const Account = lazy(() => import("./pages/Account.jsx"));
 
 function CenterLoader({ label = "Chargement…" }) {
   return (
     <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">
       {label}
+    </div>
+  );
+}
+
+function PageLoader() {
+  return (
+    <div className="flex min-h-[50vh] items-center justify-center text-zinc-400">
+      <div className="flex items-center gap-2">
+        <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-400 border-t-transparent"></div>
+        Chargement de la page…
+      </div>
     </div>
   );
 }
@@ -91,39 +103,41 @@ function Shell() {
 export default function App() {
   return (
     <BrowserRouter>
-      <Routes>
-        {/* Public */}
-        <Route path="/login" element={<Login />} />
-        <Route path="/signup" element={<Signup />} />
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          {/* Public */}
+          <Route path="/login" element={<Login />} />
+          <Route path="/signup" element={<Signup />} />
 
-        {/* Protégé */}
-        <Route element={<RequireAuth />}>
-          <Route element={<Shell />}>
-            {/* Auth OK, Xtream facultatif */}
-            <Route path="/onboarding/xtream" element={<OnboardingXtream />} />
-            <Route path="/settings" element={<Settings />} />
-            <Route path="/account" element={<Account />} /> {/* ← ICI */}
+          {/* Protégé */}
+          <Route element={<RequireAuth />}>
+            <Route element={<Shell />}>
+              {/* Auth OK, Xtream facultatif */}
+              <Route path="/onboarding/xtream" element={<OnboardingXtream />} />
+              <Route path="/settings" element={<Settings />} />
+              <Route path="/account" element={<Account />} /> {/* ← ICI */}
 
-            {/* Contenus : Xtream requis */}
-            <Route element={<RequireXtream />}>
-              <Route index element={<Home />} />
-              <Route path="/movies" element={<Movies />} />
-              <Route path="/series" element={<Series />} />
-              <Route path="/live" element={<Live />} />
-              <Route path="/search" element={<SearchPage />} />
-              <Route path="/movies/category/:id" element={<MovieCategory />} />
-              <Route path="/series/category/:id" element={<SeriesCategory />} />
-              <Route path="/title/:kind/:id" element={<Title />} />
-              <Route path="/my-list" element={<MyList />} />
-              <Route path="/watch/:kind/:id" element={<Watch />} />
-              <Route path="/watch" element={<Watch />} />
+              {/* Contenus : Xtream requis */}
+              <Route element={<RequireXtream />}>
+                <Route index element={<Home />} />
+                <Route path="/movies" element={<Movies />} />
+                <Route path="/series" element={<Series />} />
+                <Route path="/live" element={<Live />} />
+                <Route path="/search" element={<SearchPage />} />
+                <Route path="/movies/category/:id" element={<MovieCategory />} />
+                <Route path="/series/category/:id" element={<SeriesCategory />} />
+                <Route path="/title/:kind/:id" element={<Title />} />
+                <Route path="/my-list" element={<MyList />} />
+                <Route path="/watch/:kind/:id" element={<Watch />} />
+                <Route path="/watch" element={<Watch />} />
+              </Route>
             </Route>
           </Route>
-        </Route>
 
-        {/* Fallback */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+          {/* Fallback */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }
