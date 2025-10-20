@@ -4,9 +4,49 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Nova Stream — MVP</title>
+    
+    <!-- Preload critical resources -->
+    <link rel="preload" href="/src/main.jsx" as="script" />
+    <link rel="preload" href="/src/styles.css" as="style" />
+    
+    <!-- DNS prefetch for external resources -->
+    <link rel="dns-prefetch" href="//fonts.googleapis.com" />
+    
+    <!-- Preconnect to API if external -->
+    <link rel="preconnect" href="/api" />
+    
+    <!-- Critical CSS inline for faster rendering -->
+    <style>
+      /* Critical above-the-fold styles */
+      body { 
+        background: #000; 
+        color: #fff; 
+        margin: 0; 
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      #root { min-height: 100vh; }
+      .loading-spinner {
+        display: inline-block;
+        width: 20px;
+        height: 20px;
+        border: 3px solid #f3f3f3;
+        border-top: 3px solid #3498db;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+      }
+    </style>
   </head>
   <body class="bg-black text-white">
-    <div id="root"></div>
+    <div id="root">
+      <!-- Loading fallback for better perceived performance -->
+      <div style="display: flex; align-items: center; justify-content: center; min-height: 100vh;">
+        <div class="loading-spinner"></div>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

@@ -1,5 +1,5 @@
 // web/src/components/player/VideoPlayer.jsx
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { postJson } from "../../lib/api";
 
 async function loadShakaOnce() {
@@ -21,7 +21,7 @@ async function loadShakaOnce() {
 const isHls = (u) => /\.m3u8(\?|$)/i.test(String(u));
 const hlsToFile = (u) => String(u).replace(/\/hls\.m3u8(\?.*)?$/i, "/file$1");
 
-export default function VideoPlayer({
+const VideoPlayer = React.memo(function VideoPlayer({
   src,
   poster,
   title,
@@ -227,4 +227,6 @@ export default function VideoPlayer({
       </div>
     </div>
   );
-}
+});
+
+export default VideoPlayer;

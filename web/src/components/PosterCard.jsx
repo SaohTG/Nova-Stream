@@ -1,9 +1,10 @@
 // web/src/components/PosterCard.jsx
+import React from "react";
 import { Link } from "react-router-dom";
 import { useCallback } from "react";
 import { useMyListStatus, toggleMyList } from "../lib/mylist";
 
-export default function PosterCard({ item, kind = "vod", showTitle = true }) {
+const PosterCard = React.memo(function PosterCard({ item, kind = "vod", showTitle = true }) {
   const isLive =
     kind === "live" ||
     String(item?.stream_type || "").toLowerCase() === "live";
@@ -89,8 +90,24 @@ export default function PosterCard({ item, kind = "vod", showTitle = true }) {
             className="h-full w-full object-cover"
             draggable={false}
             loading="lazy"
+            decoding="async"
+            style={{
+              // Optimize image loading
+              contentVisibility: "auto",
+              containIntrinsicSize: "160px 240px", // Approximate poster size
+            }}
+            onError={(e) => {
+              // Fallback for broken images
+              e.target.style.display = 'none';
+            }}
           />
-        ) : null}
+        ) : (
+          <div className="h-full w-full bg-zinc-700 flex items-center justify-center">
+            <svg className="h-12 w-12 text-zinc-500" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>
+            </svg>
+          </div>
+        )}
       </div>
       {showTitle ? (
         <div className="mt-2 line-clamp-2 text-sm text-zinc-200">{title}</div>
@@ -112,4 +129,6 @@ export default function PosterCard({ item, kind = "vod", showTitle = true }) {
       {content}
     </div>
   );
-}
+});
+
+export default PosterCard;

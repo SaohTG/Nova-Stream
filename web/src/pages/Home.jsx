@@ -1,5 +1,5 @@
 // web/src/pages/Home.jsx
-import { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo, useCallback } from "react";
 import Row from "../components/Row.jsx";
 import TopRow from "../components/TopRow.jsx";
 import { getJson, postJson } from "../lib/api";
@@ -12,6 +12,9 @@ const ROW_LIMIT = 15;
 const keepNonEmpty = (rows) =>
   (rows || []).filter((r) => Array.isArray(r.items) && r.items.length > 0);
 
+// Memoized row component to prevent unnecessary re-renders
+const MemoizedRow = React.memo(Row);
+
 export default function Home() {
   const [movieRows, setMovieRows] = useState([]);
   const [loadingMovies, setLoadingMovies] = useState(true);
@@ -22,149 +25,118 @@ export default function Home() {
   const [liveRows, setLiveRows] = useState([]);
   const [loadingLive, setLoadingLive] = useState(true);
 
+  // Memoized fetch function for better performance
+  const fetchCategoryData = useCallback(async (endpoint, categoryKey, setRows, setLoading) => {
+    try {
+      const cats = await getJson(endpoint);
+      const list = Array.isArray(cats) ? cats.slice(0, categoryKey === 'movies' ? HOME_MOVIE_ROWS : categoryKey === 'series' ? HOME_SERIES_ROWS : HOME_LIVE_ROWS) : [];
+
+      const rows = await Promise.all(
+        list.map(async (cat) => {
+          const items = await postJson(`/xtream/${categoryKey}`, {
+            category_id: Number(cat.category_id),
+            limit: ROW_LIMIT,
+          }).catch(() => []);
+          return {
+            id: Number(cat.category_id),
+            title: cat.category_name || "Autre",
+            items: Array.isArray(items) ? items : [],
+            seeMoreHref:
+              Array.isArray(items) && items.length > 0
+                ? `/${categoryKey}/category/${cat.category_id}?name=${encodeURIComponent(
+                    cat.category_name || "Catégorie"
+                  )}`
+                : null,
+          };
+        })
+      );
+
+      setRows(keepNonEmpty(rows));
+    } catch {
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   // Films
   useEffect(() => {
     let alive = true;
     (async () => {
-      try {
-        const cats = await getJson("/xtream/movie-categories");
-        const list = Array.isArray(cats) ? cats.slice(0, HOME_MOVIE_ROWS) : [];
-
-        const rows = await Promise.all(
-          list.map(async (cat) => {
-            const items = await postJson("/xtream/movies", {
-              category_id: Number(cat.category_id),
-              limit: ROW_LIMIT,
-            }).catch(() => []);
-            return {
-              id: Number(cat.category_id),
-              title: cat.category_name || "Autre",
-              items: Array.isArray(items) ? items : [],
-              seeMoreHref:
-                Array.isArray(items) && items.length > 0
-                  ? `/movies/category/${cat.category_id}?name=${encodeURIComponent(
-                      cat.category_name || "Catégorie"
-                    )}`
-                  : null,
-            };
-          })
-        );
-
-        if (alive) setMovieRows(keepNonEmpty(rows));
-      } catch {
-        if (alive) setMovieRows([]);
-      } finally {
-        if (alive) setLoadingMovies(false);
+      if (alive) {
+        await fetchCategoryData("/xtream/movie-categories", "movies", setMovieRows, setLoadingMovies);
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [fetchCategoryData]);
 
   // Séries
   useEffect(() => {
     let alive = true;
     (async () => {
-      try {
-        const cats = await getJson("/xtream/series-categories");
-        const list = Array.isArray(cats) ? cats.slice(0, HOME_SERIES_ROWS) : [];
-
-        const rows = await Promise.all(
-          list.map(async (cat) => {
-            const items = await postJson("/xtream/series", {
-              category_id: Number(cat.category_id),
-              limit: ROW_LIMIT,
-            }).catch(() => []);
-            return {
-              id: Number(cat.category_id),
-              title: cat.category_name || "Autre",
-              items: Array.isArray(items) ? items : [],
-              seeMoreHref:
-                Array.isArray(items) && items.length > 0
-                  ? `/series/category/${cat.category_id}?name=${encodeURIComponent(
-                      cat.category_name || "Catégorie"
-                    )}`
-                  : null,
-            };
-          })
-        );
-
-        if (alive) setSeriesRows(keepNonEmpty(rows));
-      } catch {
-        if (alive) setSeriesRows([]);
-      } finally {
-        if (alive) setLoadingSeries(false);
+      if (alive) {
+        await fetchCategoryData("/xtream/series-categories", "series", setSeriesRows, setLoadingSeries);
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [fetchCategoryData]);
 
   // Live
   useEffect(() => {
     let alive = true;
     (async () => {
-      try {
-        const cats = await getJson("/xtream/live-categories");
-        const list = Array.isArray(cats) ? cats.slice(0, HOME_LIVE_ROWS) : [];
-
-        const rows = await Promise.all(
-          list.map(async (cat) => {
-            const items = await postJson("/xtream/live", {
-              category_id: Number(cat.category_id),
-              limit: ROW_LIMIT,
-            }).catch(() => []);
-            return {
-              id: Number(cat.category_id),
-              title: cat.category_name || "Autre",
-              items: Array.isArray(items) ? items : [],
-            };
-          })
-        );
-
-        if (alive) setLiveRows(keepNonEmpty(rows));
-      } catch {
-        if (alive) setLiveRows([]);
-      } finally {
-        if (alive) setLoadingLive(false);
+      if (alive) {
+        await fetchCategoryData("/xtream/live-categories", "live", setLiveRows, setLoadingLive);
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [fetchCategoryData]);
+
+  // Memoize the rendered rows to prevent unnecessary re-renders
+  const renderedMovieRows = useMemo(() => 
+    movieRows.map((row, i) => (
+      <MemoizedRow
+        key={`row-m-${row.id}-${i}`}
+        title={row.title}
+        items={row.items}
+        kind="vod"
+        loading={loadingMovies}
+        seeMoreHref={row.seeMoreHref}
+      />
+    )), [movieRows, loadingMovies]
+  );
+
+  const renderedSeriesRows = useMemo(() => 
+    seriesRows.map((row, i) => (
+      <MemoizedRow
+        key={`row-s-${row.id}-${i}`}
+        title={row.title}
+        items={row.items}
+        kind="series"
+        loading={loadingSeries}
+        seeMoreHref={row.seeMoreHref}
+      />
+    )), [seriesRows, loadingSeries]
+  );
+
+  const renderedLiveRows = useMemo(() => 
+    liveRows.map((row, i) => (
+      <MemoizedRow
+        key={`row-l-${row.id}-${i}`}
+        title={row.title}
+        items={row.items}
+        kind="live"
+        loading={loadingLive}
+      />
+    )), [liveRows, loadingLive]
+  );
 
   return (
     <div className="space-y-10">
       <TopRow />
-
-      {movieRows.map((row, i) => (
-        <Row
-          key={`row-m-${row.id}-${i}`}
-          title={row.title}
-          items={row.items}
-          kind="vod"
-          loading={loadingMovies}
-          seeMoreHref={row.seeMoreHref}
-        />
-      ))}
-
-      {seriesRows.map((row, i) => (
-        <Row
-          key={`row-s-${row.id}-${i}`}
-          title={row.title}
-          items={row.items}
-          kind="series"
-          loading={loadingSeries}
-          seeMoreHref={row.seeMoreHref}
-        />
-      ))}
-
-      {liveRows.map((row, i) => (
-        <Row
-          key={`row-l-${row.id}-${i}`}
-          title={row.title}
-          items={row.items}
-          kind="live"
-          loading={loadingLive}
-        />
-      ))}
+      {renderedMovieRows}
+      {renderedSeriesRows}
+      {renderedLiveRows}
     </div>
   );
 }
