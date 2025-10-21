@@ -164,7 +164,7 @@ export function ensureAuthOrRefresh(req, res, next) {
     req.cookies?.refresh_token ||
     req.cookies?.ns_refresh;
 
-  if (!rt) return res.status(401).json({ message: "Unauthorized" });
+  if (!rt) return res.status(403).json({ message: "No refresh token" });
 
   try {
     const payload = jwt.verify(rt, process.env.API_REFRESH_SECRET);
@@ -174,7 +174,7 @@ export function ensureAuthOrRefresh(req, res, next) {
     req.user = { sub: payload.sub, email: payload.email };
     return next();
   } catch {
-    return res.status(401).json({ message: "Unauthorized" });
+    return res.status(403).json({ message: "Invalid refresh token" });
   }
 }
 

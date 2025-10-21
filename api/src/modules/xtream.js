@@ -216,8 +216,16 @@ router.delete("/unlink", ah(async (req, res) => {
 // Movies
 const handleMovieCategories = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-  const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"));
-  res.json(data || []);
+  try {
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"));
+    res.json(data || []);
+  } catch (error) {
+    console.error("[XTREAM ERROR] Movie categories fetch failed:", error.message);
+    if (error.status === 401) {
+      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+    }
+    return res.status(503).json({ message: "Xtream service unavailable" });
+  }
 });
 router.get("/movie-categories", handleMovieCategories);
 
@@ -225,8 +233,16 @@ const handleMovies = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
-  const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }));
-  res.json(mapListWithIcons((data || []).slice(0, limit), c));
+  try {
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }));
+    res.json(mapListWithIcons((data || []).slice(0, limit), c));
+  } catch (error) {
+    console.error("[XTREAM ERROR] Movies fetch failed:", error.message);
+    if (error.status === 401) {
+      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+    }
+    return res.status(503).json({ message: "Xtream service unavailable" });
+  }
 });
 router.get("/movies", handleMovies);
 router.post("/movies", handleMovies);
@@ -242,8 +258,16 @@ router.get("/vod-info/:vod_id", ah(async (req, res) => {
 // Series
 const handleSeriesCategories = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-  const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"));
-  res.json(data || []);
+  try {
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"));
+    res.json(data || []);
+  } catch (error) {
+    console.error("[XTREAM ERROR] Series categories fetch failed:", error.message);
+    if (error.status === 401) {
+      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+    }
+    return res.status(503).json({ message: "Xtream service unavailable" });
+  }
 });
 router.get("/series-categories", handleSeriesCategories);
 
@@ -251,8 +275,16 @@ const handleSeries = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
-  const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id }));
-  res.json(mapListWithIcons((data || []).slice(0, limit), c));
+  try {
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id }));
+    res.json(mapListWithIcons((data || []).slice(0, limit), c));
+  } catch (error) {
+    console.error("[XTREAM ERROR] Series fetch failed:", error.message);
+    if (error.status === 401) {
+      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+    }
+    return res.status(503).json({ message: "Xtream service unavailable" });
+  }
 });
 router.get("/series", handleSeries);
 router.post("/series", handleSeries);
@@ -268,8 +300,16 @@ router.get("/series-info/:series_id", ah(async (req, res) => {
 // Live
 const handleLiveCategories = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-  const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"));
-  res.json(data || []);
+  try {
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"));
+    res.json(data || []);
+  } catch (error) {
+    console.error("[XTREAM ERROR] Live categories fetch failed:", error.message);
+    if (error.status === 401) {
+      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+    }
+    return res.status(503).json({ message: "Xtream service unavailable" });
+  }
 });
 router.get("/live-categories", handleLiveCategories);
 
@@ -277,8 +317,16 @@ const handleLive = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
-  const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id }));
-  res.json(mapListWithIcons((data || []).slice(0, limit), c));
+  try {
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id }));
+    res.json(mapListWithIcons((data || []).slice(0, limit), c));
+  } catch (error) {
+    console.error("[XTREAM ERROR] Live fetch failed:", error.message);
+    if (error.status === 401) {
+      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+    }
+    return res.status(503).json({ message: "Xtream service unavailable" });
+  }
 });
 router.get("/live", handleLive);
 router.post("/live", handleLive);
@@ -304,15 +352,23 @@ router.get("/search", ah(async (req, res) => {
   const needsLiv = !liv;
 
   if (needsVod || needsSer || needsLiv) {
-    const [vodRaw, serRaw, livRaw] = await Promise.all([
-      needsVod ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams")) : null,
-      needsSer ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series")) : null,
-      needsLiv ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams")) : null,
-    ]);
+    try {
+      const [vodRaw, serRaw, livRaw] = await Promise.all([
+        needsVod ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams")) : null,
+        needsSer ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series")) : null,
+        needsLiv ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams")) : null,
+      ]);
 
-    if (needsVod) { vod = mapListWithIcons(vodRaw || [], c); mset(kVod, vod); }
-    if (needsSer) { ser = mapListWithIcons(serRaw || [], c); mset(kSer, ser); }
-    if (needsLiv) { liv = mapListWithIcons(livRaw || [], c); mset(kLiv, liv); }
+      if (needsVod) { vod = mapListWithIcons(vodRaw || [], c); mset(kVod, vod); }
+      if (needsSer) { ser = mapListWithIcons(serRaw || [], c); mset(kSer, ser); }
+      if (needsLiv) { liv = mapListWithIcons(livRaw || [], c); mset(kLiv, liv); }
+    } catch (error) {
+      console.error("[XTREAM ERROR] Search fetch failed:", error.message);
+      if (error.status === 401) {
+        return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+      }
+      return res.status(503).json({ message: "Xtream service unavailable" });
+    }
   }
 
   const ql = q.toLowerCase();
