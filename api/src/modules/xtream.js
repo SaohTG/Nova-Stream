@@ -9,7 +9,9 @@ pool.on("error", (e) => console.error("[PG ERROR]", e));
 
 /* ============== Cache mémoire simple ============== */
 const MEMO = new Map();           // key -> { t, v }
+const ERROR_CACHE = new Map();    // key -> { t, error }
 const TTL_MS = 5 * 60 * 1000;     // 5 min
+const ERROR_TTL_MS = 2 * 60 * 1000; // 2 min pour les erreurs
 const MAX_KEYS = 50;
 const mkey = (uid, base, kind) => `${uid}|${base}|${kind}`;
 const mget = (k) => {
@@ -21,6 +23,16 @@ const mget = (k) => {
 const mset = (k, v) => {
   if (MEMO.size >= MAX_KEYS) MEMO.delete(MEMO.keys().next().value);
   MEMO.set(k, { t: Date.now(), v });
+};
+const errorGet = (k) => {
+  const entry = ERROR_CACHE.get(k);
+  if (!entry) return null;
+  if (Date.now() - entry.t > ERROR_TTL_MS) { ERROR_CACHE.delete(k); return null; }
+  return entry.error;
+};
+const errorSet = (k, error) => {
+  if (ERROR_CACHE.size >= MAX_KEYS) ERROR_CACHE.delete(ERROR_CACHE.keys().next().value);
+  ERROR_CACHE.set(k, { t: Date.now(), error });
 };
 
 /* ============== AES-256-GCM ============== */
@@ -83,11 +95,31 @@ async function fetchWithTimeout(url, ms = 10000, headers = {}) {
   try { return await fetch(url, { signal: ctrl.signal, headers }); }
   finally { clearTimeout(t); }
 }
-async function fetchJson(url) {
-  const r = await fetchWithTimeout(url, 12000, { "User-Agent": "Mozilla/5.0 (NovaStream/1.0)" });
-  const txt = await r.text();
-  if (!r.ok) { const err = new Error(`XTREAM_HTTP_${r.status}`); err.status = r.status; err.body = txt; throw err; }
-  try { return JSON.parse(txt); } catch { const err = new Error("XTREAM_BAD_JSON"); err.body = txt; throw err; }
+async function fetchJson(url, retries = 2) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const r = await fetchWithTimeout(url, 12000, { "User-Agent": "Mozilla/5.0 (NovaStream/1.0)" });
+      const txt = await r.text();
+      if (!r.ok) { 
+        const err = new Error(`XTREAM_HTTP_${r.status}`); 
+        err.status = r.status; 
+        err.body = txt; 
+        throw err; 
+      }
+      try { return JSON.parse(txt); } catch { const err = new Error("XTREAM_BAD_JSON"); err.body = txt; throw err; }
+    } catch (error) {
+      if (attempt === retries) throw error;
+      
+      // Retry logic for specific errors
+      if (error.status === 403 || error.status === 429 || error.name === "AbortError") {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 5000); // Exponential backoff, max 5s
+        console.warn(`[XTREAM RETRY] Attempt ${attempt + 1}/${retries + 1} failed, retrying in ${delay}ms:`, error.message);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        continue;
+      }
+      throw error;
+    }
+  }
 }
 async function fetchJsonBudget(url, _budgetMs = 1200) {
   try { return await fetchJson(url); }
@@ -224,6 +256,9 @@ const handleMovieCategories = ah(async (req, res) => {
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
     }
+    if (error.status === 403) {
+      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
+    }
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
 });
@@ -233,13 +268,32 @@ const handleMovies = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
+  
+  // Check error cache first
+  const errorKey = mkey(req.user.sub, c.baseUrl, `movies_error_${category_id}`);
+  const cachedError = errorGet(errorKey);
+  if (cachedError) {
+    console.warn("[XTREAM CACHE] Returning cached error for movies:", cachedError.message);
+    if (cachedError.status === 403) {
+      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
+    }
+    return res.status(503).json({ message: "Xtream service unavailable" });
+  }
+  
   try {
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }));
     res.json(mapListWithIcons((data || []).slice(0, limit), c));
   } catch (error) {
     console.error("[XTREAM ERROR] Movies fetch failed:", error.message);
+    
+    // Cache the error for 2 minutes to avoid repeated calls
+    errorSet(errorKey, error);
+    
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+    }
+    if (error.status === 403) {
+      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
     }
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
@@ -266,6 +320,9 @@ const handleSeriesCategories = ah(async (req, res) => {
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
     }
+    if (error.status === 403) {
+      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
+    }
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
 });
@@ -282,6 +339,9 @@ const handleSeries = ah(async (req, res) => {
     console.error("[XTREAM ERROR] Series fetch failed:", error.message);
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+    }
+    if (error.status === 403) {
+      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
     }
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
@@ -308,6 +368,9 @@ const handleLiveCategories = ah(async (req, res) => {
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
     }
+    if (error.status === 403) {
+      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
+    }
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
 });
@@ -324,6 +387,9 @@ const handleLive = ah(async (req, res) => {
     console.error("[XTREAM ERROR] Live fetch failed:", error.message);
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+    }
+    if (error.status === 403) {
+      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
     }
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
@@ -366,6 +432,9 @@ router.get("/search", ah(async (req, res) => {
       console.error("[XTREAM ERROR] Search fetch failed:", error.message);
       if (error.status === 401) {
         return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+      }
+      if (error.status === 403) {
+        return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
       }
       return res.status(503).json({ message: "Xtream service unavailable" });
     }
