@@ -65,6 +65,37 @@ function dec(blob) {
 /* ============== Utils ============== */
 const ah = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
+// User-Agents réalistes pour éviter la détection
+const USER_AGENTS = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0"
+];
+
+function getRandomUserAgent() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+// Rate limiting simple
+const REQUEST_DELAYS = new Map(); // baseUrl -> lastRequestTime
+const MIN_REQUEST_INTERVAL = 1000; // 1 seconde minimum entre les requêtes
+
+async function rateLimit(baseUrl) {
+  const now = Date.now();
+  const lastRequest = REQUEST_DELAYS.get(baseUrl) || 0;
+  const timeSinceLastRequest = now - lastRequest;
+  
+  if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+    const delay = MIN_REQUEST_INTERVAL - timeSinceLastRequest;
+    console.log(`[XTREAM RATE LIMIT] Waiting ${delay}ms before next request to ${baseUrl}`);
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+  
+  REQUEST_DELAYS.set(baseUrl, Date.now());
+}
+
 function normalizeBaseUrl(u) {
   let s = (u || "").toString().trim();
   if (!/^https?:\/\//i.test(s)) s = `http://${s}`;
@@ -95,10 +126,24 @@ async function fetchWithTimeout(url, ms = 10000, headers = {}) {
   try { return await fetch(url, { signal: ctrl.signal, headers }); }
   finally { clearTimeout(t); }
 }
-async function fetchJson(url, retries = 2) {
+async function fetchJson(url, retries = 2, baseUrl = null) {
+  // Rate limiting si baseUrl fourni
+  if (baseUrl) {
+    await rateLimit(baseUrl);
+  }
+  
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const r = await fetchWithTimeout(url, 12000, { "User-Agent": "Mozilla/5.0 (NovaStream/1.0)" });
+      // Rotation des User-Agents pour éviter la détection
+      const userAgent = getRandomUserAgent();
+      const r = await fetchWithTimeout(url, 15000, { 
+        "User-Agent": userAgent,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+      });
       const txt = await r.text();
       if (!r.ok) { 
         const err = new Error(`XTREAM_HTTP_${r.status}`); 
@@ -110,9 +155,9 @@ async function fetchJson(url, retries = 2) {
     } catch (error) {
       if (attempt === retries) throw error;
       
-      // Retry logic for specific errors
+      // Retry logic for specific errors avec délais plus longs
       if (error.status === 403 || error.status === 429 || error.name === "AbortError") {
-        const delay = Math.min(1000 * Math.pow(2, attempt), 5000); // Exponential backoff, max 5s
+        const delay = Math.min(2000 * Math.pow(2, attempt), 10000); // Exponential backoff, max 10s
         console.warn(`[XTREAM RETRY] Attempt ${attempt + 1}/${retries + 1} failed, retrying in ${delay}ms:`, error.message);
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
@@ -121,8 +166,8 @@ async function fetchJson(url, retries = 2) {
     }
   }
 }
-async function fetchJsonBudget(url, _budgetMs = 1200) {
-  try { return await fetchJson(url); }
+async function fetchJsonBudget(url, _budgetMs = 1200, baseUrl = null) {
+  try { return await fetchJson(url, 1, baseUrl); } // Moins de retries pour le budget
   catch (e) { if (e.name === "AbortError") return []; throw e; }
 }
 
@@ -149,6 +194,30 @@ async function ensureTables() {
     );
   `);
 }
+
+// Cache pour les credentials valides
+const CREDENTIALS_CACHE = new Map(); // baseUrl -> { valid: boolean, lastCheck: timestamp }
+const CREDENTIALS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+async function validateCredentials(creds) {
+  const cacheKey = creds.baseUrl;
+  const cached = CREDENTIALS_CACHE.get(cacheKey);
+  
+  if (cached && (Date.now() - cached.lastCheck) < CREDENTIALS_CACHE_TTL) {
+    return cached.valid;
+  }
+  
+  try {
+    const test = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password), 1, creds.baseUrl);
+    const valid = test?.user_info?.auth === 1 || test?.user_info?.status === "Active";
+    CREDENTIALS_CACHE.set(cacheKey, { valid, lastCheck: Date.now() });
+    return valid;
+  } catch (error) {
+    console.warn(`[XTREAM CREDENTIALS] Validation failed for ${creds.baseUrl}:`, error.message);
+    CREDENTIALS_CACHE.set(cacheKey, { valid: false, lastCheck: Date.now() });
+    return false;
+  }
+}
 async function getCreds(userId) {
   await ensureTables();
   let row = (await pool.query(
@@ -160,11 +229,21 @@ async function getCreds(userId) {
     )).rows[0];
   }
   if (!row) return null;
-  return {
+  
+  const creds = {
     baseUrl: normalizeBaseUrl(row.base_url),
     username: dec(row.username_enc),
     password: dec(row.password_enc),
   };
+  
+  // Valider les credentials si nécessaire
+  const isValid = await validateCredentials(creds);
+  if (!isValid) {
+    console.warn(`[XTREAM CREDENTIALS] Invalid credentials for user ${userId}, baseUrl: ${creds.baseUrl}`);
+    return null;
+  }
+  
+  return creds;
 }
 
 /* ============== Images helpers ============== */
@@ -211,7 +290,7 @@ router.post("/link", ah(async (req, res) => {
   if (!baseUrl || !username || !password) return res.status(422).json({ message: "Missing fields" });
 
   try {
-    const test = await fetchJson(buildPlayerApi(baseUrl, username, password));
+    const test = await fetchJson(buildPlayerApi(baseUrl, username, password), 2, baseUrl);
     const ok = test?.user_info?.auth === 1 || test?.user_info?.status === "Active";
     if (!ok) return res.status(400).json({ message: "Xtream test failed" });
   } catch (e) {
@@ -249,10 +328,16 @@ router.delete("/unlink", ah(async (req, res) => {
 const handleMovieCategories = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"));
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"), 2, c.baseUrl);
     res.json(data || []);
   } catch (error) {
     console.error("[XTREAM ERROR] Movie categories fetch failed:", error.message);
+    
+    // Invalider le cache des credentials en cas d'erreur 401/403
+    if (error.status === 401 || error.status === 403) {
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+    }
+    
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
     }
@@ -281,10 +366,15 @@ const handleMovies = ah(async (req, res) => {
   }
   
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }));
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }), 2, c.baseUrl);
     res.json(mapListWithIcons((data || []).slice(0, limit), c));
   } catch (error) {
     console.error("[XTREAM ERROR] Movies fetch failed:", error.message);
+    
+    // Invalider le cache des credentials en cas d'erreur 401/403
+    if (error.status === 401 || error.status === 403) {
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+    }
     
     // Cache the error for 2 minutes to avoid repeated calls
     errorSet(errorKey, error);
@@ -303,7 +393,7 @@ router.post("/movies", handleMovies);
 
 router.get("/vod-info/:vod_id", ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-  const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_info", { vod_id: req.params.vod_id }));
+  const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_info", { vod_id: req.params.vod_id }), 2, c.baseUrl);
   const coverRaw = info?.movie_data?.cover_big || info?.movie_data?.movie_image;
   const cover = resolveIcon(coverRaw, c);
   res.json({ ...info, movie_data: { ...info?.movie_data, cover_big: cover, movie_image: cover } });
@@ -313,10 +403,16 @@ router.get("/vod-info/:vod_id", ah(async (req, res) => {
 const handleSeriesCategories = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"));
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"), 2, c.baseUrl);
     res.json(data || []);
   } catch (error) {
     console.error("[XTREAM ERROR] Series categories fetch failed:", error.message);
+    
+    // Invalider le cache des credentials en cas d'erreur 401/403
+    if (error.status === 401 || error.status === 403) {
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+    }
+    
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
     }
@@ -333,10 +429,16 @@ const handleSeries = ah(async (req, res) => {
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id }));
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id }), 2, c.baseUrl);
     res.json(mapListWithIcons((data || []).slice(0, limit), c));
   } catch (error) {
     console.error("[XTREAM ERROR] Series fetch failed:", error.message);
+    
+    // Invalider le cache des credentials en cas d'erreur 401/403
+    if (error.status === 401 || error.status === 403) {
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+    }
+    
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
     }
@@ -351,7 +453,7 @@ router.post("/series", handleSeries);
 
 router.get("/series-info/:series_id", ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
-  const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_info", { series_id: req.params.series_id }));
+  const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_info", { series_id: req.params.series_id }), 2, c.baseUrl);
   const posterRaw = info?.info?.cover || info?.info?.backdrop_path;
   const poster = resolveIcon(posterRaw, c);
   res.json({ ...info, info: { ...info?.info, cover: poster, backdrop_path: poster } });
@@ -361,10 +463,16 @@ router.get("/series-info/:series_id", ah(async (req, res) => {
 const handleLiveCategories = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"));
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"), 2, c.baseUrl);
     res.json(data || []);
   } catch (error) {
     console.error("[XTREAM ERROR] Live categories fetch failed:", error.message);
+    
+    // Invalider le cache des credentials en cas d'erreur 401/403
+    if (error.status === 401 || error.status === 403) {
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+    }
+    
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
     }
@@ -381,10 +489,16 @@ const handleLive = ah(async (req, res) => {
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id }));
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id }), 2, c.baseUrl);
     res.json(mapListWithIcons((data || []).slice(0, limit), c));
   } catch (error) {
     console.error("[XTREAM ERROR] Live fetch failed:", error.message);
+    
+    // Invalider le cache des credentials en cas d'erreur 401/403
+    if (error.status === 401 || error.status === 403) {
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+    }
+    
     if (error.status === 401) {
       return res.status(403).json({ message: "Xtream credentials expired or invalid" });
     }
@@ -420,9 +534,9 @@ router.get("/search", ah(async (req, res) => {
   if (needsVod || needsSer || needsLiv) {
     try {
       const [vodRaw, serRaw, livRaw] = await Promise.all([
-        needsVod ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams")) : null,
-        needsSer ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series")) : null,
-        needsLiv ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams")) : null,
+        needsVod ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams"), 1200, c.baseUrl) : null,
+        needsSer ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series"), 1200, c.baseUrl) : null,
+        needsLiv ? fetchJsonBudget(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams"), 1200, c.baseUrl) : null,
       ]);
 
       if (needsVod) { vod = mapListWithIcons(vodRaw || [], c); mset(kVod, vod); }
@@ -430,6 +544,12 @@ router.get("/search", ah(async (req, res) => {
       if (needsLiv) { liv = mapListWithIcons(livRaw || [], c); mset(kLiv, liv); }
     } catch (error) {
       console.error("[XTREAM ERROR] Search fetch failed:", error.message);
+      
+      // Invalider le cache des credentials en cas d'erreur 401/403
+      if (error.status === 401 || error.status === 403) {
+        CREDENTIALS_CACHE.delete(c.baseUrl);
+      }
+      
       if (error.status === 401) {
         return res.status(403).json({ message: "Xtream credentials expired or invalid" });
       }
@@ -460,7 +580,7 @@ router.get("/image", ah(async (req, res) => {
   if (!url || !/^https?:\/\//i.test(String(url))) return res.status(400).json({ message: "url required" });
 
   const r = await fetchWithTimeout(String(url), 12000, {
-    "User-Agent": "Mozilla/5.0 (NovaStream/1.0)",
+    "User-Agent": getRandomUserAgent(),
     "Referer": c.baseUrl,
     "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
   }).catch(() => null);
@@ -501,7 +621,7 @@ router.get("/stream-url", ah(async (req, res) => {
   }
 
   // VOD/Series: lister les VOD puis matcher
-  const list = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams")).catch(() => []);
+  const list = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams"), 2, c.baseUrl).catch(() => []);
   if (!Array.isArray(list) || !list.length) return res.status(404).json({ error: "vod_list_empty" });
 
   const nrm = (s) => String(s || "")
@@ -526,7 +646,7 @@ router.get("/stream-url", ah(async (req, res) => {
   // Récupérer l’extension
   let ext = "mp4";
   try {
-    const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_info", { vod_id: hit.stream_id }));
+    const info = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_info", { vod_id: hit.stream_id }), 2, c.baseUrl);
     ext = (info?.info?.container_extension || info?.movie_data?.container_extension || "mp4").toLowerCase();
   } catch { /* fallback mp4 */ }
 
