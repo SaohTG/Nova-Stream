@@ -136,11 +136,16 @@ export function ensureAuth(req, res, next) {
   if (h.startsWith("Bearer ")) token = h.split(" ")[1];
   if (!token && req.cookies?.[COOKIE_NAME_AT]) token = req.cookies[COOKIE_NAME_AT];
   if (!token && req.cookies?.access) token = req.cookies.access;
-  if (!token) return res.status(401).json({ message: "No token" });
+  if (!token) {
+    console.log(`[AUTH] No token found for ${req.method} ${req.path}`);
+    return res.status(401).json({ message: "No token" });
+  }
   try {
     req.user = jwt.verify(token, process.env.API_JWT_SECRET);
+    console.log(`[AUTH] Valid token for user: ${req.user?.sub} on ${req.method} ${req.path}`);
     return next();
-  } catch {
+  } catch (err) {
+    console.log(`[AUTH] Invalid token for ${req.method} ${req.path}: ${err.message}`);
     return res.status(401).json({ message: "Invalid token" });
   }
 }
@@ -155,8 +160,11 @@ export function ensureAuthOrRefresh(req, res, next) {
   if (token) {
     try {
       req.user = jwt.verify(token, process.env.API_JWT_SECRET);
+      console.log(`[AUTH] Valid access token for user: ${req.user?.sub} on ${req.method} ${req.path}`);
       return next();
-    } catch { /* try refresh */ }
+    } catch (err) {
+      console.log(`[AUTH] Access token expired/invalid for ${req.method} ${req.path}: ${err.message}, trying refresh...`);
+    }
   }
   const rt =
     req.cookies?.[COOKIE_NAME_RT] ||
@@ -164,7 +172,10 @@ export function ensureAuthOrRefresh(req, res, next) {
     req.cookies?.refresh_token ||
     req.cookies?.ns_refresh;
 
-  if (!rt) return res.status(401).json({ message: "Unauthorized" });
+  if (!rt) {
+    console.log(`[AUTH] No refresh token found for ${req.method} ${req.path}`);
+    return res.status(401).json({ message: "Unauthorized" });
+  }
 
   try {
     const payload = jwt.verify(rt, process.env.API_REFRESH_SECRET);
@@ -172,8 +183,10 @@ export function ensureAuthOrRefresh(req, res, next) {
     setRefreshCookie(res, refreshToken);
     setAccessCookie(res, accessToken);
     req.user = { sub: payload.sub, email: payload.email };
+    console.log(`[AUTH] Token refreshed for user: ${req.user?.sub} on ${req.method} ${req.path}`);
     return next();
-  } catch {
+  } catch (err) {
+    console.log(`[AUTH] Refresh token invalid for ${req.method} ${req.path}: ${err.message}`);
     return res.status(401).json({ message: "Unauthorized" });
   }
 }

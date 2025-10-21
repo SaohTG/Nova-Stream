@@ -118,21 +118,28 @@ async function ensureTables() {
   `);
 }
 async function getCreds(userId) {
+  console.log(`[XTREAM] Getting credentials for user: ${userId}`);
   await ensureTables();
   let row = (await pool.query(
     `SELECT base_url, username_enc, password_enc FROM xtream_accounts WHERE user_id=$1 LIMIT 1`, [userId]
   )).rows[0];
   if (!row) {
+    console.log(`[XTREAM] No credentials in xtream_accounts, checking user_xtream table`);
     row = (await pool.query(
       `SELECT base_url, username_enc, password_enc FROM user_xtream WHERE user_id=$1 LIMIT 1`, [userId]
     )).rows[0];
   }
-  if (!row) return null;
-  return {
+  if (!row) {
+    console.log(`[XTREAM] No credentials found for user: ${userId}`);
+    return null;
+  }
+  const creds = {
     baseUrl: normalizeBaseUrl(row.base_url),
     username: dec(row.username_enc),
     password: dec(row.password_enc),
   };
+  console.log(`[XTREAM] Found credentials for user: ${userId}, baseUrl: ${creds.baseUrl}`);
+  return creds;
 }
 
 /* ============== Images helpers ============== */
@@ -222,7 +229,13 @@ const handleMovieCategories = ah(async (req, res) => {
 router.get("/movie-categories", handleMovieCategories);
 
 const handleMovies = ah(async (req, res) => {
-  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  console.log(`[XTREAM] Movies request - User: ${req.user?.sub}, Method: ${req.method}`);
+  const c = await getCreds(req.user?.sub); 
+  if (!c) {
+    console.log(`[XTREAM] No credentials found for user: ${req.user?.sub}`);
+    return res.status(404).json({ message: "No creds" });
+  }
+  console.log(`[XTREAM] Using Xtream credentials for user: ${req.user?.sub}, baseUrl: ${c.baseUrl}`);
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
   const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }));
