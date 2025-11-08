@@ -3,6 +3,7 @@ version: "3.9"
 services:
   db:
     image: docker.io/library/postgres:16-alpine
+    pull_policy: always
     restart: unless-stopped
     environment:
       POSTGRES_USER: nova
@@ -19,10 +20,10 @@ services:
       retries: 10
       start_period: 10s
     networks: [webnet]
-    pull_policy: if_not_present
 
   api:
     image: docker.io/library/node:20-alpine
+    pull_policy: always
     init: true
     working_dir: /app
     environment:
@@ -80,10 +81,10 @@ services:
       start_period: 600s
     networks: [webnet]
     restart: unless-stopped
-    pull_policy: if_not_present
 
   web:
     image: docker.io/library/node:20-alpine
+    pull_policy: always
     init: true
     working_dir: /app
     environment:
@@ -118,7 +119,6 @@ services:
       start_period: 20s
     networks: [webnet]
     restart: unless-stopped
-    pull_policy: if_not_present
 
 volumes:
   db_data_ns6: {}
