@@ -27,7 +27,7 @@ services:
     init: true
     working_dir: /app
     volumes:
-      - ./api:/app:ro
+      - ./api:/app
     environment:
       DATABASE_URL: postgresql://nova:qzB8mO28lDLkRTBBrA4CxR4ygK7szNovaStream2024@db:5432/novastream
       PORT: 4000
@@ -56,7 +56,7 @@ services:
       - -lc
       - |
         set -e
-        apk add --no-cache netcat-openbsd ffmpeg
+        apk add --no-cache netcat-openbsd ffmpeg wget
         until nc -z db 5432; do echo 'waiting for db...'; sleep 2; done
         npm cache clean --force
         npm install --include=dev --no-audit --no-fund
@@ -71,12 +71,12 @@ services:
       test:
         [
           "CMD-SHELL",
-          "for i in $(seq 1 120); do if wget -qO- http://127.0.0.1:4000/health >/dev/null 2>&1 || wget -qO- http://127.0.0.1:4000/api/health >/dev/null 2>&1; then exit 0; fi; sleep 5; done; exit 1"
+          "wget -qO- http://127.0.0.1:4000/health >/dev/null 2>&1 || wget -qO- http://127.0.0.1:4000/api/health >/dev/null 2>&1"
         ]
-      interval: 10s
-      timeout: 5s
-      retries: 120
-      start_period: 600s
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 180s
     networks: [webnet]
     restart: unless-stopped
 
@@ -86,7 +86,7 @@ services:
     init: true
     working_dir: /app
     volumes:
-      - ./web:/app:ro
+      - ./web:/app
     environment:
       VITE_API_BASE: https://lector.lorna.tv/api
       NODE_ENV: production
@@ -97,6 +97,7 @@ services:
       - -lc
       - |
         set -e
+        apk add --no-cache wget
         npm cache clean --force
         npm install --no-audit --no-fund
         npm run build
