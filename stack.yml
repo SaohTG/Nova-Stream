@@ -7,12 +7,12 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: nova
-      POSTGRES_PASSWORD: "qzB8mO28lDLkRTBBrA4CxR4ygK7szNovaStream2024"
+      POSTGRES_PASSWORD: qzB8mO28lDLkRTBBrA4CxR4ygK7szNovaStream2024
       POSTGRES_DB: novastream
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
       TZ: Europe/Brussels
     volumes:
-      - db_data_v2:/var/lib/postgresql/data
+      - db_data_ns6:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nova -d novastream"]
       interval: 10s
@@ -26,8 +26,10 @@ services:
     pull_policy: always
     init: true
     working_dir: /app
+    volumes:
+      - ./api:/app:ro
     environment:
-      DATABASE_URL: "postgresql://nova:qzB8mO28lDLkRTBBrA4CxR4ygK7szNovaStream2024@db:5432/novastream"
+      DATABASE_URL: postgresql://nova:qzB8mO28lDLkRTBBrA4CxR4ygK7szNovaStream2024@db:5432/novastream
       PORT: 4000
       API_PORT: 4000
       HOST: 0.0.0.0
@@ -54,13 +56,9 @@ services:
       - -lc
       - |
         set -e
-        apk add --no-cache unzip curl netcat-openbsd ffmpeg
+        apk add --no-cache netcat-openbsd ffmpeg
         until nc -z db 5432; do echo 'waiting for db...'; sleep 2; done
-        rm -rf /tmp/Nova-Stream-main /tmp/src.zip
-        curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
-        unzip -o -q /tmp/src.zip -d /tmp
-        rm -rf /app/*
-        cp -r /tmp/Nova-Stream-main/api/. /app
+        npm cache clean --force
         npm install --include=dev --no-audit --no-fund
         npm run build
         node dist/main.js
@@ -87,6 +85,8 @@ services:
     pull_policy: always
     init: true
     working_dir: /app
+    volumes:
+      - ./web:/app:ro
     environment:
       VITE_API_BASE: https://lector.lorna.tv/api
       NODE_ENV: production
@@ -97,12 +97,7 @@ services:
       - -lc
       - |
         set -e
-        apk add --no-cache unzip curl
-        rm -rf /tmp/Nova-Stream-main /tmp/src.zip
-        curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
-        unzip -o -q /tmp/src.zip -d /tmp
-        rm -rf /app/*
-        cp -r /tmp/Nova-Stream-main/web/. /app
+        npm cache clean --force
         npm install --no-audit --no-fund
         npm run build
         npx serve -s dist -l 8081
@@ -121,7 +116,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  db_data_v2: {}
+  db_data_ns6: {}
 
 networks:
   webnet:
