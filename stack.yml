@@ -30,7 +30,8 @@ services:
       PORT: 4000
       API_PORT: 4000
       HOST: 0.0.0.0
-      CORS_ORIGIN: https://app.lorna.tv
+      CORS_ORIGIN: https://app.lorna.tv:8081
+      CORS_ORIGINS: https://app.lorna.tv:8081,https://app.lorna.tv
       COOKIE_DOMAIN: .lorna.tv
       COOKIE_SECURE: "true"
       COOKIE_SAMESITE: none
@@ -84,7 +85,7 @@ services:
     init: true
     working_dir: /app
     environment:
-      VITE_API_BASE: /api
+      VITE_API_BASE: https://app.lorna.tv:4000
       NODE_ENV: production
       NPM_CONFIG_PRODUCTION: "false"
       TZ: Europe/Brussels
