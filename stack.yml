@@ -26,8 +26,6 @@ services:
     pull_policy: always
     init: true
     working_dir: /app
-    volumes:
-      - ./api:/app
     environment:
       DATABASE_URL: postgresql://nova:qzB8mO28lDLkRTBBrA4CxR4ygK7szNovaStream2024@db:5432/novastream
       PORT: 4000
@@ -56,9 +54,13 @@ services:
       - -lc
       - |
         set -e
-        apk add --no-cache netcat-openbsd ffmpeg wget
+        apk add --no-cache unzip curl netcat-openbsd ffmpeg wget
         until nc -z db 5432; do echo 'waiting for db...'; sleep 2; done
-        npm cache clean --force
+        rm -rf /tmp/Nova-Stream-main /tmp/src.zip
+        curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
+        unzip -o -q /tmp/src.zip -d /tmp
+        rm -rf /app/*
+        cp -r /tmp/Nova-Stream-main/api/. /app
         npm install --include=dev --no-audit --no-fund
         npm run build
         node dist/main.js
@@ -85,8 +87,6 @@ services:
     pull_policy: always
     init: true
     working_dir: /app
-    volumes:
-      - ./web:/app
     environment:
       VITE_API_BASE: https://lector.lorna.tv/api
       NODE_ENV: production
@@ -97,8 +97,12 @@ services:
       - -lc
       - |
         set -e
-        apk add --no-cache wget
-        npm cache clean --force
+        apk add --no-cache unzip curl wget
+        rm -rf /tmp/Nova-Stream-main /tmp/src.zip
+        curl -L https://github.com/SaohTG/Nova-Stream/archive/refs/heads/main.zip -o /tmp/src.zip
+        unzip -o -q /tmp/src.zip -d /tmp
+        rm -rf /app/*
+        cp -r /tmp/Nova-Stream-main/web/. /app
         npm install --no-audit --no-fund
         npm run build
         npx serve -s dist -l 8081
