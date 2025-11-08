@@ -197,11 +197,14 @@ const Row = React.memo(function Row({ title, items = [], kind = "vod", loading =
 
   return (
     <section className="mb-10">
-      <div className="mb-3 flex items-baseline justify-between">
+      <div className="mb-4 flex items-baseline justify-between">
         <h2 className="text-lg font-semibold tracking-tight text-white">{title}</h2>
         {!!seeMoreHref && items?.length > 0 && (
-          <Link to={seeMoreHref} className="text-sm font-medium text-zinc-300 hover:text-white hover:underline">
+          <Link to={seeMoreHref} className="inline-flex items-center gap-1 text-sm font-medium text-zinc-400 hover:text-white transition-colors group">
             Voir plus
+            <svg className="w-4 h-4 transition-transform group-hover:translate-x-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
           </Link>
         )}
       </div>
@@ -211,8 +214,12 @@ const Row = React.memo(function Row({ title, items = [], kind = "vod", loading =
           <button
             aria-label="Précédent"
             onClick={() => go(-1)}
-            className="absolute left-0 top-1/2 z-10 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white hover:bg-black/70"
-          >‹</button>
+            className="absolute left-0 top-1/2 z-10 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-black/70 backdrop-blur-md border border-white/10 text-white hover:bg-black/80 hover:border-white/20 hover:scale-110 transition-all duration-300 shadow-xl"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
+            </svg>
+          </button>
         )}
 
         <div
@@ -252,8 +259,12 @@ const Row = React.memo(function Row({ title, items = [], kind = "vod", loading =
           <button
             aria-label="Suivant"
             onClick={() => go(1)}
-            className="absolute right-0 top-1/2 z-10 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/50 text-white hover:bg-black/70"
-          >›</button>
+            className="absolute right-0 top-1/2 z-10 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-black/70 backdrop-blur-md border border-white/10 text-white hover:bg-black/80 hover:border-white/20 hover:scale-110 transition-all duration-300 shadow-xl"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
+            </svg>
+          </button>
         )}
       </div>
     </section>
