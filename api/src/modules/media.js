@@ -149,7 +149,7 @@ async function fetchWithTimeout(url, ms = 12000, headers = {}, init = {}) {
   finally { clearTimeout(t); }
 }
 async function fetchJson(url) {
-  const r = await fetchWithTimeout(url, 12000, { "User-Agent": "NovaStream/1.0" });
+  const r = await fetchWithTimeout(url, 12000, { "User-Agent": "LornaTV/1.0" });
   const txt = await r.text();
   if (!r.ok) { const e = new Error(`HTTP_${r.status}`); e.status = r.status; e.body = txt; throw e; }
   try { return JSON.parse(txt); } catch { const e = new Error("BAD_JSON"); e.body = txt; throw e; }
@@ -594,7 +594,7 @@ router.get("/series/:seriesId/episodes/m3u", async (req, res, next) => {
     const userId = getUserId(req); if (!userId) return res.sendStatus(401);
     const src = String(req.query.src || "").trim();
     if (!/^https?:\/\//i.test(src)) return res.status(400).json({ error: "missing_m3u_src" });
-    const r = await fetchWithTimeout(src, 15000, { "User-Agent": "NovaStream/1.0" });
+    const r = await fetchWithTimeout(src, 15000, { "User-Agent": "LornaTV/1.0" });
     const text = await r.text();
     return res.json(parseM3USeries(text));
   } catch (e) { next(e); }
@@ -615,7 +615,7 @@ router.get("/series/:seriesId/episode/:s/:e/file-from-m3u", async (req, res, nex
 
     let map = null;
     if (req.query.src) {
-      const r = await fetchWithTimeout(String(req.query.src), 15000, { "User-Agent": "NovaStream/1.0" });
+      const r = await fetchWithTimeout(String(req.query.src), 15000, { "User-Agent": "LornaTV/1.0" });
       const text = await r.text();
       map = parseM3USeries(text);
     } else if (req.query.b64) {
