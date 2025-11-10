@@ -50,7 +50,7 @@ export default function Login() {
               </svg>
             </div>
             <h1 className="text-3xl font-bold bg-gradient-to-r from-white to-zinc-300 bg-clip-text text-transparent">
-              Nova Stream
+              Lorna TV
             </h1>
           </div>
           <p className="text-zinc-400 text-sm">Connectez-vous à votre compte</p>
