@@ -10,7 +10,7 @@ export default function Nav() {
       <div className="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between">
         {/* Logo */}
         <Link to="/" className="text-xl font-semibold">
-          Nova <span className="text-white/60">Stream</span>
+          Lorna <span className="text-white/60">TV</span>
         </Link>
 
         {/* Liens */}
