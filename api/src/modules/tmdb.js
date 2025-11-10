@@ -14,7 +14,7 @@ async function fetchWithTimeout(url, ms = 12000, headers = {}) {
   finally { clearTimeout(t); }
 }
 async function fetchJson(url) {
-  const r = await fetchWithTimeout(url, 12000, { "User-Agent": "NovaStream/1.0" });
+  const r = await fetchWithTimeout(url, 12000, { "User-Agent": "LornaTV/1.0" });
   const txt = await r.text();
   if (!r.ok) { const err = new Error(`HTTP_${r.status}`); err.status = r.status; err.body = txt; throw err; }
   try { return JSON.parse(txt); } catch { const err = new Error("BAD_JSON"); err.body = txt; throw err; }
