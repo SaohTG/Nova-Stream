@@ -4,7 +4,7 @@
 const API_BASE = process.env.API_BASE || 'http://localhost:4000';
 
 async function testApi() {
-  console.log('🧪 Test de l\'API Nova Stream...\n');
+  console.log('🧪 Test de l\'API Lorna TV...\n');
 
   try {
     // Test de santé
