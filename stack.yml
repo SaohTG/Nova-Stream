@@ -12,7 +12,7 @@ services:
       POSTGRES_INITDB_ARGS: "--encoding=UTF8 --lc-collate=C --lc-ctype=C"
       TZ: Europe/Brussels
     volumes:
-      - db_data_ns6:/var/lib/postgresql/data
+      - db_data_v3:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nova -d novastream"]
       interval: 10s
@@ -121,7 +121,7 @@ services:
     restart: unless-stopped
 
 volumes:
-  db_data_ns6: {}
+  db_data_v3: {}
 
 networks:
   webnet:
