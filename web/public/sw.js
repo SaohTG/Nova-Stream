@@ -1,6 +1,6 @@
 // Service Worker for caching and performance
-const CACHE_NAME = 'nova-stream-v1';
-const STATIC_CACHE = 'nova-stream-static-v1';
+const CACHE_NAME = 'lorna-tv-v1';
+const STATIC_CACHE = 'lorna-tv-static-v1';
 
 // Files to cache on install
 const STATIC_FILES = [
@@ -35,6 +35,12 @@ self.addEventListener('activate', (event) => {
 // Fetch event - implement caching strategy
 self.addEventListener('fetch', (event) => {
   const { request } = event;
+  
+  // Skip non-HTTP(S) requests (chrome-extension://, etc.)
+  if (!request.url.startsWith('http://') && !request.url.startsWith('https://')) {
+    return;
+  }
+  
   const url = new URL(request.url);
 
   // Skip non-GET requests
