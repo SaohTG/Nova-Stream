@@ -20,7 +20,7 @@ export default function NavBar() {
   return (
     <header className="sticky top-0 z-50 bg-black/70 backdrop-blur supports-[backdrop-filter]:bg-black/40">
       <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
-        <Link to="/" className="text-xl font-bold text-white">Nova Stream</Link>
+        <Link to="/" className="text-xl font-bold text-white">Lorna TV</Link>
 
         <nav className="hidden md:flex items-center gap-1">
           <NavLink to="/" className={cls} end>Accueil</NavLink>
