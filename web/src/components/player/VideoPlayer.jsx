@@ -83,10 +83,66 @@ const VideoPlayer = React.memo(function VideoPlayer({
             v.currentTime = Math.min(initialTime, Math.max(0, (v.duration || 1) - 1));
           }
         } catch {}
+        
+        // Détecter les pistes audio et sous-titres natives HTML5
+        refreshNativeTracks(v);
+        
         tryPlay(v);
       };
 
       v.addEventListener("canplay", onCanPlay, { once: true });
+      v.addEventListener("loadedmetadata", () => refreshNativeTracks(v), { once: true });
+    };
+    
+    // Fonction pour détecter les pistes natives HTML5
+    const refreshNativeTracks = (v) => {
+      if (!v) return;
+      
+      // Pistes audio
+      const audioTracks = v.audioTracks;
+      if (audioTracks && audioTracks.length > 0) {
+        const audioList = [];
+        for (let i = 0; i < audioTracks.length; i++) {
+          const track = audioTracks[i];
+          audioList.push({
+            id: track.id || i,
+            lang: track.language || `Piste ${i + 1}`,
+            label: track.label || track.language || `Audio ${i + 1}`,
+            enabled: track.enabled
+          });
+        }
+        if (audioList.length > 0) {
+          setAudios(audioList.map(a => ({ lang: a.lang, role: null, label: a.label })));
+          const enabled = audioList.find(a => a.enabled);
+          if (enabled) {
+            setAudioSel({ lang: enabled.lang, role: null });
+          }
+        }
+      }
+      
+      // Pistes de sous-titres
+      const textTracks = v.textTracks;
+      if (textTracks && textTracks.length > 0) {
+        const subtitleList = [];
+        for (let i = 0; i < textTracks.length; i++) {
+          const track = textTracks[i];
+          if (track.kind === 'subtitles' || track.kind === 'captions') {
+            subtitleList.push({
+              id: track.id || i,
+              lang: track.language || `sub-${i}`,
+              label: track.label || track.language || `Sous-titre ${i + 1}`,
+              mode: track.mode
+            });
+          }
+        }
+        if (subtitleList.length > 0) {
+          setTexts(subtitleList.map(t => ({ lang: t.lang, kind: "sub", label: t.label })));
+          const showing = subtitleList.find(t => t.mode === 'showing');
+          if (showing) {
+            setTextSel({ lang: showing.lang, enabled: true });
+          }
+        }
+      }
     };
 
     (async () => {
@@ -263,14 +319,66 @@ const VideoPlayer = React.memo(function VideoPlayer({
   }, [lsKey, resumeApi, resumeKey, resolvedSrc, src, title, onEnded]);
 
   const applyAudio = async (lang, role) => {
-    const p = playerRef.current; if (!p) return;
-    p.configure({ preferredAudioLanguage: lang || "", preferredAudioRole: role || "" });
-    setAudioSel({ lang: lang || null, role: role || null });
+    const p = playerRef.current;
+    const v = videoRef.current;
+    
+    // Si Shaka Player est actif, l'utiliser
+    if (p) {
+      p.configure({ preferredAudioLanguage: lang || "", preferredAudioRole: role || "" });
+      setAudioSel({ lang: lang || null, role: role || null });
+      return;
+    }
+    
+    // Sinon, utiliser les pistes HTML5 natives
+    if (v && v.audioTracks) {
+      for (let i = 0; i < v.audioTracks.length; i++) {
+        const track = v.audioTracks[i];
+        // Activer la piste qui correspond
+        if (track.language === lang || track.label === lang) {
+          track.enabled = true;
+          console.log('[VideoPlayer] Switched to audio track:', track.label || track.language);
+        } else {
+          track.enabled = false;
+        }
+      }
+      setAudioSel({ lang: lang || null, role: role || null });
+    }
   };
+  
   const applyText = async (langOrOff) => {
-    const p = playerRef.current; if (!p) return;
-    if (!langOrOff) { p.setTextTrackVisibility(false); setTextSel({ lang: null, enabled: false }); }
-    else { p.setTextTrackVisibility(true); p.selectTextLanguage(langOrOff); setTextSel({ lang: langOrOff, enabled: true }); }
+    const p = playerRef.current;
+    const v = videoRef.current;
+    
+    // Si Shaka Player est actif, l'utiliser
+    if (p) {
+      if (!langOrOff) { 
+        p.setTextTrackVisibility(false); 
+        setTextSel({ lang: null, enabled: false }); 
+      } else { 
+        p.setTextTrackVisibility(true); 
+        p.selectTextLanguage(langOrOff); 
+        setTextSel({ lang: langOrOff, enabled: true }); 
+      }
+      return;
+    }
+    
+    // Sinon, utiliser les pistes HTML5 natives
+    if (v && v.textTracks) {
+      for (let i = 0; i < v.textTracks.length; i++) {
+        const track = v.textTracks[i];
+        if (!langOrOff) {
+          // Désactiver tous les sous-titres
+          track.mode = 'hidden';
+        } else if (track.language === langOrOff || track.label === langOrOff) {
+          // Activer la piste correspondante
+          track.mode = 'showing';
+          console.log('[VideoPlayer] Enabled subtitle track:', track.label || track.language);
+        } else {
+          track.mode = 'hidden';
+        }
+      }
+      setTextSel({ lang: langOrOff || null, enabled: !!langOrOff });
+    }
   };
 
   // Fonctions de contrôle vidéo
@@ -550,31 +658,51 @@ const VideoPlayer = React.memo(function VideoPlayer({
           </div>
           
           {/* Droite: Audio/Sous-titres + Plein écran */}
-          <div className="flex items-center gap-2">
-            {/* Audio */}
-            {audios.length > 0 && (
-              <select
-                className="rounded-lg bg-white/10 backdrop-blur-sm text-white text-sm px-3 py-2 border border-white/20 hover:bg-white/20 transition-colors cursor-pointer"
-                value={`${audioSel.lang || ""}||${audioSel.role || ""}`}
-                onChange={(e) => { const [l, r] = e.target.value.split("||"); applyAudio(l || null, r || null); }}
-                disabled={!playerRef.current}
-              >
-                <option value="||">🔊 Audio auto</option>
-                {audios.map((a, i) => (<option key={`a-${i}`} value={`${a.lang || ""}||${a.role || ""}`}>🔊 {a.label}</option>))}
-              </select>
+          <div className="flex items-center gap-3 flex-wrap justify-end">
+            {/* Langue Audio */}
+            {audios.length > 1 && (
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-white/70 hidden md:block" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M9.383 3.076A1 1 0 0110 4v12a1 1 0 01-1.707.707L4.586 13H2a1 1 0 01-1-1V8a1 1 0 011-1h2.586l3.707-3.707a1 1 0 011.09-.217zM14.657 2.929a1 1 0 011.414 0A9.972 9.972 0 0119 10a9.972 9.972 0 01-2.929 7.071 1 1 0 01-1.414-1.414A7.971 7.971 0 0017 10c0-2.21-.894-4.208-2.343-5.657a1 1 0 010-1.414zm-2.829 2.828a1 1 0 011.415 0A5.983 5.983 0 0115 10a5.984 5.984 0 01-1.757 4.243 1 1 0 01-1.415-1.415A3.984 3.984 0 0013 10a3.983 3.983 0 00-1.172-2.828 1 1 0 010-1.415z" clipRule="evenodd" />
+                </svg>
+                <select
+                  className="rounded-lg bg-black/60 backdrop-blur-md text-white text-sm px-3 py-2 pr-8 border border-white/30 hover:border-primary-500/50 hover:bg-black/70 transition-all cursor-pointer shadow-lg appearance-none bg-[url('data:image/svg+xml;charset=UTF-8,%3csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3e%3cpolyline points=%276 9 12 15 18 9%27%3e%3c/polyline%3e%3c/svg%3e')] bg-[length:1rem] bg-[right_0.5rem_center] bg-no-repeat"
+                  value={`${audioSel.lang || ""}||${audioSel.role || ""}`}
+                  onChange={(e) => { const [l, r] = e.target.value.split("||"); applyAudio(l || null, r || null); }}
+                  title="Choisir la langue audio"
+                >
+                  <option value="||">🔊 Audio par défaut</option>
+                  {audios.map((a, i) => (
+                    <option key={`a-${i}`} value={`${a.lang || ""}||${a.role || ""}`}>
+                      🔊 {a.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             )}
             
             {/* Sous-titres */}
             {texts.length > 0 && (
-              <select
-                className="rounded-lg bg-white/10 backdrop-blur-sm text-white text-sm px-3 py-2 border border-white/20 hover:bg-white/20 transition-colors cursor-pointer"
-                value={textSel.enabled ? (textSel.lang || "") : ""}
-                onChange={(e) => applyText(e.target.value || null)}
-                disabled={!playerRef.current}
-              >
-                <option value="">💬 Sous-titres off</option>
-                {texts.map((t, i) => (<option key={`t-${i}`} value={t.lang}>💬 {t.label}</option>))}
-              </select>
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-white/70 hidden md:block" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                </svg>
+                <select
+                  className={`rounded-lg bg-black/60 backdrop-blur-md text-white text-sm px-3 py-2 pr-8 border transition-all cursor-pointer shadow-lg appearance-none bg-[url('data:image/svg+xml;charset=UTF-8,%3csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27white%27 stroke-width=%272%27 stroke-linecap=%27round%27 stroke-linejoin=%27round%27%3e%3cpolyline points=%276 9 12 15 18 9%27%3e%3c/polyline%3e%3c/svg%3e')] bg-[length:1rem] bg-[right_0.5rem_center] bg-no-repeat ${
+                    textSel.enabled ? 'border-primary-500 bg-black/80' : 'border-white/30 hover:border-primary-500/50 hover:bg-black/70'
+                  }`}
+                  value={textSel.enabled ? (textSel.lang || "") : ""}
+                  onChange={(e) => applyText(e.target.value || null)}
+                  title="Choisir les sous-titres"
+                >
+                  <option value="">💬 Aucun</option>
+                  {texts.map((t, i) => (
+                    <option key={`t-${i}`} value={t.lang}>
+                      💬 {t.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
             )}
             
             {/* Plein écran */}
