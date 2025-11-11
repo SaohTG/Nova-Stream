@@ -1,6 +1,7 @@
 // web/src/pages/Account.jsx
 import { useEffect, useMemo, useState } from "react";
-import { getJson } from "../lib/api";
+import { getJson, postJson as apiPostJson } from "../lib/api";
+import { clearCache } from "../lib/clientCache";
 
 async function postJson(url, body) {
   const r = await fetch(url, {
@@ -11,6 +12,10 @@ async function postJson(url, body) {
   });
   if (!r.ok) throw new Error(`HTTP_${r.status}`);
   return r.json().catch(() => ({}));
+}
+
+async function postJsonDirect(url, body) {
+  return await apiPostJson(url, body);
 }
 async function del(url) {
   const r = await fetch(url, { method: "DELETE", credentials: "include" });
@@ -74,6 +79,11 @@ export default function Account() {
   const [mode, setMode] = useState("idle"); // idle | edit
   const [playlistRaw, setPlaylistRaw] = useState("");
   const parsed = useMemo(() => parsePlaylistInput(playlistRaw), [playlistRaw]);
+  
+  // Settings: Xtream status & refresh cache
+  const [xtreamState, setXtreamState] = useState({ loading: true, linked: false, error: null });
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -96,6 +106,61 @@ export default function Account() {
     })();
     return () => { alive = false; };
   }, []);
+  
+  // Charger le statut Xtream
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const status = await getJson("/xtream/status");
+        if (alive) {
+          setXtreamState({
+            loading: false,
+            linked: !!status?.linked,
+            error: null
+          });
+        }
+      } catch (e) {
+        if (alive) {
+          setXtreamState({
+            loading: false,
+            linked: false,
+            error: e?.message || "Erreur"
+          });
+        }
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+  
+  const handleRefreshCache = async () => {
+    setRefreshing(true);
+    setRefreshMessage(null);
+    try {
+      // Vider le cache côté serveur
+      await postJsonDirect("/xtream/refresh-cache");
+      
+      // Vider aussi le cache côté client
+      clearCache();
+      
+      setRefreshMessage({ 
+        type: 'success', 
+        text: "✅ Cache vidé ! Retournez à l'accueil pour recharger les nouveautés." 
+      });
+      
+      // Auto-redirect après 2 secondes
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 2000);
+    } catch (error) {
+      setRefreshMessage({ 
+        type: 'error', 
+        text: error?.message || "Erreur lors du rafraîchissement du cache" 
+      });
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   async function onSave(e) {
     e?.preventDefault();
@@ -132,9 +197,9 @@ export default function Account() {
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 py-8">
-      <h1 className="text-2xl font-bold">Compte</h1>
+      <h1 className="text-2xl font-bold mb-6">Mon Compte</h1>
 
-      <div className="mt-6 grid gap-6 md:grid-cols-2">
+      <div className="grid gap-6 md:grid-cols-2">
         {/* Carte Playlist */}
         <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-5">
           <div className="flex items-center justify-between">
@@ -225,11 +290,102 @@ export default function Account() {
         <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-5">
           <h2 className="text-lg font-semibold">Aide</h2>
           <ul className="mt-3 list-disc pl-5 text-sm text-zinc-300 space-y-2">
-            <li>Collez l’URL M3U fournie par votre fournisseur Xtream.</li>
-            <li>Ou saisissez “base|username|password”.</li>
+            <li>Collez l'URL M3U fournie par votre fournisseur Xtream.</li>
+            <li>Ou saisissez "base|username|password".</li>
             <li>La playlist est utilisée pour les films, séries et live.</li>
           </ul>
         </div>
+      </div>
+
+      {/* Section Paramètres */}
+      <div className="mt-6">
+        <h2 className="text-xl font-bold mb-4">Paramètres</h2>
+        
+        {xtreamState.loading ? (
+          <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-5">
+            <Spinner label="Chargement..." />
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-white/10 bg-zinc-900/40 p-5">
+            {/* Statut de connexion Xtream */}
+            <div className="mb-6 pb-6 border-b border-white/10">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-base font-semibold text-white mb-1">Statut Xtream</h3>
+                  <p className="text-sm text-zinc-400">
+                    État de votre connexion au serveur Xtream
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  {xtreamState.linked ? (
+                    <>
+                      <div className="h-3 w-3 rounded-full bg-emerald-500 animate-pulse"></div>
+                      <span className="text-sm font-medium text-emerald-400">Connecté</span>
+                    </>
+                  ) : (
+                    <>
+                      <div className="h-3 w-3 rounded-full bg-red-500"></div>
+                      <span className="text-sm font-medium text-red-400">Non connecté</span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Actualiser la playlist */}
+            <div>
+              <h3 className="text-base font-semibold text-white mb-2">Actualiser la playlist</h3>
+              <p className="text-sm text-zinc-400 mb-4">
+                Vide le cache et récupère les dernières nouveautés de votre serveur Xtream
+              </p>
+              
+              {refreshMessage && (
+                <div className={`mb-4 p-3 rounded-lg text-sm ${
+                  refreshMessage.type === 'success' 
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                    : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                }`}>
+                  {refreshMessage.text}
+                </div>
+              )}
+              
+              <button
+                onClick={handleRefreshCache}
+                disabled={refreshing}
+                className="w-full rounded-xl bg-gradient-to-r from-primary-600 to-accent-600 px-4 py-3 text-sm font-medium text-white hover:from-primary-500 hover:to-accent-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 hover:shadow-glow"
+              >
+                {refreshing ? (
+                  <>
+                    <Spinner label="" />
+                    Actualisation en cours...
+                  </>
+                ) : (
+                  <>
+                    <svg className="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    Actualiser la playlist
+                  </>
+                )}
+              </button>
+              
+              <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+                <div className="p-3 rounded-lg bg-zinc-800/50 border border-zinc-700">
+                  <div className="text-zinc-400 mb-1">Cache serveur</div>
+                  <div className="text-white font-semibold">12 heures</div>
+                </div>
+                <div className="p-3 rounded-lg bg-zinc-800/50 border border-zinc-700">
+                  <div className="text-zinc-400 mb-1">Cache local</div>
+                  <div className="text-white font-semibold">5 minutes</div>
+                </div>
+              </div>
+              
+              <p className="mt-3 text-xs text-zinc-500 text-center">
+                💡 Le cache améliore la vitesse et réduit les erreurs de connexion
+              </p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
