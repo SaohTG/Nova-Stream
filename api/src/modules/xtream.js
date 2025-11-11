@@ -208,12 +208,19 @@ async function validateCredentials(creds) {
   }
   
   try {
-    const test = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password), 1, creds.baseUrl);
+    const test = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password), 5, creds.baseUrl);
     const valid = test?.user_info?.auth === 1 || test?.user_info?.status === "Active";
     CREDENTIALS_CACHE.set(cacheKey, { valid, lastCheck: Date.now() });
     return valid;
   } catch (error) {
     console.warn(`[XTREAM CREDENTIALS] Validation failed for ${creds.baseUrl}:`, error.message);
+    // En cas d'erreur de timeout/réseau, on considère les credentials comme valides
+    // plutôt que de bloquer l'utilisateur
+    if (error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED') || error.message?.includes('ETIMEDOUT')) {
+      console.log('[XTREAM CREDENTIALS] Network error, assuming credentials are valid');
+      CREDENTIALS_CACHE.set(cacheKey, { valid: true, lastCheck: Date.now() });
+      return true;
+    }
     CREDENTIALS_CACHE.set(cacheKey, { valid: false, lastCheck: Date.now() });
     return false;
   }
@@ -230,20 +237,27 @@ async function getCreds(userId) {
   }
   if (!row) return null;
   
-  const creds = {
-    baseUrl: normalizeBaseUrl(row.base_url),
-    username: dec(row.username_enc),
-    password: dec(row.password_enc),
-  };
-  
-  // Valider les credentials si nécessaire
-  const isValid = await validateCredentials(creds);
-  if (!isValid) {
-    console.warn(`[XTREAM CREDENTIALS] Invalid credentials for user ${userId}, baseUrl: ${creds.baseUrl}`);
+  try {
+    const creds = {
+      baseUrl: normalizeBaseUrl(row.base_url),
+      username: dec(row.username_enc),
+      password: dec(row.password_enc),
+    };
+    
+    // Valider les credentials si nécessaire
+    const isValid = await validateCredentials(creds);
+    if (!isValid) {
+      console.warn(`[XTREAM CREDENTIALS] Invalid credentials for user ${userId}, baseUrl: ${creds.baseUrl}`);
+      // Ne retourne pas null immédiatement, permet de retourner les creds pour une nouvelle tentative
+      return creds;
+    }
+    
+    return creds;
+  } catch (error) {
+    console.error('[XTREAM CREDENTIALS] Decryption failed:', error.message);
+    // Si le déchiffrement échoue, c'est probablement un problème de clé
     return null;
   }
-  
-  return creds;
 }
 
 /* ============== Images helpers ============== */
