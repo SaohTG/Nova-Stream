@@ -151,7 +151,13 @@ const VideoPlayer = React.memo(function VideoPlayer({
       }
     })();
 
-    return () => { destroyed = true; };
+    return () => { 
+      destroyed = true;
+      if (playerRef.current) {
+        try { playerRef.current.destroy(); } catch {}
+        playerRef.current = null;
+      }
+    };
   }, [resolvedSrc, initialTime]);
 
   useEffect(() => {
@@ -160,9 +166,10 @@ const VideoPlayer = React.memo(function VideoPlayer({
     let lastPush = 0;
     
     const onTime = () => {
+      if (!v) return;
       setCurrentTime(v.currentTime || 0);
       // Mettre à jour la durée à chaque timeupdate si elle n'était pas disponible avant
-      if (v.duration && v.duration !== duration) {
+      if (v.duration && v.duration > 0) {
         setDuration(v.duration);
       }
       if (!lsKey) return;
@@ -178,13 +185,17 @@ const VideoPlayer = React.memo(function VideoPlayer({
     };
     
     const onLoadedMetadata = () => {
+      if (!v) return;
       console.log('[VideoPlayer] Duration loaded:', v.duration);
-      setDuration(v.duration || 0);
+      if (v.duration && isFinite(v.duration)) {
+        setDuration(v.duration);
+      }
     };
     
     const onCanPlay = () => {
+      if (!v) return;
       // Certaines vidéos ont la durée disponible seulement après canplay
-      if (v.duration && v.duration > 0) {
+      if (v.duration && v.duration > 0 && isFinite(v.duration)) {
         console.log('[VideoPlayer] Duration from canplay:', v.duration);
         setDuration(v.duration);
       }
@@ -195,11 +206,14 @@ const VideoPlayer = React.memo(function VideoPlayer({
     
     const onEndedCb = () => {
       setIsPlaying(false);
-      if (resumeApi && resumeKey) postJson("/user/watch/progress", { key: resumeKey, position: v.duration || 0, duration: v.duration || 0 }).catch(() => {});
-      onEnded && onEnded();
+      if (v && resumeApi && resumeKey) {
+        postJson("/user/watch/progress", { key: resumeKey, position: v.duration || 0, duration: v.duration || 0 }).catch(() => {});
+      }
+      if (onEnded) onEnded();
     };
     
     const onVolumeChange = () => {
+      if (!v) return;
       setVolume(v.volume);
       setIsMuted(v.muted);
     };
@@ -224,16 +238,18 @@ const VideoPlayer = React.memo(function VideoPlayer({
     setIsMuted(v.muted);
     setIsPlaying(!v.paused);
     
-    // Vérifier la durée périodiquement pour les streams
+    // Vérifier la durée périodiquement pour les streams (seulement si nécessaire)
     const durationCheckInterval = setInterval(() => {
-      if (v.duration && v.duration > 0 && v.duration !== duration) {
-        console.log('[VideoPlayer] Duration check interval:', v.duration);
+      if (!v || !v.duration) return;
+      if (v.duration > 0 && isFinite(v.duration)) {
         setDuration(v.duration);
       }
-    }, 1000);
+    }, 2000);
     
     return () => {
-      clearInterval(durationCheckInterval);
+      if (durationCheckInterval) clearInterval(durationCheckInterval);
+      if (controlsTimeout.current) clearTimeout(controlsTimeout.current);
+      if (!v) return;
       v.removeEventListener("timeupdate", onTime);
       v.removeEventListener("loadedmetadata", onLoadedMetadata);
       v.removeEventListener("durationchange", onLoadedMetadata);
@@ -336,7 +352,13 @@ const VideoPlayer = React.memo(function VideoPlayer({
       setIsFullscreen(!!document.fullscreenElement);
     };
     document.addEventListener('fullscreenchange', onFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      // Sortir du plein écran si on quitte la page
+      if (document.fullscreenElement) {
+        document.exitFullscreen?.().catch(() => {});
+      }
+    };
   }, []);
 
   // Afficher les contrôles quand la vidéo est en pause
@@ -346,6 +368,16 @@ const VideoPlayer = React.memo(function VideoPlayer({
       if (controlsTimeout.current) clearTimeout(controlsTimeout.current);
     }
   }, [isPlaying]);
+  
+  // Cleanup général au démontage du composant
+  useEffect(() => {
+    return () => {
+      if (controlsTimeout.current) {
+        clearTimeout(controlsTimeout.current);
+        controlsTimeout.current = null;
+      }
+    };
+  }, []);
 
   return (
     <div 
