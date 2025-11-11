@@ -27,6 +27,8 @@ app.use(
     crossOriginEmbedderPolicy: false,
     crossOriginOpenerPolicy: { policy: "same-origin" },
     crossOriginResourcePolicy: { policy: "cross-origin" },
+    // Désactiver complètement Permissions-Policy
+    permissionsPolicy: false,
   })
 );
 app.use((_req, res, next) => {
