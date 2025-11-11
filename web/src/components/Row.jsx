@@ -209,7 +209,7 @@ const Row = React.memo(function Row({ title, items = [], kind = "vod", loading =
           <button
             aria-label="Précédent"
             onClick={() => go(-1)}
-            className="absolute left-0 top-1/2 z-10 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-black/70 backdrop-blur-md border border-white/10 text-white hover:bg-black/80 hover:border-white/20 hover:scale-110 transition-all duration-300 shadow-xl"
+            className="absolute left-0 top-1/2 z-50 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-black/70 backdrop-blur-md border border-white/10 text-white hover:bg-black/80 hover:border-white/20 hover:scale-110 transition-all duration-300 shadow-xl"
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 19l-7-7 7-7" />
@@ -253,7 +253,7 @@ const Row = React.memo(function Row({ title, items = [], kind = "vod", loading =
           <button
             aria-label="Suivant"
             onClick={() => go(1)}
-            className="absolute right-0 top-1/2 z-10 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-black/70 backdrop-blur-md border border-white/10 text-white hover:bg-black/80 hover:border-white/20 hover:scale-110 transition-all duration-300 shadow-xl"
+            className="absolute right-0 top-1/2 z-50 grid h-12 w-12 -translate-y-1/2 place-items-center rounded-full bg-black/70 backdrop-blur-md border border-white/10 text-white hover:bg-black/80 hover:border-white/20 hover:scale-110 transition-all duration-300 shadow-xl"
           >
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 5l7 7-7 7" />
