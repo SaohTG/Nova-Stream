@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { getJson, postJson } from "../lib/api";
 import Row from "../components/Row.jsx";
+import { getCached, setCached } from "../lib/clientCache";
 
 const CATS_BATCH = 30;
 const PER_CAT = 15;
@@ -122,17 +123,32 @@ export default function Movies() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [err, setErr] = useState(null);
 
-  // charge la liste de catégories
+  // charge la liste de catégories avec cache
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
         setErr(null);
         setLoadingCats(true);
+        
+        // Vérifier le cache d'abord
+        const cached = getCached("movies-categories");
+        if (cached) {
+          setCats(cached);
+          setLoadingCats(false);
+          return;
+        }
+        
         const list = await getJson("/xtream/movie-categories");
         if (!alive) return;
         const safe = Array.isArray(list) ? list : [];
         setCats(safe);
+        
+        // Mettre en cache
+        if (safe.length > 0) {
+          setCached("movies-categories", safe);
+        }
+        
         setRows([]);
         setResumeItems([]);
         setRecentItems([]);
@@ -156,18 +172,49 @@ export default function Movies() {
     if (loadingMore) return;
     setLoadingMore(true);
     const slice = cats.slice(nextIndex, nextIndex + CATS_BATCH);
+    
+    // Vérifier le cache pour ce batch
+    const batchCacheKey = `movies-batch-${nextIndex}`;
+    const cachedBatch = getCached(batchCacheKey);
+    
+    if (cachedBatch) {
+      setRows((prev) => {
+        const merged = [...prev, ...cachedBatch];
+        recomputeSpecialRows(merged);
+        return merged;
+      });
+      setNextIndex((i) => i + slice.length);
+      setLoadingMore(false);
+      return;
+    }
 
     const settled = await Promise.allSettled(
       slice.map(async (c) => {
+        // Cache par catégorie
+        const catCacheKey = `movies-cat-${c.category_id}`;
+        const cachedCat = getCached(catCacheKey);
+        
+        if (cachedCat) {
+          return cachedCat;
+        }
+        
         const items = await postJson("/xtream/movies", {
           category_id: c.category_id,
           limit: PER_CAT,
         });
-        return {
+        
+        const result = {
           id: String(c.category_id),
           name: c.category_name || "Sans catégorie",
           items: decorateItemsWithResume(Array.isArray(items) ? items : []),
         };
+        
+        // Mettre en cache cette catégorie
+        if (result.items.length > 0) {
+          setCached(catCacheKey, result);
+        }
+        
+        return result;
       })
     );
 
@@ -175,6 +222,11 @@ export default function Movies() {
       .filter((s) => s.status === "fulfilled")
       .map((s) => s.value)
       .filter((r) => r.items.length > 0);
+
+    // Mettre en cache ce batch entier
+    if (ok.length > 0) {
+      setCached(batchCacheKey, ok);
+    }
 
     setRows((prev) => {
       const merged = [...prev, ...ok];
