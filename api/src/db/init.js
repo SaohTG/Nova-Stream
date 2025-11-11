@@ -74,6 +74,18 @@ export async function initDatabase() {
         updated_at TIMESTAMP DEFAULT now(),
         PRIMARY KEY (user_id, content_id)
       );
+      
+      CREATE TABLE IF NOT EXISTS trending_cache (
+        id SERIAL PRIMARY KEY,
+        user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+        data JSONB NOT NULL,
+        cached_at TIMESTAMP DEFAULT now(),
+        expires_at TIMESTAMP NOT NULL,
+        UNIQUE (user_id)
+      );
+      
+      CREATE INDEX IF NOT EXISTS idx_trending_expires ON trending_cache(expires_at);
+      CREATE INDEX IF NOT EXISTS idx_trending_user ON trending_cache(user_id);
     `);
     
     console.log("Database initialization completed successfully");
