@@ -206,26 +206,40 @@ async function validateCredentials(creds) {
   const cacheKey = creds.baseUrl;
   const cached = CREDENTIALS_CACHE.get(cacheKey);
   
+  // Cache plus long pour éviter trop de vérifications
   if (cached && (Date.now() - cached.lastCheck) < CREDENTIALS_CACHE_TTL) {
     return cached.valid;
   }
   
   try {
-    const test = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password), 5, creds.baseUrl);
+    const test = await fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password), 3, creds.baseUrl);
     const valid = test?.user_info?.auth === 1 || test?.user_info?.status === "Active";
-    CREDENTIALS_CACHE.set(cacheKey, { valid, lastCheck: Date.now() });
+    if (valid) {
+      console.log('[XTREAM CREDENTIALS] Validation successful for', creds.baseUrl);
+      CREDENTIALS_CACHE.set(cacheKey, { valid: true, lastCheck: Date.now() });
+    }
     return valid;
   } catch (error) {
-    console.warn(`[XTREAM CREDENTIALS] Validation failed for ${creds.baseUrl}:`, error.message);
-    // En cas d'erreur de timeout/réseau, on considère les credentials comme valides
-    // plutôt que de bloquer l'utilisateur
-    if (error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED') || error.message?.includes('ETIMEDOUT')) {
-      console.log('[XTREAM CREDENTIALS] Network error, assuming credentials are valid');
-      CREDENTIALS_CACHE.set(cacheKey, { valid: true, lastCheck: Date.now() });
-      return true;
+    // Ne logger qu'en mode dev pour réduire le bruit
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`[XTREAM CREDENTIALS] Validation error for ${creds.baseUrl}:`, error.message, 'Status:', error.status);
     }
-    CREDENTIALS_CACHE.set(cacheKey, { valid: false, lastCheck: Date.now() });
-    return false;
+    
+    // Stratégie tolérante : on considère les credentials comme valides sauf pour 401
+    // Cela évite de bloquer les utilisateurs pour des problèmes temporaires
+    
+    // 401 = Vraiment invalides (mauvais login/password)
+    if (error.status === 401) {
+      console.error('[XTREAM CREDENTIALS] Authentication failed (401) - credentials are invalid');
+      CREDENTIALS_CACHE.set(cacheKey, { valid: false, lastCheck: Date.now() });
+      return false;
+    }
+    
+    // Toutes les autres erreurs (403, 429, timeout, réseau, etc.) = on assume valides
+    // L'utilisateur pourra quand même accéder au site, et les erreurs seront gérées au niveau des endpoints
+    console.log('[XTREAM CREDENTIALS] Assuming credentials are valid despite error (not a 401)');
+    CREDENTIALS_CACHE.set(cacheKey, { valid: true, lastCheck: Date.now() });
+    return true;
   }
 }
 async function getCreds(userId) {
