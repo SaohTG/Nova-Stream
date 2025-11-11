@@ -123,8 +123,29 @@ async function waitForDb(maxTries = 40, delayMs = 3000) {
   console.error("[db] still not ready after retries]");
 }
 
+/**
+ * Nettoyage périodique des caches expirés
+ */
+async function startPeriodicCleanup() {
+  const { cleanExpiredTrendingCache } = await import("./modules/tmdb.js");
+  
+  // Nettoyage initial
+  await cleanExpiredTrendingCache();
+  
+  // Nettoyage quotidien à 3h du matin
+  setInterval(async () => {
+    const now = new Date();
+    if (now.getHours() === 3 && now.getMinutes() < 5) {
+      console.log("[CLEANUP] Lancement du nettoyage quotidien...");
+      await cleanExpiredTrendingCache();
+    }
+  }, 5 * 60 * 1000); // Check toutes les 5 minutes
+}
+
 process.on("unhandledRejection", (e) => console.error("[UNHANDLED_REJECTION]", e));
 process.on("uncaughtException", (e) => console.error("[UNCAUGHT_EXCEPTION]", e));
 
 app.listen(port, () => console.log(`API on :${port}`));
-waitForDb();
+waitForDb().then(() => {
+  startPeriodicCleanup();
+});
