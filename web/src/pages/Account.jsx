@@ -84,6 +84,8 @@ export default function Account() {
   const [xtreamState, setXtreamState] = useState({ loading: true, linked: false, error: null });
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState(null);
+  const [refreshingTrending, setRefreshingTrending] = useState(false);
+  const [trendingMessage, setTrendingMessage] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -159,6 +161,36 @@ export default function Account() {
       });
     } finally {
       setRefreshing(false);
+    }
+  };
+  
+  const handleRefreshTrending = async () => {
+    setRefreshingTrending(true);
+    setTrendingMessage(null);
+    try {
+      // Rafraîchir le trending côté serveur
+      const result = await postJsonDirect("/tmdb/refresh-trending");
+      
+      // Vider le cache côté client pour le trending
+      const { clearCacheByPattern } = await import("../lib/clientCache");
+      clearCacheByPattern("trending");
+      
+      setTrendingMessage({ 
+        type: 'success', 
+        text: `✅ Top Tendance rafraîchi ! ${result.count || 0} titres trouvés.` 
+      });
+      
+      // Auto-clear message après 5 secondes
+      setTimeout(() => {
+        setTrendingMessage(null);
+      }, 5000);
+    } catch (error) {
+      setTrendingMessage({ 
+        type: 'error', 
+        text: error?.message || "Erreur lors du rafraîchissement du trending" 
+      });
+    } finally {
+      setRefreshingTrending(false);
     }
   };
 
@@ -382,6 +414,48 @@ export default function Account() {
               
               <p className="mt-3 text-xs text-zinc-500 text-center">
                 💡 Le cache améliore la vitesse et réduit les erreurs de connexion
+              </p>
+            </div>
+            
+            {/* Rafraîchir le Top Tendance */}
+            <div className="mt-6 pt-6 border-t border-white/10">
+              <h3 className="text-base font-semibold text-white mb-2">Top Tendance</h3>
+              <p className="text-sm text-zinc-400 mb-4">
+                Rafraîchir manuellement le Top Tendance (se met à jour automatiquement chaque lundi)
+              </p>
+              
+              {trendingMessage && (
+                <div className={`mb-4 p-3 rounded-lg text-sm ${
+                  trendingMessage.type === 'success' 
+                    ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' 
+                    : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                }`}>
+                  {trendingMessage.text}
+                </div>
+              )}
+              
+              <button
+                onClick={handleRefreshTrending}
+                disabled={refreshingTrending}
+                className="w-full rounded-xl bg-gradient-to-r from-purple-600 to-pink-600 px-4 py-3 text-sm font-medium text-white hover:from-purple-500 hover:to-pink-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 hover:shadow-glow"
+              >
+                {refreshingTrending ? (
+                  <>
+                    <Spinner label="" />
+                    Rafraîchissement...
+                  </>
+                ) : (
+                  <>
+                    <svg className="inline-block w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                    Rafraîchir le Top Tendance
+                  </>
+                )}
+              </button>
+              
+              <p className="mt-3 text-xs text-zinc-500 text-center">
+                🔄 Actualisation automatique chaque lundi à 00h00
               </p>
             </div>
           </div>
