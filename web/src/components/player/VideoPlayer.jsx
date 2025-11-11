@@ -161,6 +161,10 @@ const VideoPlayer = React.memo(function VideoPlayer({
     
     const onTime = () => {
       setCurrentTime(v.currentTime || 0);
+      // Mettre à jour la durée à chaque timeupdate si elle n'était pas disponible avant
+      if (v.duration && v.duration !== duration) {
+        setDuration(v.duration);
+      }
       if (!lsKey) return;
       const now = Date.now();
       if (now - lastPush > 4000) {
@@ -174,7 +178,16 @@ const VideoPlayer = React.memo(function VideoPlayer({
     };
     
     const onLoadedMetadata = () => {
+      console.log('[VideoPlayer] Duration loaded:', v.duration);
       setDuration(v.duration || 0);
+    };
+    
+    const onCanPlay = () => {
+      // Certaines vidéos ont la durée disponible seulement après canplay
+      if (v.duration && v.duration > 0) {
+        console.log('[VideoPlayer] Duration from canplay:', v.duration);
+        setDuration(v.duration);
+      }
     };
     
     const onPlay = () => setIsPlaying(true);
@@ -194,20 +207,38 @@ const VideoPlayer = React.memo(function VideoPlayer({
     v.addEventListener("timeupdate", onTime);
     v.addEventListener("loadedmetadata", onLoadedMetadata);
     v.addEventListener("durationchange", onLoadedMetadata);
+    v.addEventListener("canplay", onCanPlay);
+    v.addEventListener("canplaythrough", onCanPlay);
     v.addEventListener("play", onPlay);
     v.addEventListener("pause", onPause);
     v.addEventListener("ended", onEndedCb);
     v.addEventListener("volumechange", onVolumeChange);
     
-    // Initialiser les valeurs
-    if (v.duration) setDuration(v.duration);
+    // Initialiser les valeurs immédiatement si disponibles
+    if (v.duration && v.duration > 0) {
+      console.log('[VideoPlayer] Initial duration:', v.duration);
+      setDuration(v.duration);
+    }
+    setCurrentTime(v.currentTime || 0);
     setVolume(v.volume);
     setIsMuted(v.muted);
+    setIsPlaying(!v.paused);
+    
+    // Vérifier la durée périodiquement pour les streams
+    const durationCheckInterval = setInterval(() => {
+      if (v.duration && v.duration > 0 && v.duration !== duration) {
+        console.log('[VideoPlayer] Duration check interval:', v.duration);
+        setDuration(v.duration);
+      }
+    }, 1000);
     
     return () => {
+      clearInterval(durationCheckInterval);
       v.removeEventListener("timeupdate", onTime);
       v.removeEventListener("loadedmetadata", onLoadedMetadata);
       v.removeEventListener("durationchange", onLoadedMetadata);
+      v.removeEventListener("canplay", onCanPlay);
+      v.removeEventListener("canplaythrough", onCanPlay);
       v.removeEventListener("play", onPlay);
       v.removeEventListener("pause", onPause);
       v.removeEventListener("ended", onEndedCb);
@@ -279,6 +310,7 @@ const VideoPlayer = React.memo(function VideoPlayer({
 
   const formatTime = useCallback((seconds) => {
     if (!isFinite(seconds) || seconds < 0) return "0:00";
+    if (seconds === 0) return "0:00";
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);
@@ -287,6 +319,8 @@ const VideoPlayer = React.memo(function VideoPlayer({
     }
     return `${m}:${s.toString().padStart(2, '0')}`;
   }, []);
+  
+  const isLiveStream = !isFinite(duration) || duration === 0;
 
   const showControlsTemporarily = useCallback(() => {
     setShowControls(true);
@@ -344,6 +378,23 @@ const VideoPlayer = React.memo(function VideoPlayer({
         </div>
       )}
       
+      {/* Badge durée permanent (toujours visible) */}
+      {!isLiveStream && duration > 0 && (
+        <div className="absolute top-4 right-4 px-3 py-1.5 rounded-lg bg-black/80 backdrop-blur-sm text-white font-mono text-sm shadow-lg border border-white/20 z-40">
+          <span className="tabular-nums">{formatTime(currentTime)}</span>
+          <span className="text-zinc-400 mx-1">/</span>
+          <span className="text-zinc-300 tabular-nums">{formatTime(duration)}</span>
+        </div>
+      )}
+      
+      {/* Badge DIRECT pour les streams live */}
+      {isLiveStream && (
+        <div className="absolute top-4 right-4 px-3 py-1.5 rounded-lg bg-red-500/90 backdrop-blur-sm text-white text-sm font-semibold shadow-lg flex items-center gap-2 z-40">
+          <span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>
+          EN DIRECT
+        </div>
+      )}
+      
       {/* Icône Play/Pause centrée au clic */}
       {!autoBlocked && (
         <div 
@@ -366,21 +417,22 @@ const VideoPlayer = React.memo(function VideoPlayer({
           showControls ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4'
         }`}
       >
-        {/* Timeline cliquable */}
-        <div className="px-6 pt-8 pb-3">
-          <div 
-            className="relative h-1.5 bg-white/20 rounded-full cursor-pointer group/timeline hover:h-2 transition-all"
-            onClick={handleSeek}
-            onMouseDown={(e) => {
-              setIsSeeking(true);
-              handleSeek(e);
-            }}
-            onMouseMove={(e) => {
-              if (isSeeking) handleSeek(e);
-            }}
-            onMouseUp={() => setIsSeeking(false)}
-            onMouseLeave={() => setIsSeeking(false)}
-          >
+        {/* Timeline cliquable (seulement pour VOD, pas pour live) */}
+        {!isLiveStream && (
+          <div className="px-6 pt-8 pb-3">
+            <div 
+              className="relative h-1.5 bg-white/20 rounded-full cursor-pointer group/timeline hover:h-2 transition-all"
+              onClick={handleSeek}
+              onMouseDown={(e) => {
+                setIsSeeking(true);
+                handleSeek(e);
+              }}
+              onMouseMove={(e) => {
+                if (isSeeking) handleSeek(e);
+              }}
+              onMouseUp={() => setIsSeeking(false)}
+              onMouseLeave={() => setIsSeeking(false)}
+            >
             {/* Barre de progression */}
             <div 
               className="absolute top-0 left-0 h-full bg-gradient-to-r from-primary-500 to-accent-500 rounded-full transition-all shadow-glow"
@@ -395,10 +447,18 @@ const VideoPlayer = React.memo(function VideoPlayer({
           
           {/* Temps actuel / Durée totale */}
           <div className="flex items-center justify-between mt-3 text-sm text-white font-medium">
-            <span className="font-mono text-base">{formatTime(currentTime)}</span>
-            <span className="text-zinc-300 font-mono">{formatTime(duration)}</span>
+            <span className="font-mono text-base tabular-nums">{formatTime(currentTime)}</span>
+            {!isLiveStream ? (
+              <span className="text-zinc-300 font-mono tabular-nums">{formatTime(duration)}</span>
+            ) : (
+              <span className="text-red-500 font-medium flex items-center gap-1">
+                <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+                DIRECT
+              </span>
+            )}
           </div>
         </div>
+        )}
         
         {/* Boutons de contrôle */}
         <div className="px-6 pb-5 flex items-center justify-between gap-4">
