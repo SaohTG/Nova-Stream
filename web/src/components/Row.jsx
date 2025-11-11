@@ -174,13 +174,8 @@ const Row = React.memo(function Row({ title, items = [], kind = "vod", loading =
     };
   }, [measure]);
 
-  // Molette: aucune action sur le carrousel. On redirige le deltaY vers la page.
-  const onWheel = useCallback((e) => {
-    if (e.deltaY !== 0 && e.cancelable) {
-      e.preventDefault();
-      window.scrollBy({ top: e.deltaY, behavior: "auto" });
-    }
-  }, []);
+  // Molette: laisser le scroll vertical natif de la page
+  // On ne capture plus la molette, permettant un scroll vertical fluide
 
   const onClickCapture = useCallback((e) => {
     if (hasDragged.current || performance.now() < blockClickUntil.current) {
@@ -235,7 +230,6 @@ const Row = React.memo(function Row({ title, items = [], kind = "vod", loading =
           onPointerUp={onPointerUp}
           onPointerLeave={onPointerUp}
           onPointerCancel={onPointerUp}
-          onWheel={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
           role="region"
