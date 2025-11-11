@@ -3,6 +3,7 @@ import React, { useEffect, useState, useMemo, useCallback } from "react";
 import Row from "../components/Row.jsx";
 import TopRow from "../components/TopRow.jsx";
 import { getJson, postJson } from "../lib/api";
+import { getCached, setCached } from "../lib/clientCache";
 
 const HOME_MOVIE_ROWS = 6;
 const HOME_SERIES_ROWS = 6;
@@ -25,8 +26,18 @@ export default function Home() {
   const [liveRows, setLiveRows] = useState([]);
   const [loadingLive, setLoadingLive] = useState(true);
 
-  // Memoized fetch function for better performance
+  // Memoized fetch function for better performance with client-side cache
   const fetchCategoryData = useCallback(async (endpoint, categoryKey, setRows, setLoading) => {
+    const cacheKey = `home-${categoryKey}`;
+    
+    // Vérifier le cache client d'abord
+    const cached = getCached(cacheKey);
+    if (cached) {
+      setRows(cached);
+      setLoading(false);
+      return;
+    }
+    
     try {
       const cats = await getJson(endpoint);
       const list = Array.isArray(cats) ? cats.slice(0, categoryKey === 'movies' ? HOME_MOVIE_ROWS : categoryKey === 'series' ? HOME_SERIES_ROWS : HOME_LIVE_ROWS) : [];
@@ -51,7 +62,13 @@ export default function Home() {
         })
       );
 
-      setRows(keepNonEmpty(rows));
+      const result = keepNonEmpty(rows);
+      setRows(result);
+      
+      // Mettre en cache côté client (5 min)
+      if (result.length > 0) {
+        setCached(cacheKey, result);
+      }
     } catch {
       setRows([]);
     } finally {
