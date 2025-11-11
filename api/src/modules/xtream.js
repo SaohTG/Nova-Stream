@@ -196,11 +196,65 @@ async function ensureTables() {
       updated_at timestamptz DEFAULT now()
     );
   `);
+  // Table de cache pour améliorer les performances
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS xtream_cache (
+      user_id uuid NOT NULL,
+      cache_key text NOT NULL,
+      data jsonb NOT NULL,
+      cached_at timestamptz DEFAULT now(),
+      expires_at timestamptz NOT NULL,
+      PRIMARY KEY (user_id, cache_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_xtream_cache_expires ON xtream_cache(expires_at);
+  `);
 }
 
 // Cache pour les credentials valides
 const CREDENTIALS_CACHE = new Map(); // baseUrl -> { valid: boolean, lastCheck: timestamp }
 const CREDENTIALS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Helpers de cache DB
+const CACHE_TTL_MS = 12 * 60 * 60 * 1000; // 12 heures
+
+async function getCachedData(userId, cacheKey) {
+  await ensureTables();
+  const { rows } = await pool.query(
+    `SELECT data, expires_at FROM xtream_cache 
+     WHERE user_id = $1 AND cache_key = $2 AND expires_at > now()
+     LIMIT 1`,
+    [userId, cacheKey]
+  );
+  if (rows.length > 0) {
+    console.log(`[XTREAM CACHE] Hit for ${cacheKey}`);
+    return rows[0].data;
+  }
+  console.log(`[XTREAM CACHE] Miss for ${cacheKey}`);
+  return null;
+}
+
+async function setCachedData(userId, cacheKey, data) {
+  await ensureTables();
+  const expiresAt = new Date(Date.now() + CACHE_TTL_MS);
+  await pool.query(
+    `INSERT INTO xtream_cache (user_id, cache_key, data, expires_at)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (user_id, cache_key) 
+     DO UPDATE SET data = EXCLUDED.data, cached_at = now(), expires_at = EXCLUDED.expires_at`,
+    [userId, cacheKey, JSON.stringify(data), expiresAt]
+  );
+  console.log(`[XTREAM CACHE] Stored ${cacheKey}, expires in 12h`);
+}
+
+async function clearUserCache(userId) {
+  await ensureTables();
+  const { rowCount } = await pool.query(
+    `DELETE FROM xtream_cache WHERE user_id = $1`,
+    [userId]
+  );
+  console.log(`[XTREAM CACHE] Cleared ${rowCount} entries for user ${userId}`);
+  return rowCount;
+}
 
 async function validateCredentials(creds) {
   const cacheKey = creds.baseUrl;
@@ -351,7 +405,23 @@ router.delete("/unlink", ah(async (req, res) => {
   await ensureTables();
   await pool.query(`DELETE FROM xtream_accounts WHERE user_id=$1`, [req.user?.sub]);
   await pool.query(`DELETE FROM user_xtream WHERE user_id=$1`, [req.user?.sub]);
+  // Supprimer aussi le cache
+  await clearUserCache(req.user?.sub);
   res.status(204).end();
+}));
+
+// Endpoint pour forcer le refresh du cache (bouton dans Settings)
+router.post("/refresh-cache", ah(async (req, res) => {
+  const userId = req.user?.sub;
+  if (!userId) return res.status(401).json({ message: "Unauthorized" });
+  
+  const cleared = await clearUserCache(userId);
+  
+  res.json({ 
+    ok: true, 
+    message: "Cache vidé avec succès. Les données seront rechargées au prochain accès.", 
+    clearedEntries: cleared 
+  });
 }));
 
 /* ============== Catalogues ============== */
@@ -360,29 +430,36 @@ const handleMovieCategories = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); 
   if (!c) return res.status(404).json({ message: "No creds" });
   
+  const cacheKey = 'movie-categories';
+  
+  // Vérifier le cache DB d'abord
+  const cached = await getCachedData(req.user.sub, cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
+  
+  // Pas en cache, fetch depuis Xtream
   try {
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"), 3, c.baseUrl);
-    res.json(data || []);
+    const result = data || [];
+    
+    // Mettre en cache pour 12h
+    if (result.length > 0) {
+      await setCachedData(req.user.sub, cacheKey, result);
+    }
+    
+    res.json(result);
   } catch (error) {
     console.error("[XTREAM ERROR] Movie categories fetch failed:", error.message, "Status:", error.status);
     
-    // Ne pas invalider le cache trop rapidement pour éviter les boucles
-    // Seulement invalider après plusieurs tentatives échouées
     if (error.status === 401) {
       CREDENTIALS_CACHE.delete(c.baseUrl);
       return res.status(401).json({ message: "Xtream credentials expired, please re-link your account" });
     }
     
-    // Pour les 403, on ne retourne plus d'erreur mais un tableau vide
-    // Permet au site de rester utilisable même si certaines catégories sont bloquées
-    if (error.status === 403) {
-      console.warn("[XTREAM] 403 on movie-categories, returning empty array to allow site to work");
-      return res.json([]);
-    }
-    
-    // Pour les timeouts et erreurs réseau, retourner un tableau vide aussi
-    if (error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
-      console.warn("[XTREAM] Network error on movie-categories, returning empty array");
+    // Pour les 403 et erreurs réseau, retourner un tableau vide
+    if (error.status === 403 || error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
+      console.warn("[XTREAM] Error on movie-categories, returning empty array");
       return res.json([]);
     }
     
@@ -396,21 +473,35 @@ const handleMovies = ah(async (req, res) => {
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
   
+  const cacheKey = `movies-cat-${category_id}-limit-${limit}`;
+  
+  // Vérifier le cache DB
+  const cached = await getCachedData(req.user.sub, cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
+  
+  // Fetch depuis Xtream
   try {
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }), 3, c.baseUrl);
-    res.json(mapListWithIcons((data || []).slice(0, limit), c));
+    const result = mapListWithIcons((data || []).slice(0, limit), c);
+    
+    // Mettre en cache
+    if (result.length > 0) {
+      await setCachedData(req.user.sub, cacheKey, result);
+    }
+    
+    res.json(result);
   } catch (error) {
     console.error("[XTREAM ERROR] Movies fetch failed:", error.message, "Status:", error.status);
     
-    // Seulement invalider pour 401 (credentials vraiment invalides)
     if (error.status === 401) {
       CREDENTIALS_CACHE.delete(c.baseUrl);
       return res.status(401).json({ message: "Xtream credentials expired, please re-link your account" });
     }
     
-    // Pour 403 et erreurs réseau, retourner un tableau vide au lieu de bloquer
     if (error.status === 403 || error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
-      console.warn("[XTREAM] Error on movies, returning empty array to keep site usable");
+      console.warn("[XTREAM] Error on movies, returning empty array");
       return res.json([]);
     }
     
@@ -433,21 +524,35 @@ const handleSeriesCategories = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); 
   if (!c) return res.status(404).json({ message: "No creds" });
   
+  const cacheKey = 'series-categories';
+  
+  // Vérifier le cache DB
+  const cached = await getCachedData(req.user.sub, cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
+  
+  // Fetch depuis Xtream
   try {
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"), 3, c.baseUrl);
-    res.json(data || []);
+    const result = data || [];
+    
+    // Mettre en cache
+    if (result.length > 0) {
+      await setCachedData(req.user.sub, cacheKey, result);
+    }
+    
+    res.json(result);
   } catch (error) {
     console.error("[XTREAM ERROR] Series categories fetch failed:", error.message, "Status:", error.status);
     
-    // Seulement invalider pour 401 (credentials vraiment invalides)
     if (error.status === 401) {
       CREDENTIALS_CACHE.delete(c.baseUrl);
       return res.status(401).json({ message: "Xtream credentials expired, please re-link your account" });
     }
     
-    // Pour 403 et erreurs réseau, retourner un tableau vide
     if (error.status === 403 || error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
-      console.warn("[XTREAM] Error on series-categories, returning empty array to keep site usable");
+      console.warn("[XTREAM] Error on series-categories, returning empty array");
       return res.json([]);
     }
     
@@ -499,21 +604,35 @@ const handleLiveCategories = ah(async (req, res) => {
   const c = await getCreds(req.user?.sub); 
   if (!c) return res.status(404).json({ message: "No creds" });
   
+  const cacheKey = 'live-categories';
+  
+  // Vérifier le cache DB
+  const cached = await getCachedData(req.user.sub, cacheKey);
+  if (cached) {
+    return res.json(cached);
+  }
+  
+  // Fetch depuis Xtream
   try {
     const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"), 3, c.baseUrl);
-    res.json(data || []);
+    const result = data || [];
+    
+    // Mettre en cache
+    if (result.length > 0) {
+      await setCachedData(req.user.sub, cacheKey, result);
+    }
+    
+    res.json(result);
   } catch (error) {
     console.error("[XTREAM ERROR] Live categories fetch failed:", error.message, "Status:", error.status);
     
-    // Seulement invalider pour 401 (credentials vraiment invalides)
     if (error.status === 401) {
       CREDENTIALS_CACHE.delete(c.baseUrl);
       return res.status(401).json({ message: "Xtream credentials expired, please re-link your account" });
     }
     
-    // Pour 403 et erreurs réseau, retourner un tableau vide
     if (error.status === 403 || error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
-      console.warn("[XTREAM] Error on live-categories, returning empty array to keep site usable");
+      console.warn("[XTREAM] Error on live-categories, returning empty array");
       return res.json([]);
     }
     
