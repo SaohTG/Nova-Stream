@@ -113,19 +113,47 @@ const norm = (s) => (s || "").toString()
   .replace(/\s+/g, " ")
   .trim();
 
-/* ===== GET /tmdb/trending-week-mapped =====
-   - Prend 3 pages TMDB (≈60 titres)
-   - Matche avec VOD + Series Xtream par nom normalisé
-   - Retourne les 15 premiers trouvés, avec images proxifiées Xtream et __rank 1..15
-*/
-router.get("/trending-week-mapped", async (req, res, next) => {
+/**
+ * Calcule la date du prochain lundi à 00:00
+ */
+function getNextMonday() {
+  const now = new Date();
+  const dayOfWeek = now.getDay(); // 0 = Dimanche, 1 = Lundi, ...
+  const daysUntilMonday = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
+  
+  const nextMonday = new Date(now);
+  nextMonday.setDate(now.getDate() + daysUntilMonday);
+  nextMonday.setHours(0, 0, 0, 0);
+  
+  return nextMonday;
+}
+
+/**
+ * Récupère le trending depuis le cache DB ou le génère
+ */
+async function getTrendingFromCacheOrGenerate(userId, creds) {
+  const { pool } = await import("../db/index.js");
+  const now = new Date();
+  
   try {
+    // Vérifier le cache
+    const cacheResult = await pool.query(
+      `SELECT data, expires_at FROM trending_cache 
+       WHERE user_id = $1 AND expires_at > $2`,
+      [userId, now]
+    );
+    
+    if (cacheResult.rows.length > 0) {
+      console.log(`[TRENDING CACHE] Hit pour user ${userId}`);
+      return cacheResult.rows[0].data;
+    }
+    
+    console.log(`[TRENDING CACHE] Miss pour user ${userId}, génération...`);
+    
+    // Générer le trending
     const key = process.env.TMDB_API_KEY;
-    if (!key) return res.json([]);
-
-    const creds = await getCreds(req.user?.sub);
-    if (!creds) return res.json([]);
-
+    if (!key) return [];
+    
     // charge catalogues Xtream une fois
     const [vodAll, serAll] = await Promise.all([
       fetchJson(buildPlayerApi(creds.baseUrl, creds.username, creds.password, "get_vod_streams")).catch(() => []),
@@ -154,11 +182,87 @@ router.get("/trending-week-mapped", async (req, res, next) => {
     }
 
     const mapped = out.map((it, i) => ({ ...mapIcon(it, creds.baseUrl), __rank: i + 1 }));
-    res.json(mapped);
+    
+    // Mettre en cache jusqu'au prochain lundi
+    const nextMonday = getNextMonday();
+    await pool.query(
+      `INSERT INTO trending_cache (user_id, data, expires_at)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (user_id) 
+       DO UPDATE SET data = $2, cached_at = now(), expires_at = $3`,
+      [userId, JSON.stringify(mapped), nextMonday]
+    );
+    
+    console.log(`[TRENDING CACHE] Généré et caché jusqu'au ${nextMonday.toISOString()}`);
+    
+    return mapped;
+  } catch (error) {
+    console.error("[TRENDING CACHE] Erreur:", error);
+    throw error;
+  }
+}
+
+/* ===== GET /tmdb/trending-week-mapped =====
+   - Prend 3 pages TMDB (≈60 titres)
+   - Matche avec VOD + Series Xtream par nom normalisé
+   - Retourne les 15 premiers trouvés, avec images proxifiées Xtream et __rank 1..15
+   - Cache en DB jusqu'au prochain lundi
+*/
+router.get("/trending-week-mapped", async (req, res, next) => {
+  try {
+    const creds = await getCreds(req.user?.sub);
+    if (!creds) return res.json([]);
+    
+    const trending = await getTrendingFromCacheOrGenerate(req.user.sub, creds);
+    res.json(trending);
   } catch (e) {
     e.status = e.status || 500;
     next(e);
   }
 });
+
+/**
+ * Force le rafraîchissement du cache trending pour l'utilisateur
+ */
+router.post("/refresh-trending", async (req, res, next) => {
+  try {
+    const { pool } = await import("../db/index.js");
+    const creds = await getCreds(req.user?.sub);
+    if (!creds) return res.json({ success: false, message: "Identifiants Xtream non configurés" });
+    
+    // Supprimer l'ancien cache
+    await pool.query("DELETE FROM trending_cache WHERE user_id = $1", [req.user.sub]);
+    console.log(`[TRENDING REFRESH] Cache supprimé pour user ${req.user.sub}`);
+    
+    // Régénérer
+    const trending = await getTrendingFromCacheOrGenerate(req.user.sub, creds);
+    
+    res.json({ 
+      success: true, 
+      message: "Tendances rafraîchies avec succès",
+      count: trending.length 
+    });
+  } catch (e) {
+    e.status = e.status || 500;
+    next(e);
+  }
+});
+
+/**
+ * Nettoie les caches expirés (appelé automatiquement au démarrage)
+ */
+export async function cleanExpiredTrendingCache() {
+  try {
+    const { pool } = await import("../db/index.js");
+    const result = await pool.query(
+      "DELETE FROM trending_cache WHERE expires_at < now() RETURNING user_id"
+    );
+    if (result.rowCount > 0) {
+      console.log(`[TRENDING CLEANUP] ${result.rowCount} cache(s) expiré(s) supprimé(s)`);
+    }
+  } catch (error) {
+    console.error("[TRENDING CLEANUP] Erreur:", error);
+  }
+}
 
 export default router;
