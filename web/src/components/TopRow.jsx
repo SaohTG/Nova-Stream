@@ -185,13 +185,8 @@ export default function TopRow() {
     };
   }, [measure]);
 
-  // Molette: reroute vers la page
-  const onWheel = useCallback((e) => {
-    if (e.deltaY !== 0 && e.cancelable) {
-      e.preventDefault();
-      window.scrollBy({ top: e.deltaY, behavior: "auto" });
-    }
-  }, []);
+  // Molette: laisser le scroll vertical natif de la page
+  // On ne capture plus la molette, permettant un scroll vertical fluide
 
   const onClickCapture = useCallback((e) => {
     if (hasDragged.current || performance.now() < blockClickUntil.current) {
@@ -254,7 +249,6 @@ export default function TopRow() {
           onPointerUp={onPointerUp}
           onPointerLeave={onPointerUp}
           onPointerCancel={onPointerUp}
-          onWheel={onWheel}
           onClickCapture={onClickCapture}
           onDragStart={(e) => e.preventDefault()}
           role="region"
