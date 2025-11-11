@@ -340,24 +340,35 @@ router.delete("/unlink", ah(async (req, res) => {
 /* ============== Catalogues ============== */
 // Movies
 const handleMovieCategories = ah(async (req, res) => {
-  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const c = await getCreds(req.user?.sub); 
+  if (!c) return res.status(404).json({ message: "No creds" });
+  
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"), 2, c.baseUrl);
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_categories"), 3, c.baseUrl);
     res.json(data || []);
   } catch (error) {
-    console.error("[XTREAM ERROR] Movie categories fetch failed:", error.message);
+    console.error("[XTREAM ERROR] Movie categories fetch failed:", error.message, "Status:", error.status);
     
-    // Invalider le cache des credentials en cas d'erreur 401/403
-    if (error.status === 401 || error.status === 403) {
-      CREDENTIALS_CACHE.delete(c.baseUrl);
-    }
-    
+    // Ne pas invalider le cache trop rapidement pour éviter les boucles
+    // Seulement invalider après plusieurs tentatives échouées
     if (error.status === 401) {
-      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+      return res.status(401).json({ message: "Xtream credentials expired, please re-link your account" });
     }
+    
+    // Pour les 403, on ne retourne plus d'erreur mais un tableau vide
+    // Permet au site de rester utilisable même si certaines catégories sont bloquées
     if (error.status === 403) {
-      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
+      console.warn("[XTREAM] 403 on movie-categories, returning empty array to allow site to work");
+      return res.json([]);
     }
+    
+    // Pour les timeouts et erreurs réseau, retourner un tableau vide aussi
+    if (error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
+      console.warn("[XTREAM] Network error on movie-categories, returning empty array");
+      return res.json([]);
+    }
+    
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
 });
@@ -368,37 +379,24 @@ const handleMovies = ah(async (req, res) => {
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
   
-  // Check error cache first
-  const errorKey = mkey(req.user.sub, c.baseUrl, `movies_error_${category_id}`);
-  const cachedError = errorGet(errorKey);
-  if (cachedError) {
-    console.warn("[XTREAM CACHE] Returning cached error for movies:", cachedError.message);
-    if (cachedError.status === 403) {
-      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
-    }
-    return res.status(503).json({ message: "Xtream service unavailable" });
-  }
-  
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }), 2, c.baseUrl);
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_vod_streams", { category_id }), 3, c.baseUrl);
     res.json(mapListWithIcons((data || []).slice(0, limit), c));
   } catch (error) {
-    console.error("[XTREAM ERROR] Movies fetch failed:", error.message);
+    console.error("[XTREAM ERROR] Movies fetch failed:", error.message, "Status:", error.status);
     
-    // Invalider le cache des credentials en cas d'erreur 401/403
-    if (error.status === 401 || error.status === 403) {
-      CREDENTIALS_CACHE.delete(c.baseUrl);
-    }
-    
-    // Cache the error for 2 minutes to avoid repeated calls
-    errorSet(errorKey, error);
-    
+    // Seulement invalider pour 401 (credentials vraiment invalides)
     if (error.status === 401) {
-      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+      return res.status(401).json({ message: "Xtream credentials expired, please re-link your account" });
     }
-    if (error.status === 403) {
-      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
+    
+    // Pour 403 et erreurs réseau, retourner un tableau vide au lieu de bloquer
+    if (error.status === 403 || error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
+      console.warn("[XTREAM] Error on movies, returning empty array to keep site usable");
+      return res.json([]);
     }
+    
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
 });
@@ -415,50 +413,56 @@ router.get("/vod-info/:vod_id", ah(async (req, res) => {
 
 // Series
 const handleSeriesCategories = ah(async (req, res) => {
-  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const c = await getCreds(req.user?.sub); 
+  if (!c) return res.status(404).json({ message: "No creds" });
+  
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"), 2, c.baseUrl);
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series_categories"), 3, c.baseUrl);
     res.json(data || []);
   } catch (error) {
-    console.error("[XTREAM ERROR] Series categories fetch failed:", error.message);
+    console.error("[XTREAM ERROR] Series categories fetch failed:", error.message, "Status:", error.status);
     
-    // Invalider le cache des credentials en cas d'erreur 401/403
-    if (error.status === 401 || error.status === 403) {
-      CREDENTIALS_CACHE.delete(c.baseUrl);
-    }
-    
+    // Seulement invalider pour 401 (credentials vraiment invalides)
     if (error.status === 401) {
-      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+      return res.status(401).json({ message: "Xtream credentials expired, please re-link your account" });
     }
-    if (error.status === 403) {
-      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
+    
+    // Pour 403 et erreurs réseau, retourner un tableau vide
+    if (error.status === 403 || error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
+      console.warn("[XTREAM] Error on series-categories, returning empty array to keep site usable");
+      return res.json([]);
     }
+    
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
 });
 router.get("/series-categories", handleSeriesCategories);
 
 const handleSeries = ah(async (req, res) => {
-  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const c = await getCreds(req.user?.sub); 
+  if (!c) return res.status(404).json({ message: "No creds" });
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
+  
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id }), 2, c.baseUrl);
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_series", { category_id }), 3, c.baseUrl);
     res.json(mapListWithIcons((data || []).slice(0, limit), c));
   } catch (error) {
-    console.error("[XTREAM ERROR] Series fetch failed:", error.message);
+    console.error("[XTREAM ERROR] Series fetch failed:", error.message, "Status:", error.status);
     
-    // Invalider le cache des credentials en cas d'erreur 401/403
-    if (error.status === 401 || error.status === 403) {
-      CREDENTIALS_CACHE.delete(c.baseUrl);
-    }
-    
+    // Seulement invalider pour 401
     if (error.status === 401) {
-      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+      return res.status(401).json({ message: "Xtream credentials expired, please re-link your account" });
     }
-    if (error.status === 403) {
-      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
+    
+    // Pour 403 et erreurs réseau, retourner un tableau vide
+    if (error.status === 403 || error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
+      console.warn("[XTREAM] Error on series, returning empty array to keep site usable");
+      return res.json([]);
     }
+    
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
 });
@@ -475,50 +479,56 @@ router.get("/series-info/:series_id", ah(async (req, res) => {
 
 // Live
 const handleLiveCategories = ah(async (req, res) => {
-  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const c = await getCreds(req.user?.sub); 
+  if (!c) return res.status(404).json({ message: "No creds" });
+  
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"), 2, c.baseUrl);
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_categories"), 3, c.baseUrl);
     res.json(data || []);
   } catch (error) {
-    console.error("[XTREAM ERROR] Live categories fetch failed:", error.message);
+    console.error("[XTREAM ERROR] Live categories fetch failed:", error.message, "Status:", error.status);
     
-    // Invalider le cache des credentials en cas d'erreur 401/403
-    if (error.status === 401 || error.status === 403) {
-      CREDENTIALS_CACHE.delete(c.baseUrl);
-    }
-    
+    // Seulement invalider pour 401 (credentials vraiment invalides)
     if (error.status === 401) {
-      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+      return res.status(401).json({ message: "Xtream credentials expired, please re-link your account" });
     }
-    if (error.status === 403) {
-      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
+    
+    // Pour 403 et erreurs réseau, retourner un tableau vide
+    if (error.status === 403 || error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
+      console.warn("[XTREAM] Error on live-categories, returning empty array to keep site usable");
+      return res.json([]);
     }
+    
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
 });
 router.get("/live-categories", handleLiveCategories);
 
 const handleLive = ah(async (req, res) => {
-  const c = await getCreds(req.user?.sub); if (!c) return res.status(404).json({ message: "No creds" });
+  const c = await getCreds(req.user?.sub); 
+  if (!c) return res.status(404).json({ message: "No creds" });
   const category_id = pickCatId(req);
   const limit = pickLimit(req, 50);
+  
   try {
-    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id }), 2, c.baseUrl);
+    const data = await fetchJson(buildPlayerApi(c.baseUrl, c.username, c.password, "get_live_streams", { category_id }), 3, c.baseUrl);
     res.json(mapListWithIcons((data || []).slice(0, limit), c));
   } catch (error) {
-    console.error("[XTREAM ERROR] Live fetch failed:", error.message);
+    console.error("[XTREAM ERROR] Live fetch failed:", error.message, "Status:", error.status);
     
-    // Invalider le cache des credentials en cas d'erreur 401/403
-    if (error.status === 401 || error.status === 403) {
-      CREDENTIALS_CACHE.delete(c.baseUrl);
-    }
-    
+    // Seulement invalider pour 401
     if (error.status === 401) {
-      return res.status(403).json({ message: "Xtream credentials expired or invalid" });
+      CREDENTIALS_CACHE.delete(c.baseUrl);
+      return res.status(401).json({ message: "Xtream credentials expired, please re-link your account" });
     }
-    if (error.status === 403) {
-      return res.status(403).json({ message: "Xtream access forbidden - check account permissions" });
+    
+    // Pour 403 et erreurs réseau, retourner un tableau vide
+    if (error.status === 403 || error.message?.includes('timeout') || error.message?.includes('ECONNREFUSED')) {
+      console.warn("[XTREAM] Error on live, returning empty array to keep site usable");
+      return res.json([]);
     }
+    
     return res.status(503).json({ message: "Xtream service unavailable" });
   }
 });
