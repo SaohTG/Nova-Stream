@@ -158,7 +158,10 @@ async function fetchJson(url, retries = 2, baseUrl = null) {
       // Retry logic for specific errors avec délais plus longs
       if (error.status === 403 || error.status === 429 || error.name === "AbortError") {
         const delay = Math.min(2000 * Math.pow(2, attempt), 10000); // Exponential backoff, max 10s
-        console.warn(`[XTREAM RETRY] Attempt ${attempt + 1}/${retries + 1} failed, retrying in ${delay}ms:`, error.message);
+        // Logger seulement en mode développement pour réduire le bruit
+        if (process.env.NODE_ENV === 'development') {
+          console.log(`[XTREAM] Retry ${attempt + 1}/${retries + 1} (${error.message}) - wait ${delay}ms`);
+        }
         await new Promise(resolve => setTimeout(resolve, delay));
         continue;
       }
