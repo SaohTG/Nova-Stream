@@ -208,9 +208,15 @@ const VideoPlayer = React.memo(function VideoPlayer({
     })();
 
     return () => { 
+      console.log('[VideoPlayer] Unmounting - cleanup player');
       destroyed = true;
       if (playerRef.current) {
-        try { playerRef.current.destroy(); } catch {}
+        try { 
+          playerRef.current.destroy();
+          console.log('[VideoPlayer] Shaka player destroyed'); 
+        } catch (e) {
+          console.warn('[VideoPlayer] Error destroying player:', e);
+        }
         playerRef.current = null;
       }
     };
@@ -303,8 +309,15 @@ const VideoPlayer = React.memo(function VideoPlayer({
     }, 2000);
     
     return () => {
-      if (durationCheckInterval) clearInterval(durationCheckInterval);
-      if (controlsTimeout.current) clearTimeout(controlsTimeout.current);
+      console.log('[VideoPlayer] Unmounting - cleanup listeners & intervals');
+      if (durationCheckInterval) {
+        clearInterval(durationCheckInterval);
+        console.log('[VideoPlayer] Cleared duration check interval');
+      }
+      if (controlsTimeout.current) {
+        clearTimeout(controlsTimeout.current);
+        controlsTimeout.current = null;
+      }
       if (!v) return;
       v.removeEventListener("timeupdate", onTime);
       v.removeEventListener("loadedmetadata", onLoadedMetadata);
@@ -315,6 +328,7 @@ const VideoPlayer = React.memo(function VideoPlayer({
       v.removeEventListener("pause", onPause);
       v.removeEventListener("ended", onEndedCb);
       v.removeEventListener("volumechange", onVolumeChange);
+      console.log('[VideoPlayer] All event listeners removed');
     };
   }, [lsKey, resumeApi, resumeKey, resolvedSrc, src, title, onEnded]);
 
@@ -480,9 +494,27 @@ const VideoPlayer = React.memo(function VideoPlayer({
   // Cleanup général au démontage du composant
   useEffect(() => {
     return () => {
+      console.log('[VideoPlayer] Final cleanup on component unmount');
       if (controlsTimeout.current) {
         clearTimeout(controlsTimeout.current);
         controlsTimeout.current = null;
+      }
+    };
+  }, []);
+  
+  // Cleanup du lecteur vidéo au démontage
+  useEffect(() => {
+    return () => {
+      const v = videoRef.current;
+      if (v) {
+        console.log('[VideoPlayer] Pausing and cleaning video element');
+        try {
+          v.pause();
+          v.src = '';
+          v.load();
+        } catch (e) {
+          console.warn('[VideoPlayer] Error cleaning video:', e);
+        }
       }
     };
   }, []);
