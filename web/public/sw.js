@@ -1,6 +1,6 @@
 // Service Worker for caching and performance
-const CACHE_NAME = 'lorna-tv-v1';
-const STATIC_CACHE = 'lorna-tv-static-v1';
+const CACHE_NAME = 'lorna-tv-v2';
+const STATIC_CACHE = 'lorna-tv-static-v2';
 
 // Files to cache on install
 const STATIC_FILES = [
