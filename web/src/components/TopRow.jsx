@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import PosterCard from "./PosterCard.jsx";
 import { getJson } from "../lib/api";
+import { getCached, setCached } from "../lib/clientCache";
 
 function SkeletonCard() {
   return (
@@ -18,10 +19,24 @@ export default function TopRow() {
   useEffect(() => {
     const ac = new AbortController();
     (async () => {
+      // Vérifier le cache client d'abord (5 min)
+      const cached = getCached("trending-week");
+      if (cached) {
+        const top = Array.isArray(cached) ? cached.slice(0, 15).map((it, i) => ({ ...it, __rank: i + 1 })) : [];
+        setItems(top);
+        setLoading(false);
+        return;
+      }
+      
       try {
         const data = await getJson("/tmdb/trending-week-mapped", { signal: ac.signal });
         const top = Array.isArray(data) ? data.slice(0, 15).map((it, i) => ({ ...it, __rank: i + 1 })) : [];
         setItems(top);
+        
+        // Mettre en cache côté client (5 min)
+        if (top.length > 0) {
+          setCached("trending-week", top);
+        }
       } catch {
         setItems([]);
       } finally {
