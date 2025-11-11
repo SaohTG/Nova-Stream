@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { getJson, postJson } from "../lib/api";
 import { Link } from "react-router-dom";
+import { clearCache } from "../lib/clientCache";
 
 export default function Settings() {
   const [state, setState] = useState({ loading: true, linked: false, error: null });
@@ -27,11 +28,21 @@ export default function Settings() {
     setRefreshing(true);
     setRefreshMessage(null);
     try {
+      // Vider le cache côté serveur
       const result = await postJson("/xtream/refresh-cache");
+      
+      // Vider aussi le cache côté client
+      clearCache();
+      
       setRefreshMessage({ 
         type: 'success', 
-        text: result?.message || "Cache vidé ! Rechargez la page pour voir les nouveautés." 
+        text: "✅ Cache vidé ! Retournez à l'accueil pour recharger les nouveautés." 
       });
+      
+      // Auto-redirect après 2 secondes
+      setTimeout(() => {
+        window.location.href = '/';
+      }, 2000);
     } catch (error) {
       setRefreshMessage({ 
         type: 'error', 
@@ -148,8 +159,19 @@ export default function Settings() {
                 )}
               </button>
               
+              <div className="mt-4 grid grid-cols-2 gap-3 text-xs">
+                <div className="p-3 rounded-lg bg-zinc-800/50 border border-zinc-700">
+                  <div className="text-zinc-400 mb-1">Cache serveur</div>
+                  <div className="text-white font-semibold">12 heures</div>
+                </div>
+                <div className="p-3 rounded-lg bg-zinc-800/50 border border-zinc-700">
+                  <div className="text-zinc-400 mb-1">Cache local</div>
+                  <div className="text-white font-semibold">5 minutes</div>
+                </div>
+              </div>
+              
               <p className="mt-3 text-xs text-zinc-500 text-center">
-                Vide le cache et récupère les dernières nouveautés de votre serveur Xtream
+                💡 Le cache améliore la vitesse et réduit les erreurs de connexion
               </p>
             </div>
           )}
