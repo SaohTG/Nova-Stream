@@ -17,7 +17,6 @@ const Home = lazy(() => import("./pages/Home.jsx"));
 const Movies = lazy(() => import("./pages/Movies.jsx"));
 const Series = lazy(() => import("./pages/Series.jsx"));
 const Live = lazy(() => import("./pages/Live.jsx"));
-const Settings = lazy(() => import("./pages/Settings.jsx"));
 const OnboardingXtream = lazy(() => import("./pages/OnboardingXtream.jsx"));
 const MovieCategory = lazy(() => import("./pages/MovieCategory.jsx"));
 const SeriesCategory = lazy(() => import("./pages/SeriesCategory.jsx"));
@@ -114,8 +113,7 @@ export default function App() {
             <Route element={<Shell />}>
               {/* Auth OK, Xtream facultatif */}
               <Route path="/onboarding/xtream" element={<OnboardingXtream />} />
-              <Route path="/settings" element={<Settings />} />
-              <Route path="/account" element={<Account />} /> {/* ← ICI */}
+              <Route path="/account" element={<Account />} />
 
               {/* Contenus : Xtream requis */}
               <Route element={<RequireXtream />}>
