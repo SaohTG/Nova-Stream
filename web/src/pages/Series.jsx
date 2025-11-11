@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { getJson, postJson } from "../lib/api";
 import Row from "../components/Row.jsx";
+import { getCached, setCached } from "../lib/clientCache";
 
 const CATS_BATCH = 30;
 const PER_CAT    = 15;
@@ -58,17 +59,32 @@ export default function Series() {
     return out;
   }, []);
 
-  // charge catégories
+  // charge catégories avec cache
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
         setErr(null);
         setLoadingCats(true);
+        
+        // Vérifier le cache d'abord
+        const cached = getCached("series-categories");
+        if (cached) {
+          setCats(cached);
+          setLoadingCats(false);
+          return;
+        }
+        
         const list = await getJson("/xtream/series-categories");
         if (!alive) return;
         const safe = Array.isArray(list) ? list : [];
         setCats(safe);
+        
+        // Mettre en cache
+        if (safe.length > 0) {
+          setCached("series-categories", safe);
+        }
+        
         setRows([]);
         setNextIndex(0);
       } catch (e) {
@@ -85,18 +101,45 @@ export default function Series() {
     if (loadingMore) return;
     setLoadingMore(true);
     const slice = cats.slice(nextIndex, nextIndex + CATS_BATCH);
+    
+    // Vérifier le cache pour ce batch
+    const batchCacheKey = `series-batch-${nextIndex}`;
+    const cachedBatch = getCached(batchCacheKey);
+    
+    if (cachedBatch) {
+      setRows((prev) => [...prev, ...cachedBatch]);
+      setNextIndex((i) => i + slice.length);
+      setLoadingMore(false);
+      return;
+    }
 
     const settled = await Promise.allSettled(
       slice.map(async (c) => {
+        // Cache par catégorie
+        const catCacheKey = `series-cat-${c.category_id}`;
+        const cachedCat = getCached(catCacheKey);
+        
+        if (cachedCat) {
+          return cachedCat;
+        }
+        
         const items = await postJson("/xtream/series", {
           category_id: c.category_id,
           limit: PER_CAT,
         });
-        return {
+        
+        const result = {
           id: String(c.category_id),
           name: c.category_name || "Sans catégorie",
           items: Array.isArray(items) ? items : [],
         };
+        
+        // Mettre en cache cette catégorie
+        if (result.items.length > 0) {
+          setCached(catCacheKey, result);
+        }
+        
+        return result;
       })
     );
 
@@ -104,6 +147,11 @@ export default function Series() {
       .filter((s) => s.status === "fulfilled")
       .map((s) => s.value)
       .filter((r) => r.items.length > 0);
+
+    // Mettre en cache ce batch entier
+    if (ok.length > 0) {
+      setCached(batchCacheKey, ok);
+    }
 
     setRows((prev) => [...prev, ...ok]);
     setNextIndex((i) => i + slice.length);
